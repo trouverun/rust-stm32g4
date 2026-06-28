@@ -1,22 +1,46 @@
 use crate::calibration::CalibrationFailureCause;
 use crate::memory::MemoryFault;
-use field_oriented::{EstimationStepFault, FocFault, HallCalibrator, OfflineMotorEstimator, PITuningFault};
+use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, HallCalibrator, OfflineMotorEstimator, PITuningFault};
 use defmt::{Format, Formatter, write, info};
 
 #[derive(Clone, Copy, defmt::Format)]
+#[repr(u8)]
 pub enum FaultCause {
     Empty,
     Overcurrent,
     Break1,
     Break2,
     Watchdog,
-    CalibrationTimeout,
-    EstimationFail { cause: EstimationStepFault },
-    ControllerTuningFail { cause: PITuningFault },
     MissingMotorParams,
     MissingControllerGains,
-    ControllerFail { cause: FocFault },
-    MemoryFault { cause: MemoryFault },
+
+    CalibrationTimeout,    
+    HallEdgeDisagreement,
+
+    EstimationOverflow,
+    EstimationInsufficientSamples,
+    EstimationDegenSolution,
+    EstimationParameterOutOfBounds,
+
+    TuningUnstable,
+    TuningInfeasibleParameters,
+    TuningMissingMotorParams,
+
+    ControllerNumericalError,
+
+    MemoryFlashFault,
+    MemoryCorruptedData,
+    MemoryTooLarge,
+}
+
+impl FaultCause {
+    pub fn encode(&self) -> u8 {
+        *self as u8
+    }
+
+    fn dedup_bit(&self) -> u32 {
+        1u32 << self.encode()
+    }
 }
 
 impl From<FocFault> for FaultCause {
@@ -24,7 +48,7 @@ impl From<FocFault> for FaultCause {
         match f {
             FocFault::MissingMotorParams => FaultCause::MissingMotorParams,
             FocFault::MissingControllerGains => FaultCause::MissingControllerGains,
-            _ => FaultCause::ControllerFail { cause: f },
+            FocFault::NumericalError => FaultCause::ControllerNumericalError,
         }
     }
 }
@@ -33,10 +57,10 @@ impl From<EstimationStepFault> for FaultCause {
     fn from(f: EstimationStepFault) -> Self {
         match f {
             EstimationStepFault::MissingParameter => FaultCause::MissingMotorParams,
-            (EstimationStepFault::Overflow
-            | EstimationStepFault::InsufficientSamples
-            | EstimationStepFault::DegenSolution
-            | EstimationStepFault::ParameterOutOfBounds) => FaultCause::EstimationFail { cause: f },
+            EstimationStepFault::Overflow => FaultCause::EstimationOverflow,
+            EstimationStepFault::InsufficientSamples => FaultCause::EstimationInsufficientSamples,
+            EstimationStepFault::DegenSolution => FaultCause::EstimationDegenSolution,
+            EstimationStepFault::ParameterOutOfBounds => FaultCause::EstimationParameterOutOfBounds,
         }
     }
 }
@@ -47,19 +71,36 @@ impl From<CalibrationFailureCause> for FaultCause {
             CalibrationFailureCause::Timeout => FaultCause::CalibrationTimeout,
             CalibrationFailureCause::MissingParameter => FaultCause::MissingMotorParams,
             CalibrationFailureCause::MotorParameterEstimation { fault } => fault.into(),
+            CalibrationFailureCause::HallCalibration { fault } => fault.into(),
+        }
+    }
+}
+
+impl From<HallCalibrationFault> for FaultCause {
+    fn from(f: HallCalibrationFault) -> Self {
+        match f {
+            HallCalibrationFault::EdgeDisagreement => FaultCause::HallEdgeDisagreement,
         }
     }
 }
 
 impl From<PITuningFault> for FaultCause {
     fn from(f: PITuningFault) -> Self {
-        FaultCause::ControllerTuningFail { cause: f }
+        match f {
+            PITuningFault::Unstable => FaultCause::TuningUnstable,
+            PITuningFault::InfeasibleMotorParameters => FaultCause::TuningInfeasibleParameters,
+            PITuningFault::MissingMotorParameters => FaultCause::TuningMissingMotorParams,
+        }
     }
 }
 
 impl From<MemoryFault> for FaultCause {
-    fn from(cause: MemoryFault) -> Self {
-        FaultCause::MemoryFault { cause }
+    fn from(f: MemoryFault) -> Self {
+        match f {
+            MemoryFault::FlashInternalFault => FaultCause::MemoryFlashFault,
+            MemoryFault::CorruptedData => FaultCause::MemoryCorruptedData,
+            MemoryFault::TooLarge => FaultCause::MemoryTooLarge,
+        }
     }
 }
 
@@ -99,6 +140,8 @@ pub enum OperatingMode {
     Fault {
         write_index: usize,
         trace: [FaultCause; 16],
+        /// Set of faults already in `trace`, keyed by `FaultCause::dedup_bit`
+        seen: u32,
     },
 }
 
@@ -117,7 +160,7 @@ impl Format for OperatingMode {
             OperatingMode::VelocityControl => {
                 write!(f, "VelocityControl")
             }
-            OperatingMode::Fault { write_index, trace } => {
+            OperatingMode::Fault { write_index, trace, .. } => {
                 write!(f, "Fault {{ write_index: {}, trace: {} }}", write_index, trace)
             }
         }
@@ -128,8 +171,10 @@ impl OperatingMode {
     pub fn on_command(&mut self, command: Command) {
         info!("On command {}, state {}", command, &*self);
         let new_state = match (&mut *self, command) {
-            (OperatingMode::Fault { write_index, trace }, Command::AssertFault { cause }) => {
-                if *write_index < trace.len() {
+            (OperatingMode::Fault { write_index, trace, seen }, Command::AssertFault { cause }) => {
+                let bit = cause.dedup_bit();
+                if *seen & bit == 0 && *write_index < trace.len() {
+                    *seen |= bit;
                     trace[*write_index] = cause;
                     *write_index += 1;
                 }
@@ -138,7 +183,7 @@ impl OperatingMode {
             (_, Command::AssertFault { cause }) => {
                 let mut trace = [FaultCause::Empty; 16];
                 trace[0] = cause;
-                OperatingMode::Fault { write_index: 1, trace }
+                OperatingMode::Fault { write_index: 1, trace, seen: cause.dedup_bit() }
             }
             (OperatingMode::Idle, Command::StartCalibration { num_pole_pairs } ) => {
                 OperatingMode::Calibration { calibrator: CalibrationRunner::new(num_pole_pairs) }

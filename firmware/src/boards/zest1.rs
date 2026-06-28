@@ -103,6 +103,8 @@ fn rcc_init() -> embassy_stm32::Peripherals {
     rcc_config.rcc.mux.adc12sel = mux::Adcsel::PLL1_P;
     rcc_config.rcc.mux.adc345sel = mux::Adcsel::PLL1_P;
     rcc_config.rcc.mux.fdcansel = mux::Fdcansel::PLL1_Q;
+    // Leave the DMA IRQ priority to RTIC; embassy must not set it.
+    rcc_config.bdma_interrupt_priority = None;
     embassy_stm32::init(rcc_config)
 }
 

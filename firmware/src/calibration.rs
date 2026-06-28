@@ -1,7 +1,7 @@
 use crate::boards::PWM_FREQ;
-use crate::types::{CalibrationPhase, CalibrationRunner, FaultCause};
+use crate::types::{CalibrationPhase, CalibrationRunner};
 use field_oriented::{
-    AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig, OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
+    AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibrationFault, HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig, OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
 };
 
 pub struct CalibrationInputs {
@@ -25,6 +25,7 @@ pub struct CalibrationOutput {
 pub enum CalibrationFailureCause {
     MissingParameter,
     MotorParameterEstimation { fault: EstimationStepFault },
+    HallCalibration { fault: HallCalibrationFault },
     Timeout
 }
 
@@ -99,16 +100,25 @@ impl CalibrationRunner {
                     (output, Some(result))
                 } else {
                     const PWM_FREQ_HZ: u32 = PWM_FREQ.0;
-                    let theta = self.hall_calibrator.calibration_step::<PWM_FREQ_HZ>(inputs.hall_pattern, inputs.target_omega);
-                    let output = CalibrationOutput {
-                    angle_type: AngleType::Electrical,
-                        theta,
-                        foc_command: FocInputType::CalibrationCurrents(ClarkParkValue {
-                            d: inputs.target_current,
-                            q: 0.0,
-                        }),
-                    };
-                    (output, None)
+                    match self.hall_calibrator.calibration_step::<PWM_FREQ_HZ>(inputs.hall_pattern, inputs.target_omega) {
+                        Ok(theta) => {
+                            let output = CalibrationOutput {
+                                angle_type: AngleType::Electrical,
+                                theta,
+                                foc_command: FocInputType::CalibrationCurrents(ClarkParkValue {
+                                    d: inputs.target_current,
+                                    q: 0.0,
+                                }),
+                            };
+                            (output, None)
+                        }
+                        Err(fault) => {
+                            let result = StageResult::Failure {
+                                cause: CalibrationFailureCause::HallCalibration { fault },
+                            };
+                            (self.idle_output(inputs), Some(result))
+                        }
+                    }
                 }
             }
             CalibrationPhase::MotorEstimation => {

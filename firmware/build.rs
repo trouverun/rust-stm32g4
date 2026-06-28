@@ -79,11 +79,8 @@ fn main() {
 
 /// Returns each periodic message's transmit period in **microseconds**.
 ///
-/// `GenMsgCycleTimeUs` (microseconds) takes precedence when set; otherwise the
-/// conventional `GenMsgCycleTime` (milliseconds) is used, scaled to µs. The
-/// millisecond attribute is an integer, so it cannot express sub-millisecond
-/// rates; the microsecond attribute lets you specify e.g. 2 kHz (500 µs),
-/// 5 kHz (200 µs), and so on.
+/// Uses `GenMsgCycleTimeUs` when set, otherwise falls back to
+/// `GenMsgCycleTime` (milliseconds, scaled to µs).
 fn collect_cycle_times(dbc: &DBC) -> HashMap<u32, u32> {
     let mut out = HashMap::new();
     for (id, ms) in collect_int_attribute(dbc, CYCLE_TIME_MS_ATTRIBUTE) {
