@@ -77,8 +77,8 @@ impl PhaseCurrentFilter {
 
     pub fn check_overcurrent(&self) -> bool {
         self.filters.u.filtered().abs() > self.overcurrent_limit
-            || self.filters.v.filtered() > self.overcurrent_limit
-            || self.filters.w.filtered() > self.overcurrent_limit
+            || self.filters.v.filtered().abs() > self.overcurrent_limit
+            || self.filters.w.filtered().abs() > self.overcurrent_limit
     }
 
     pub fn set_overcurrent_limit(&mut self, limit: f32) {
@@ -112,7 +112,9 @@ impl FeedbackArbitrator {
     }
     pub fn update_hall(&mut self, result: Result<RotorFeedback, RotorFeedbackFault>, pattern: u8) {
         self.hall_feedback = Some(result);
-        self.hall_pattern = pattern;
+        if (1..=6).contains(&pattern) {
+            self.hall_pattern = pattern;
+        }
     }
 
     pub fn update_encoder(&mut self, result: Result<RotorFeedback, RotorFeedbackFault>) {

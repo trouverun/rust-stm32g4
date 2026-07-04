@@ -20,6 +20,9 @@ enum StepResult {
     RampDown { pm_flux_linkage: Option<f32> }
 }
 
+const MIN_SOLVE_SAMPLES: u32 = 1000;
+
+#[derive(Clone, Copy)]
 pub struct OfflineEstimatorConfig {
     pub settle_time_s: f32,
     pub test_time_s: f32,
@@ -69,7 +72,7 @@ enum OfflineEstimatorState {
         pending_fault: Option<EstimationStepFault>,
         ran_s: f32,
         latched_i_q: Option<f32>,
-        ramp_duation_s: f32
+        ramp_duration_s: f32
     },
     Failure{fault: EstimationStepFault},
     Done
@@ -105,7 +108,7 @@ impl OfflineEstimatorState {
                 lse.accumulate(data.measured_i_dq.d, data.u_dq.d);
                 *ran_s += dt;
                 if *ran_s >= config.test_time_s {
-                    let resistance = lse.solve(1000)?;
+                    let resistance = lse.solve(MIN_SOLVE_SAMPLES)?;
                     let result = Some(StepResult::EstimateR {
                         resistance,
                         next: Self::EstL {
@@ -135,7 +138,7 @@ impl OfflineEstimatorState {
                 *voltage_sign *= -1.0;
                 *ran_s += dt;
                 if *ran_s >= config.test_time_s {
-                    let d_inductance = lse.solve(1000)?;
+                    let d_inductance = lse.solve(MIN_SOLVE_SAMPLES)?;
                     let result = Some(StepResult::EstimateL {
                         d_inductance,
                         next: Self::TuningRequired { resistance: *resistance },
@@ -164,13 +167,13 @@ impl OfflineEstimatorState {
                 
                 *ran_s += dt;
                 if *ran_s >= config.max_spin_time_s || lse.get_num_data() > 10000 {
-                    let pm_flux_linkage = lse.solve(1000);
+                    let pm_flux_linkage = lse.solve(MIN_SOLVE_SAMPLES);
                     let result = match pm_flux_linkage {
                         Ok(pmf) => {
                             Some(StepResult::EstimateF {
                                 next: Self::RampDown { 
                                     pm_flux_linkage: Some(pmf), ran_s: 0.0, pending_fault: None, 
-                                    latched_i_q: *latched_i_q, ramp_duation_s: *ran_s
+                                    latched_i_q: *latched_i_q, ramp_duration_s: *ran_s
                                 }
                             })
                         }
@@ -179,7 +182,7 @@ impl OfflineEstimatorState {
                             Some(StepResult::EstimateF {
                                 next: Self::RampDown { 
                                     pm_flux_linkage: None, ran_s: 0.0, pending_fault: Some(e),
-                                    latched_i_q: *latched_i_q, ramp_duation_s: *ran_s
+                                    latched_i_q: *latched_i_q, ramp_duration_s: *ran_s
                                 }
                             })
                         }
@@ -189,9 +192,9 @@ impl OfflineEstimatorState {
                     Ok(None)
                 }
             }
-            Self::RampDown { pm_flux_linkage, pending_fault, ran_s, ramp_duation_s, .. } => {
+            Self::RampDown { pm_flux_linkage, pending_fault, ran_s, ramp_duration_s, .. } => {
                 *ran_s += dt;
-                if *ran_s >= *ramp_duation_s{
+                if *ran_s >= *ramp_duration_s{
                     if let Some(fault) = *pending_fault {
                         Err(fault)
                     } else {
@@ -281,8 +284,8 @@ impl OfflineMotorEstimator {
                     theta: input.theta,
                 }
             },
-            OfflineEstimatorState::RampDown { ran_s, latched_i_q, ramp_duation_s, .. } => {
-                let ramp = (1.0 - ran_s / (*ramp_duation_s + 1e-5)).clamp(0.0, 1.0);
+            OfflineEstimatorState::RampDown { ran_s, latched_i_q, ramp_duration_s, .. } => {
+                let ramp = (1.0 - ran_s / (*ramp_duration_s + 1e-5)).clamp(0.0, 1.0);
                 let i_q = if let Some(val) = latched_i_q {
                     ramp * (*val)
                 } else {
@@ -316,7 +319,7 @@ impl OfflineMotorEstimator {
         matches!(self.state, OfflineEstimatorState::TuningRequired { .. })
     }
 
-    pub fn acnkowledge_unwind_request(&mut self) {
+    pub fn acknowledge_unwind_request(&mut self) {
         self.should_unwind_controller = false;
     }
 
@@ -450,7 +453,7 @@ mod test {
 
             if estimator.should_unwind_controller() {
                 foc.clear_windup();
-                estimator.acnkowledge_unwind_request();
+                estimator.acknowledge_unwind_request();
             } else if estimator.should_tune_controller() {
                 let pi_gains = compute_current_pi_controller_gains::<50>(
                     estimator.get_estimate(), pwm_freq_hz

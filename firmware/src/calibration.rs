@@ -1,5 +1,4 @@
 use crate::boards::PWM_FREQ;
-use crate::types::{CalibrationPhase, CalibrationRunner};
 use field_oriented::{
     AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibrationFault, HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig, OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
 };
@@ -39,23 +38,74 @@ pub enum StageResult {
     Failure { cause: CalibrationFailureCause },
 }
 
+#[derive(Clone, Copy, defmt::Format)]
+pub enum CalibrationPhase {
+    EncoderZeroing { duration_waited_s: f32, reset_sent: bool },
+    HallCalibration { time_passed_s: f32 },
+    MotorEstimation,
+    WaitingHallCompletion,
+    WaitingTuning,
+    Done,
+}
+
+pub struct CalibrationConfig {
+    pub encoder_zero_request_s: f32,
+    pub encoder_zero_timeout_s: f32,
+    pub hall_settle_s: f32,
+    pub hall_timeout_s: f32,
+    pub estimator: OfflineEstimatorConfig,
+}
+
+impl Default for CalibrationConfig {
+    fn default() -> Self {
+        Self {
+            encoder_zero_request_s: 3.0,
+            encoder_zero_timeout_s: 5.0,
+            hall_settle_s: 3.0,
+            hall_timeout_s: 30.0,
+            estimator: OfflineEstimatorConfig {
+                dt: DT,
+                settle_time_s: 3.0,
+                test_time_s: 5.0,
+                max_spin_time_s: 15.0,
+                min_spin_omega: 250.0,
+            },
+        }
+    }
+}
+
+pub struct CalibrationRunner {
+    pub num_pole_pairs: u8,
+    pub hall_calibrator: HallCalibrator,
+    pub motor_estimator: OfflineMotorEstimator,
+    pub phase: CalibrationPhase,
+    config: CalibrationConfig,
+}
+
+impl StageResult {
+    pub fn clears_windup(&self) -> bool {
+        matches!(
+            self,
+            StageResult::HallCalibration { .. }
+                | StageResult::UnwindRequest
+                | StageResult::MotorParameters { .. }
+                | StageResult::Failure { .. }
+        )
+    }
+}
+
 const DT: f32 = 1.0 / PWM_FREQ.0 as f32;
 impl CalibrationRunner {
     pub fn new(num_pole_pairs: u8) -> Self {
-        let hall_calibrator = HallCalibrator::new(3.0);
-        let cfg = OfflineEstimatorConfig {
-            dt: 1.0 / PWM_FREQ.0 as f32,
-            settle_time_s: 3.0,
-            test_time_s: 5.0,
-            max_spin_time_s: 15.0,
-            min_spin_omega: 250.0,
-        };
-        let motor_estimator = OfflineMotorEstimator::new(cfg, num_pole_pairs);
+        let config = CalibrationConfig::default();
+        let hall_calibrator = HallCalibrator::new(config.hall_settle_s, DT);
+        let motor_estimator = OfflineMotorEstimator::new(config.estimator, num_pole_pairs);
         Self {
             num_pole_pairs,
             hall_calibrator,
             motor_estimator,
             phase: CalibrationPhase::EncoderZeroing { duration_waited_s: 0.0, reset_sent: false },
+            config,
         }
     }
 
@@ -77,9 +127,9 @@ impl CalibrationRunner {
                         q: 0.0,
                     }),
                 };
-                if *duration_waited_s >= 5.0 {
+                if *duration_waited_s >= self.config.encoder_zero_timeout_s {
                     result = Some(StageResult::Failure { cause: CalibrationFailureCause::Timeout })
-                } else if *duration_waited_s >= 3.0 && !*reset_sent {
+                } else if *duration_waited_s >= self.config.encoder_zero_request_s && !*reset_sent {
                     result = Some(StageResult::ZeroEncoderRequest);
                     *reset_sent = true;
                 }
@@ -87,7 +137,7 @@ impl CalibrationRunner {
             }
             CalibrationPhase::HallCalibration { time_passed_s } => {
                 *time_passed_s += DT;
-                if *time_passed_s > 30.0 {
+                if *time_passed_s > self.config.hall_timeout_s {
                     let result = StageResult::Failure { cause: CalibrationFailureCause::Timeout };
                     let output = self.idle_output(inputs);
                     (output, Some(result))
@@ -99,8 +149,7 @@ impl CalibrationRunner {
                     let output = self.idle_output(inputs);
                     (output, Some(result))
                 } else {
-                    const PWM_FREQ_HZ: u32 = PWM_FREQ.0;
-                    match self.hall_calibrator.calibration_step::<PWM_FREQ_HZ>(inputs.hall_pattern, inputs.target_omega) {
+                    match self.hall_calibrator.calibration_step(inputs.hall_pattern, inputs.target_omega) {
                         Ok(theta) => {
                             let output = CalibrationOutput {
                                 angle_type: AngleType::Electrical,
@@ -137,7 +186,7 @@ impl CalibrationRunner {
                     });
                     (output, result)
                 } else if self.motor_estimator.should_unwind_controller() {
-                    self.motor_estimator.acnkowledge_unwind_request();
+                    self.motor_estimator.acknowledge_unwind_request();
                     let output = self.idle_output(inputs);
                     (output, Some(StageResult::UnwindRequest))
                 } else if self.motor_estimator.should_tune_controller() {

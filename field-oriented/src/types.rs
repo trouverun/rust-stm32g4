@@ -8,7 +8,7 @@ pub enum AngleType {
 pub enum RotorFeedbackFault {
     NotCalibrated,
     NoResponse,
-    ErroneusValue
+    ErroneousValue
 }
 
 #[derive(Clone, Copy)]

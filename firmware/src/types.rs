@@ -1,6 +1,6 @@
-use crate::calibration::CalibrationFailureCause;
+use crate::calibration::{CalibrationFailureCause, CalibrationPhase, CalibrationRunner};
 use crate::memory::MemoryFault;
-use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, HallCalibrator, OfflineMotorEstimator, PITuningFault};
+use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuningFault};
 use defmt::{Format, Formatter, write, info};
 
 #[derive(Clone, Copy, defmt::Format)]
@@ -113,23 +113,7 @@ pub enum Command {
     EnableTorqueControl,
     EnableVelocityControl,
     AssertFault { cause: FaultCause },
-}
-
-#[derive(Clone, Copy, defmt::Format)]
-pub enum CalibrationPhase {
-    EncoderZeroing { duration_waited_s: f32, reset_sent: bool },
-    HallCalibration { time_passed_s: f32 },
-    MotorEstimation,
-    WaitingHallCompletion,
-    WaitingTuning,
-    Done,
-}
-
-pub struct CalibrationRunner {
-    pub num_pole_pairs: u8,
-    pub hall_calibrator: HallCalibrator,
-    pub motor_estimator: OfflineMotorEstimator,
-    pub phase: CalibrationPhase,
+    ClearFault
 }
 
 pub enum OperatingMode {
@@ -139,7 +123,7 @@ pub enum OperatingMode {
     VelocityControl,
     Fault {
         write_index: usize,
-        trace: [FaultCause; 16],
+        trace: [FaultCause; 8],
         /// Set of faults already in `trace`, keyed by `FaultCause::dedup_bit`
         seen: u32,
     },
@@ -181,7 +165,7 @@ impl OperatingMode {
                 return;
             }
             (_, Command::AssertFault { cause }) => {
-                let mut trace = [FaultCause::Empty; 16];
+                let mut trace = [FaultCause::Empty; 8];
                 trace[0] = cause;
                 OperatingMode::Fault { write_index: 1, trace, seen: cause.dedup_bit() }
             }
@@ -199,6 +183,57 @@ impl OperatingMode {
         };
         *self = new_state;
     }
+
+    pub fn foc_gate(&self) -> FocGate {
+        match self {
+            OperatingMode::Calibration { calibrator } => FocGate {
+                // Wait phases must not step the calibration state machine:
+                active: !matches!(
+                    calibrator.phase,
+                    CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
+                ),
+                // Encoder zeroing and hall calibration don't use rotor feedback:
+                feedback_optional: matches!(
+                    calibrator.phase,
+                    CalibrationPhase::EncoderZeroing { .. } | CalibrationPhase::HallCalibration { .. }
+                ),
+            },
+            OperatingMode::TorqueControl | OperatingMode::VelocityControl => FocGate {
+                active: true,
+                feedback_optional: false,
+            },
+            _ => FocGate {
+                active: false,
+                feedback_optional: false,
+            },
+        }
+    }
+
+    pub fn fault_trace(&self) -> Option<[FaultCause; 8]> {
+        match self {
+            OperatingMode::Fault { trace, .. } => Some(*trace),
+            _ => None,
+        }
+    }
+
+    /// Wire encoding for the `Heartbeat.mode` CAN signal. Must match the
+    /// `CM_` mapping in dbc/servo.dbc.
+    pub fn encode(&self) -> u8 {
+        match self {
+            OperatingMode::Idle => 0,
+            OperatingMode::Calibration { .. } => 1,
+            OperatingMode::TorqueControl => 2,
+            OperatingMode::VelocityControl => 3,
+            OperatingMode::Fault { .. } => 4,
+        }
+    }
+}
+
+/// Whether the FOC loop should run, and whether it needs valid rotor feedback.
+#[derive(Clone, Copy)]
+pub struct FocGate {
+    pub active: bool,
+    pub feedback_optional: bool,
 }
 
 pub struct BoardStatus {

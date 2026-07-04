@@ -16,8 +16,8 @@ impl Lse {
     pub fn accumulate(&mut self, x: f32, y: f32) {
         let xy = x * y;
         let xx = x * x;
-        let xy_ok = f32::MIN < self.xy_sum + xy && self.xy_sum + xy < f32::MAX;
-        let xx_ok = f32::MIN < self.xx_sum + xx && self.xx_sum + xx < f32::MAX;
+        let xy_ok = (self.xy_sum + xy).is_finite();
+        let xx_ok = (self.xx_sum + xx).is_finite();
         if  xy_ok && xx_ok {
             self.xy_sum += xy;
             self.xx_sum += xx;

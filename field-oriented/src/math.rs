@@ -1,7 +1,31 @@
 use super::types::*;
+use core::f32::consts::{PI, TAU};
 
 /// = sqrt(3)/2
-const SQRT3_2: f32 = 0.86602540378; 
+const SQRT3_2: f32 = 0.86602540378;
+
+/// Smallest signed difference `a - b` mapped to `(-PI, PI]`
+pub(crate) fn wrapped_diff(a: f32, b: f32) -> f32 {
+    let d = a - b;
+    if d > PI {
+        d - TAU
+    } else if d < -PI {
+        d + TAU
+    } else {
+        d
+    }
+}
+
+/// Wrap an angle within one turn of range to `[0, TAU)`
+pub(crate) fn wrap_to_2pi(angle: f32) -> f32 {
+    if angle >= TAU {
+        angle - TAU
+    } else if angle < 0.0 {
+        angle + TAU
+    } else {
+        angle
+    }
+}
 
 pub(crate) fn forward_clarke(vals: PhaseValues) -> AlphaBeta {
     AlphaBeta {

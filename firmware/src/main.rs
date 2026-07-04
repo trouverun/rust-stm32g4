@@ -8,6 +8,7 @@ mod boards;
 mod bsp;
 mod calibration;
 mod can;
+mod control;
 mod memory;
 mod types;
 mod utils;
@@ -24,17 +25,16 @@ mod app {
         PwmOutput, Watchdog
     };
     use crate::calibration::StageResult;
-    use crate::types::{CalibrationPhase, Command, *};
+    use crate::control::{foc_step, FocStepInputs};
+    use crate::types::{Command, *};
     use crate::types::{BoardStatus, OperatingMode};
     use crate::utils::{PhaseCurrentFilter, FeedbackArbitrator};
-    use crate::{
-        calibration::{CalibrationInputs},
-        types::ButtonState,
-    };
+    use crate::types::ButtonState;
     use defmt::info;
     use defmt_rtt as _;
     use embassy_stm32::time::Hertz;
-    use crate::can::messages::{MotorCurrents, MotorCurrentsInit, RotorEstimates, RotorEstimatesInit, EncoderReading, EncoderReadingInit};
+    use crate::can::messages::{Messages, MotorCurrents, MotorCurrentsInit, RotorEstimates, RotorEstimatesInit, EncoderReading, EncoderReadingInit, Fault, FaultInit, Heartbeat, HeartbeatInit};
+    use embedded_can::Id;
     use crate::can::periodic::{Periodic, Slot};
     use crate::can::transport::IntoFrame;
     use embassy_stm32::can::{
@@ -43,7 +43,8 @@ mod app {
     use embassy_stm32::interrupt::typelevel::Handler;
     use embassy_stm32::{peripherals::TIM2, rcc};
     use field_oriented::{
-        AngleType, ConstantMotorParameters, ControllerParameters, FOC, FocConfig, FocInput, FocInputType, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate, PhaseValues, RotorFeedback, compute_current_pi_controller_gains
+        ConstantMotorParameters, ControllerParameters, FOC, FocConfig, HasRotorFeedback,
+        MotorParamEstimator, MotorParamsEstimate, compute_current_pi_controller_gains
     };
     use rtic_monotonics::stm32::{ExtU64, Tim2 as Mono};
     use rtic_monotonics::Monotonic;
@@ -95,7 +96,7 @@ mod app {
         pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
         let mut adc_feedback = bsp::AdcFeedback::new(adc_mappings);
         adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
-        let mut hall_feedback = bsp::HallFeedback::new(hall_mappings, 1000.0);
+        let mut hall_feedback = bsp::HallFeedback::new(hall_mappings, 10_000, 1000.0);
         let amt_encoder = bsp::AmtEncoder::new(encoder_mappings, 1000.0);
         let acceleration = bsp::Acceleration::new(accel_mappings);
         let mut memory = bsp::Memory::new(memory_mappings);
@@ -145,7 +146,7 @@ mod app {
         let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
         Mono::start(rcc::frequency::<TIM2>().0, token);
         can_tx_task::spawn().unwrap();
-        //can_rx_task::spawn().unwrap();
+        can_rx_task::spawn().unwrap();
         debug_print::spawn().unwrap();
 
         (Shared {
@@ -193,179 +194,73 @@ mod app {
         ]
     )]
     fn currents_adc_isr(mut cx: currents_adc_isr::Context) {
-        let mut voltage_hexagon_sector = 0;
-
         // if FOC ISR (sampled phase currents):
         if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
             cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
 
-            cx.shared.mode.lock(|mode| {
-                // Feed watchdog:
-                cx.shared.watchdog.lock(|wd| {
-                    if wd.is_faulted() && wd.fault_acknowledged() {
-                        wd.acknowledge_fault();
-                        mode.on_command(Command::AssertFault { cause: FaultCause::Watchdog });
-                    } else {
-                        wd.feed()
-                    }
-                });     
-
-                // Check for overcurrent:
-                cx.local.current_filter.update(phase_currents);
-                let overcurrent = cx.local.current_filter.check_overcurrent();
-                if overcurrent {
-                    mode.on_command(Command::AssertFault {
-                        cause: FaultCause::Overcurrent,
-                    });
-                }
-
-                // Read board and rotor feedback:
-                let dc_bus_reading = cx.shared.board_status.lock(|bs| bs.dc_bus_voltage);
-                let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
-                    (fa.read(), fa.get_hall_pattern())
-                });
-                let mut rotor_feedback_fault = rotor_feedback.is_err();
-                // Rotor feedback being invalid is not an issue during encoder zeroing or hall calibration:
-                if let OperatingMode::Calibration { calibrator, .. } = mode {
-                    let invalid_ok = matches!(calibrator.phase, CalibrationPhase::EncoderZeroing {..} | CalibrationPhase::HallCalibration {..});
-                    rotor_feedback_fault = rotor_feedback_fault && !invalid_ok;
-                }
-
-                let calibrating = match mode {
-                    // The calibration state machine should not be stepped in the wait phases:
-                    OperatingMode::Calibration { calibrator } => !matches!(
-                        calibrator.phase,
-                        CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
-                    ),
-                    _ => false,
-                };
-                let controlling = matches!(mode, OperatingMode::TorqueControl | OperatingMode::VelocityControl);
-                let active = calibrating || controlling;
-
-                // Inactive or blocked from running, set idle outputs:
-                if !active || overcurrent || rotor_feedback_fault || dc_bus_reading.is_none() {
-                    cx.shared.pwm_output.lock(|pwm| {
-                        pwm.set_duty_cycles(PhaseValues::safe())
-                    });
+            // Gather inputs:
+            let watchdog_fault = cx.shared.watchdog.lock(|wd| {
+                if wd.is_faulted() && !wd.fault_acknowledged() {
+                    wd.acknowledge_fault();
+                    true
                 } else {
-                    // During encoder zeroing or hall calibration there may be no valid rotor feedback, 
-                    // but feedback is not used anyways, so we can safely default to zero values:
-                    let RotorFeedback { angle_type, theta, omega } = rotor_feedback.ok()
-                        .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
-                    let dc_bus_voltage = dc_bus_reading.expect("Already checked for None above");
-                    
-                    let mut calibration_result = None;
-                    cx.shared.motor_parameters.lock(|active_params| {
-                        let mut estimator: &mut dyn MotorParamEstimator = active_params;
-
-                        // Determine FOC inputs based on operating mode (calibration or normal):
-                        let (angle_type, theta, foc_command) = if let OperatingMode::Calibration{ calibrator } = mode {
-                            let (target_voltage, target_current, target_omega) = cx.shared.config.lock(|cfg| {
-                                (cfg.calibration_voltage, cfg.calibration_current, cfg.calibration_omega)
-                            });
-                            let inputs = CalibrationInputs {
-                                dc_bus_voltage,
-                                angle_type: angle_type,
-                                theta: theta,
-                                hall_pattern,
-                                target_voltage,
-                                target_current,
-                                target_omega,
-                            };
-                            let (output, stage_result) = calibrator.step(inputs);
-                            estimator = calibrator.get_estimator(); // Override with calibrator's estimator
-                            calibration_result = stage_result;
-                            (output.angle_type, output.theta, output.foc_command)
-                        } else {
-                            let torque = cx.shared.runtime_values.lock(|rtv| rtv.target_torque);
-                            (angle_type, theta, FocInputType::TargetTorque(torque))
-                        };
-
-                        // Do the FOC computations:
-                        let foc_input = FocInput {
-                            command: foc_command,
-                            dc_bus_voltage,
-                            angle_type,
-                            theta,
-                            omega,
-                            phase_currents,
-                        };
-                        let foc_result = cx.shared.foc.lock(|foc| {
-                            foc.compute(foc_input, estimator.get_estimate(), cx.local.acceleration)
-                        });
-
-                        // Apply the computed PWM duty cycles:
-                        let mut fault_command = None;
-                        cx.shared.pwm_output.lock(|pwm| match foc_result {
-                            Ok(result) => {
-                                pwm.set_duty_cycles(result.duty_cycles);
-                                if calibration_result.is_none() {
-                                    estimator.after_foc_iteration(result);
-                                }
-                                voltage_hexagon_sector = result.voltage_hexagon_sector;
-                                cx.shared.current_loop_snapshot.lock(|cs| {
-                                    cs.id_meas = result.measured_i_dq.d;
-                                    cs.iq_meas = result.measured_i_dq.q;
-                                    cs.id_target = result.target_i_dq.d;
-                                    cs.iq_target = result.target_i_dq.q;
-                                });
-                            }
-                            Err(fault) => {
-                                pwm.set_duty_cycles(PhaseValues::safe());
-                                cx.shared.current_loop_snapshot.lock(|cs| {
-                                    cs.id_meas = 0.0;
-                                    cs.iq_meas = 0.0;
-                                    cs.id_target = 0.0;
-                                    cs.id_target = 0.0;
-                                });
-                                fault_command = Some(Command::AssertFault { cause: fault.into() });
-                            }
-                        });
-                        if let Some(command) = fault_command {
-                            mode.on_command(command);
-                        }
-                    });
-
-                    // Process calibration stage results:
-                    if calibration_result.is_some() {
-                        cx.shared.foc.lock(|foc| {
-                            match calibration_result {
-                                Some(StageResult::ZeroEncoderRequest) => {
-                                    let _ = zero_encoder::spawn();
-                                }
-                                Some(StageResult::HallCalibration { angle_table }) => {
-                                    // Do EEPROM write outside this ISR:
-                                    let _ = update_hall_table::spawn(angle_table);
-                                    foc.clear_windup();
-                                }
-                                Some(StageResult::UnwindRequest) => {
-                                    foc.clear_windup();
-                                }
-                                Some(StageResult::TuningRequest { params_estimate} ) => {
-                                    // Do tuning routine and EEPROM write outside this ISR:
-                                    let _ = tune_pi::spawn(params_estimate);
-                                }
-                                Some(StageResult::MotorParameters { motor_params }) => {
-                                    // Do EEPROM write outside this ISR:
-                                    let _ = update_motor_params::spawn(motor_params);
-                                    foc.clear_windup();
-                                }
-                                Some(StageResult::Failure { cause }) => {
-                                    mode.on_command(Command::AssertFault { cause: cause.into() });
-                                    foc.clear_windup();
-                                }
-                                _ => {} // Calibration stage still in progress
-                            }
-                        });
-                    }
-                }    
+                    wd.feed();
+                    false
+                }
             });
+            cx.local.current_filter.update(phase_currents);
+            let overcurrent = cx.local.current_filter.check_overcurrent();
+            let dc_bus_reading = cx.shared.board_status.lock(|bs| bs.dc_bus_voltage);
+            let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
+                (fa.read(), fa.get_hall_pattern())
+            });
+            let (calibration_voltage, calibration_current, calibration_omega) =
+                cx.shared.config.lock(|cfg| {
+                    (cfg.calibration_voltage, cfg.calibration_current, cfg.calibration_omega)
+                });
+            let target_torque = cx.shared.runtime_values.lock(|rtv| rtv.target_torque);
+
+            // FOC compute:
+            let inputs = FocStepInputs {
+                phase_currents,
+                watchdog_fault,
+                overcurrent,
+                dc_bus_reading,
+                rotor_feedback,
+                hall_pattern,
+                calibration_voltage,
+                calibration_current,
+                calibration_omega,
+                target_torque,
+            };
+            let outcome = (cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
+                |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
+            );
+
+            // Apply outputs:
+            cx.shared.pwm_output.lock(|pwm| pwm.set_duty_cycles(outcome.duty_cycles));
+            cx.shared.current_loop_snapshot.lock(|cs| *cs = outcome.snapshot);
+
+            // EEPROM writes and tuning happen outside this ISR:
+            match outcome.stage_result {
+                Some(StageResult::ZeroEncoderRequest) => {
+                    let _ = zero_encoder::spawn();
+                }
+                Some(StageResult::HallCalibration { angle_table }) => {
+                    let _ = update_hall_table::spawn(angle_table);
+                }
+                Some(StageResult::TuningRequest { params_estimate }) => {
+                    let _ = tune_pi::spawn(params_estimate);
+                }
+                Some(StageResult::MotorParameters { motor_params }) => {
+                    let _ = update_motor_params::spawn(motor_params);
+                }
+                _ => {}
+            }
 
             // Always sample something to keep the ADC EOC ISRs running:
-            cx.local.adc_feedback.sample_sector(voltage_hexagon_sector);
-            cx.shared.debug_mappings.lock(|dm| {
-                dm.la_a.set_low();
-            });
+            cx.local.adc_feedback.sample_sector(outcome.sector);
+            cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
         }
 
         // if board status ISR (sampled DC bus voltage and board temperature):
@@ -522,7 +417,7 @@ mod app {
         })
     }
 
-    #[task(priority = 1, local = [can_tx], shared = [current_loop_snapshot, feedback_arbitrator])]
+    #[task(priority = 1, local = [can_tx], shared = [current_loop_snapshot, feedback_arbitrator, mode, board_status])]
     async fn can_tx_task(mut cx: can_tx_task::Context) {
         if Periodic::COUNT == 0 {
             core::future::pending::<()>().await;
@@ -585,6 +480,31 @@ mod app {
                             enc_valid,
                         }).ok().map(|m| m.into_frame())
                     }
+                    Periodic::Fault => {
+                        cx.shared.mode.lock(|m| m.fault_trace()).and_then(|t| {
+                            Fault::try_from(FaultInit {
+                                fault_0: t[0].encode(), 
+                                fault_1: t[1].encode(),
+                                fault_2: t[2].encode(), 
+                                fault_3: t[3].encode(),
+                                fault_4: t[4].encode(), 
+                                fault_5: t[5].encode(),
+                                fault_6: t[6].encode(), 
+                                fault_7: t[7].encode(),
+                            }).ok()
+                        }).map(|m| m.into_frame())
+                    }
+                    Periodic::Heartbeat => {
+                        let mode = cx.shared.mode.lock(|m| m.encode());
+                        let (vbus, temp) = cx.shared.board_status.lock(|bs| (bs.dc_bus_voltage, bs.temperature));
+                        Heartbeat::try_from(HeartbeatInit {
+                            mode,
+                            dc_bus_voltage: vbus.unwrap_or(0.0),
+                            temperature: temp.unwrap_or(0.0),
+                            dc_bus_valid: vbus.is_some(),
+                            temp_valid: temp.is_some(),
+                        }).ok().map(|m| m.into_frame())
+                    }
                 };
                 if let Some(f) = frame {
                     cx.local.can_tx.write(f).await;
@@ -597,7 +517,24 @@ mod app {
     #[task(priority = 1, local = [can_rx])]
     async fn can_rx_task(mut cx: can_rx_task::Context) {
         loop {
-            let _ = cx.local.can_rx.receive().await;
+            let frame = match cx.local.can_rx.receive().await {
+                Ok(envelope) => envelope.frame,
+                Err(_) => continue,
+            };
+            let id = match frame.id() {
+                Id::Standard(s) => s.as_raw() as u32,
+                Id::Extended(_) => continue,
+            };
+            match Messages::from_can_message(id, frame.data()) {
+                Ok(Messages::Setpoint(_msg)) => {
+                }
+                Ok(Messages::ControlCommand(_msg)) => {
+                }
+                Ok(Messages::ConfigWrite(_msg)) => {
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
         }
     }
 

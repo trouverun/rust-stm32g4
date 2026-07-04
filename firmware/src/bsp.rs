@@ -103,7 +103,7 @@ impl AdcFeedback {
                 Exten::RISING_EDGE,
             )
             .using_sampletimes(&[
-                (vbus_channel.get_hw_channel(), SampleTime::CYCLES6_5),
+                (tboard_channel.get_hw_channel(), SampleTime::CYCLES6_5),
                 (v_channel.get_hw_channel(), SampleTime::CYCLES6_5),
                 (w_channel.get_hw_channel(), SampleTime::CYCLES6_5),
             ])
@@ -378,11 +378,11 @@ pub struct HallFeedback {
 
 #[cfg(feature = "hall-feedback")]
 impl HallFeedback {
-    pub fn new(mappings: HallFeedbackMappings, cutoff_hz: f32) -> Self {
+    pub fn new(mappings: HallFeedbackMappings, sample_rate_hz: u32, cutoff_hz: f32) -> Self {
         use embassy_stm32::timer::low_level::RoundTo;
 
         let read_timer = mappings.read_timer;
-        read_timer.set_frequency(Hertz(10_000), RoundTo::Faster);
+        read_timer.set_frequency(Hertz(sample_rate_hz), RoundTo::Faster);
         read_timer.enable_update_interrupt(true);
         read_timer.generate_update_event();
         read_timer.start();
@@ -396,7 +396,7 @@ impl HallFeedback {
             state: HallInterpolationState::Stationary,
             prev_pattern: 0,
             prev_dir: 0,
-            filter: LowPassFilter::new(PWM_FREQ.0 as f32, cutoff_hz),
+            filter: LowPassFilter::new(sample_rate_hz as f32, cutoff_hz),
         }
     }
 
@@ -468,14 +468,15 @@ impl HallFeedback {
 #[cfg(feature = "hall-feedback")]
 impl HasRotorFeedback for HallFeedback {
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
-        // Todo: return Result so caller can deal with invalid patterns 000 and 111
-
         // Return fault if this has not been calibrated yet:
         let hall_pattern_to_theta = self.hall_pattern_to_theta.ok_or(RotorFeedbackFault::NotCalibrated)?;
         let forward_next = self.forward_next.ok_or(RotorFeedbackFault::NotCalibrated)?;
         let sector_span = self.sector_span.ok_or(RotorFeedbackFault::NotCalibrated)?;
 
         let raw_state = self.sensor.read_state();
+        if raw_state.pattern == 0 || raw_state.pattern == 7 {
+            return Err(RotorFeedbackFault::ErroneousValue);
+        }
         let dir = self.direction(forward_next, raw_state.prev_pattern, raw_state.pattern);
         let prev_idx = (raw_state.prev_pattern.wrapping_sub(1) as usize).min(5);
         let idx = (raw_state.pattern.wrapping_sub(1) as usize).min(5);
@@ -645,6 +646,10 @@ impl DoesFocMath for Acceleration {
     }
 
     fn sqrt(&mut self, val: f32) -> f32 {
+        if !val.is_normal() || val < 0.0 {
+            return 0.0
+        }
+
         // Pre-scale by 4^k to bring val into CORDIC range [0.027, 2.34]
         let mut x = val;
         let mut k: u32 = 0;
@@ -878,7 +883,7 @@ impl HasRotorFeedback for AmtEncoder {
         if let (Some(theta), Some(omega)) = (self.theta, self.omega) {
             Ok(RotorFeedback { angle_type: AngleType::Mechanical, theta, omega })
         } else {
-            Err(RotorFeedbackFault::ErroneusValue)
+            Err(RotorFeedbackFault::ErroneousValue)
         }
     }
 }
