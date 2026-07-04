@@ -1,4 +1,5 @@
 use crate::calibration::{CalibrationFailureCause, CalibrationPhase, CalibrationRunner};
+use crate::can::messages::OperatingModeRequestRequestedMode;
 use crate::memory::MemoryFault;
 use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuningFault};
 use defmt::{Format, Formatter, write, info};
@@ -107,13 +108,27 @@ impl From<MemoryFault> for FaultCause {
 #[derive(Clone, Copy, defmt::Format)]
 pub enum Command {
     Idle,
-    StartCalibration { num_pole_pairs: u8 },
+    StartCalibration,
     ResumeCalibration,
     FinishCalibration,
     EnableTorqueControl,
     EnableVelocityControl,
     AssertFault { cause: FaultCause },
-    ClearFault
+    ClearFault, 
+    NoOp
+}
+
+impl From<OperatingModeRequestRequestedMode> for Command {
+    fn from(value: OperatingModeRequestRequestedMode) -> Self {
+        match value {
+            OperatingModeRequestRequestedMode::Idle => Command::Idle,
+            OperatingModeRequestRequestedMode::Calibration => Command::StartCalibration,
+            OperatingModeRequestRequestedMode::TorqueControl => Command::EnableTorqueControl,
+            OperatingModeRequestRequestedMode::VelocityControl => Command::EnableVelocityControl,
+            OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
+            OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
+        }
+    }
 }
 
 pub enum OperatingMode {
@@ -155,7 +170,8 @@ impl OperatingMode {
     pub fn on_command(&mut self, command: Command) {
         info!("On command {}, state {}", command, &*self);
         let new_state = match (&mut *self, command) {
-            (OperatingMode::Fault { write_index, trace, seen }, Command::AssertFault { cause }) => {
+            (OperatingMode::Fault { write_index, trace, seen }, 
+                Command::AssertFault { cause }) => {
                 let bit = cause.dedup_bit();
                 if *seen & bit == 0 && *write_index < trace.len() {
                     *seen |= bit;
@@ -169,8 +185,9 @@ impl OperatingMode {
                 trace[0] = cause;
                 OperatingMode::Fault { write_index: 1, trace, seen: cause.dedup_bit() }
             }
-            (OperatingMode::Idle, Command::StartCalibration { num_pole_pairs } ) => {
-                OperatingMode::Calibration { calibrator: CalibrationRunner::new(num_pole_pairs) }
+            (_, Command::ClearFault) => OperatingMode::Idle,
+            (OperatingMode::Idle, Command::StartCalibration) => {
+                OperatingMode::Calibration { calibrator: CalibrationRunner::new() }
             }
             (OperatingMode::Idle, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
@@ -192,7 +209,7 @@ impl OperatingMode {
                     calibrator.phase,
                     CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
                 ),
-                // Encoder zeroing and hall calibration don't use rotor feedback:
+                // Encoder zeroing and hall calibration phases do not use rotor feedback:
                 feedback_optional: matches!(
                     calibrator.phase,
                     CalibrationPhase::EncoderZeroing { .. } | CalibrationPhase::HallCalibration { .. }
@@ -216,8 +233,6 @@ impl OperatingMode {
         }
     }
 
-    /// Wire encoding for the `Heartbeat.mode` CAN signal. Must match the
-    /// `CM_` mapping in dbc/servo.dbc.
     pub fn encode(&self) -> u8 {
         match self {
             OperatingMode::Idle => 0,
@@ -237,25 +252,35 @@ pub struct FocGate {
 }
 
 pub struct BoardStatus {
-    pub dc_bus_voltage: Option<f32>,
-    pub temperature: Option<f32>,
+    pub dc_bus_voltage_v: Option<f32>,
+    pub temperature_c: Option<f32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct FirmwareConfig {
-    pub calibration_voltage: f32,
-    pub calibration_current: f32,
+    pub dc_bus_min_voltage_v: f32,
+    pub dc_bus_max_voltage_v: f32,
+    pub calibration_voltage_v: f32,
+    pub calibration_current_a: f32,
     pub calibration_omega: f32,
-    pub current_limit: f32,
+    pub rated_current_limit_a: f32,
+    pub phase_current_limit_a: f32,
+    pub setpoint_timeout_ms: f32,
+    pub temp_max_c: f32
 }
 
 impl Default for FirmwareConfig {
     fn default() -> Self {
         Self {
-            calibration_voltage: 12.0,
-            calibration_current: 1.5,
+            dc_bus_min_voltage_v: 0.0,
+            dc_bus_max_voltage_v: 24.0,
+            calibration_voltage_v: 12.0,
+            calibration_current_a: 1.5,
             calibration_omega: 1.0,
-            current_limit: 0.0,
+            rated_current_limit_a: 0.0,
+            phase_current_limit_a: 0.0,
+            setpoint_timeout_ms: 50.0,
+            temp_max_c: 80.0
         }
     }
 }
@@ -276,10 +301,10 @@ impl Default for RuntimeValues {
 
 #[derive(Clone, Copy, Default)]
 pub struct CurrentLoopSnapshot {
-    pub iq_meas: f32,
-    pub id_meas: f32,
-    pub iq_target: f32,
-    pub id_target: f32,
+    pub iq_meas_a: f32,
+    pub id_meas_a: f32,
+    pub iq_target_a: f32,
+    pub id_target_a: f32,
 }
 
 #[derive(Clone, Copy)]

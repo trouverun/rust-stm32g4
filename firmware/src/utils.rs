@@ -52,11 +52,13 @@ pub struct FilteredPhases {
 
 pub struct PhaseCurrentFilter {
     filters: FilteredPhases,
-    overcurrent_limit: f32,
+    rated_current_limit_a: f32,
+    phase_current_limit_a: f32,
+    active_limit_a: f32
 }
 
 impl PhaseCurrentFilter {
-    pub fn new(lowpass_cutoff_hz: f32, overcurrent_limit: f32) -> Self {
+    pub fn new(lowpass_cutoff_hz: f32, rated_current_limit_a: f32, phase_current_limit_a: f32) -> Self {
         let filters = FilteredPhases {
             u: LowPassFilter::new(PWM_FREQ.0 as f32, lowpass_cutoff_hz),
             v: LowPassFilter::new(PWM_FREQ.0 as f32, lowpass_cutoff_hz),
@@ -64,7 +66,9 @@ impl PhaseCurrentFilter {
         };
         Self {
             filters,
-            overcurrent_limit,
+            rated_current_limit_a,
+            phase_current_limit_a,
+            active_limit_a: rated_current_limit_a
         }
     }
 
@@ -76,13 +80,15 @@ impl PhaseCurrentFilter {
     }
 
     pub fn check_overcurrent(&self) -> bool {
-        self.filters.u.filtered().abs() > self.overcurrent_limit
-            || self.filters.v.filtered().abs() > self.overcurrent_limit
-            || self.filters.w.filtered().abs() > self.overcurrent_limit
+        self.filters.u.filtered().abs() > self.active_limit_a
+            || self.filters.v.filtered().abs() > self.active_limit_a
+            || self.filters.w.filtered().abs() > self.active_limit_a
     }
 
-    pub fn set_overcurrent_limit(&mut self, limit: f32) {
-        self.overcurrent_limit = limit;
+    pub fn set_limits(&mut self, rated_current_limit_a: f32, phase_current_limit_a: f32) {
+        self.rated_current_limit_a = rated_current_limit_a;
+        self.phase_current_limit_a = phase_current_limit_a;
+        self.active_limit_a = rated_current_limit_a;
     }
 
     pub fn filtered(&self) -> PhaseValues {

@@ -69,8 +69,8 @@ pub const BOARD: super::BoardInfo = super::BoardInfo {
     opamp_gain: 15.0,
     vbus_divide_factor: 25.3589743589744,
     thermistor_scaling: super::ThermistorLinearScale {
-        slope: 45.7,
-        bias: 23.6,
+        slope_c_per_v: 45.7,
+        bias_c: 23.6,
     },
 };
 

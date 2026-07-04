@@ -4,13 +4,14 @@ use field_oriented::{
 };
 
 pub struct CalibrationInputs {
-    pub dc_bus_voltage: f32,
+    pub num_pole_pairs: Option<u8>,
+    pub dc_bus_voltage_v: f32,
     pub angle_type: AngleType,
     pub theta: f32,
     pub hall_pattern: u8,
-    pub target_voltage: f32,
-    pub target_current: f32,
-    pub target_omega: f32,
+    pub target_voltage_v: f32,
+    pub target_current_a: f32,
+    pub target_omega_rads: f32,
 }
 
 /// Outputs needed regardless of stage
@@ -96,12 +97,13 @@ impl StageResult {
 
 const DT: f32 = 1.0 / PWM_FREQ.0 as f32;
 impl CalibrationRunner {
-    pub fn new(num_pole_pairs: u8) -> Self {
+    pub fn new() -> Self {
         let config = CalibrationConfig::default();
         let hall_calibrator = HallCalibrator::new(config.hall_settle_s, DT);
-        let motor_estimator = OfflineMotorEstimator::new(config.estimator, num_pole_pairs);
+        // Pole pairs are synced from step inputs before any estimator use
+        let motor_estimator = OfflineMotorEstimator::new(config.estimator, 0);
         Self {
-            num_pole_pairs,
+            num_pole_pairs: 0,
             hall_calibrator,
             motor_estimator,
             phase: CalibrationPhase::EncoderZeroing { duration_waited_s: 0.0, reset_sent: false },
@@ -115,6 +117,12 @@ impl CalibrationRunner {
     }
 
     pub fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>) {
+        let Some(num_pole_pairs) = inputs.num_pole_pairs else {
+            let result = StageResult::Failure { cause: CalibrationFailureCause::MissingParameter };
+            return (self.idle_output(inputs), Some(result));
+        };
+        self.num_pole_pairs = num_pole_pairs;
+        self.motor_estimator.params.num_pole_pairs = Some(num_pole_pairs);
         match &mut self.phase {
             CalibrationPhase::EncoderZeroing { duration_waited_s, reset_sent } => {
                 *duration_waited_s += DT;
@@ -123,7 +131,7 @@ impl CalibrationRunner {
                     angle_type: AngleType::Electrical,
                     theta: 0.0,
                     foc_command: FocInputType::CalibrationCurrents(ClarkParkValue {
-                        d: inputs.target_current,
+                        d: inputs.target_current_a,
                         q: 0.0,
                     }),
                 };
@@ -149,13 +157,13 @@ impl CalibrationRunner {
                     let output = self.idle_output(inputs);
                     (output, Some(result))
                 } else {
-                    match self.hall_calibrator.calibration_step(inputs.hall_pattern, inputs.target_omega) {
+                    match self.hall_calibrator.calibration_step(inputs.hall_pattern, inputs.target_omega_rads) {
                         Ok(theta) => {
                             let output = CalibrationOutput {
                                 angle_type: AngleType::Electrical,
                                 theta,
                                 foc_command: FocInputType::CalibrationCurrents(ClarkParkValue {
-                                    d: inputs.target_current,
+                                    d: inputs.target_current_a,
                                     q: 0.0,
                                 }),
                             };
@@ -207,9 +215,9 @@ impl CalibrationRunner {
 
     fn motor_estimation_output(&mut self, inputs: CalibrationInputs) -> CalibrationOutput {
         let step_input = OfflineEstimatorInput {
-            dc_bus_voltage: inputs.dc_bus_voltage,
-            target_voltage: inputs.target_voltage,
-            target_current: inputs.target_current,
+            dc_bus_voltage: inputs.dc_bus_voltage_v,
+            target_voltage: inputs.target_voltage_v,
+            target_current: inputs.target_current_a,
             theta: inputs.theta,
         };
         let estimator_command = self.motor_estimator.get_command(step_input);

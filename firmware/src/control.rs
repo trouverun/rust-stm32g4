@@ -10,13 +10,13 @@ pub struct FocStepInputs {
     pub phase_currents: PhaseValues,
     pub watchdog_fault: bool,
     pub overcurrent: bool,
-    pub dc_bus_reading: Option<f32>,
+    pub dc_bus_reading_v: Option<f32>,
     pub rotor_feedback: Result<RotorFeedback, RotorFeedbackFault>,
     pub hall_pattern: u8,
-    pub calibration_voltage: f32,
-    pub calibration_current: f32,
-    pub calibration_omega: f32,
-    pub target_torque: f32,
+    pub calibration_voltage_v: f32,
+    pub calibration_current_a: f32,
+    pub calibration_omega_rads: f32,
+    pub target_torque_nm: f32,
 }
 
 pub struct FocStepOutcome {
@@ -56,7 +56,7 @@ pub fn foc_step(
 
     let gate = mode.foc_gate();
     let rotor_feedback_fault = inputs.rotor_feedback.is_err() && !gate.feedback_optional;
-    let Some(dc_bus_voltage) = inputs.dc_bus_reading else {
+    let Some(dc_bus_voltage_v) = inputs.dc_bus_reading_v else {
         return FocStepOutcome::safe();
     };
     if !gate.active || inputs.overcurrent || rotor_feedback_fault {
@@ -68,28 +68,30 @@ pub fn foc_step(
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
+    let num_pole_pairs = params.params.num_pole_pairs;
     let mut estimator: &mut dyn MotorParamEstimator = params;
     let mut stage_result = None;
     let (angle_type, theta, foc_command) = if let OperatingMode::Calibration { calibrator } = mode {
         let (output, result) = calibrator.step(CalibrationInputs {
-            dc_bus_voltage,
+            num_pole_pairs,
+            dc_bus_voltage_v,
             angle_type,
             theta,
             hall_pattern: inputs.hall_pattern,
-            target_voltage: inputs.calibration_voltage,
-            target_current: inputs.calibration_current,
-            target_omega: inputs.calibration_omega,
+            target_voltage_v: inputs.calibration_voltage_v,
+            target_current_a: inputs.calibration_current_a,
+            target_omega_rads: inputs.calibration_omega_rads,
         });
         estimator = calibrator.get_estimator();
         stage_result = result;
         (output.angle_type, output.theta, output.foc_command)
     } else {
-        (angle_type, theta, FocInputType::TargetTorque(inputs.target_torque))
+        (angle_type, theta, FocInputType::TargetTorque(inputs.target_torque_nm))
     };
 
     let foc_input = FocInput {
         command: foc_command,
-        dc_bus_voltage,
+        dc_bus_voltage: dc_bus_voltage_v,
         angle_type,
         theta,
         omega,
@@ -104,10 +106,10 @@ pub fn foc_step(
             FocStepOutcome {
                 duty_cycles: result.duty_cycles,
                 snapshot: CurrentLoopSnapshot {
-                    id_meas: result.measured_i_dq.d,
-                    iq_meas: result.measured_i_dq.q,
-                    id_target: result.target_i_dq.d,
-                    iq_target: result.target_i_dq.q,
+                    id_meas_a: result.measured_i_dq.d,
+                    iq_meas_a: result.measured_i_dq.q,
+                    id_target_a: result.target_i_dq.d,
+                    iq_target_a: result.target_i_dq.q,
                 },
                 sector: result.voltage_hexagon_sector,
                 stage_result: None,

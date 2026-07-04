@@ -36,8 +36,8 @@ pub const PWM_FREQ: Hertz = Hertz(20_000);
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
 
 pub struct ThermistorLinearScale {
-    pub slope: f32,
-    pub bias: f32,
+    pub slope_c_per_v: f32,
+    pub bias_c: f32,
 }
 
 pub struct BoardInfo {

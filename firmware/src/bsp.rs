@@ -40,7 +40,7 @@ const SHUNT_CONDUCTANCE_SIEMENS: f32 = 1000.0 / BOARD.shunt_resistance_mohm;
 const ADC_SCALER: f32 = ADC_VOLTAGE / ((1 << 12) - 1) as f32;
 const CURRENT_READING_SCALER: f32 = -ADC_SCALER * OPAMP_GAIN_RECIPROCAL * SHUNT_CONDUCTANCE_SIEMENS;
 const VBUS_READING_SCLAER: f32 = ADC_SCALER * BOARD.vbus_divide_factor;
-const TBOARD_READING_SCLAER: f32 = ADC_SCALER * BOARD.thermistor_scaling.slope;
+const TBOARD_READING_SCLAER: f32 = ADC_SCALER * BOARD.thermistor_scaling.slope_c_per_v;
 
 pub type BusVoltage = f32;
 pub type BoardTemperature = f32;
@@ -323,7 +323,7 @@ impl AdcFeedback {
     pub fn read_board_info(&self) -> Option<(BusVoltage, BoardTemperature)> {
         if self.adc_a.check_eoc() {
             let vbus = self.adc_a.read() as f32 * VBUS_READING_SCLAER;
-            let tboard = self.adc_b.read() as f32 * TBOARD_READING_SCLAER + BOARD.thermistor_scaling.bias;
+            let tboard = self.adc_b.read() as f32 * TBOARD_READING_SCLAER + BOARD.thermistor_scaling.bias_c;
             return Some((vbus, tboard));
         } else {
             return None;
