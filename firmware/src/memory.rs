@@ -10,21 +10,25 @@ pub enum MemoryFault {
 }
 
 /// An entry persisted in its own flash sector.
-/// `SECTOR` indexes sectors from the end of flash (0 = last sector) and must be unique
+/// `SECTOR` indexes sectors from the end of flash (0 = last sector) and must be unique.
+/// `VERSION` tags the serialized layout. Needs to be incremented whenever the type's
+/// fields change so records written by older firmware load as `None` instead of
+/// decoding into garbage.
 pub trait Stored: serde::Serialize + serde::de::DeserializeOwned {
     const SECTOR: usize;
+    const VERSION: u16;
 }
 
-impl Stored for FirmwareConfig       { const SECTOR: usize = 3; }
-impl Stored for [f32; 6]             { const SECTOR: usize = 2; } // hall sensor calibrations
-impl Stored for MotorParamsEstimate  { const SECTOR: usize = 1; }
-impl Stored for ControllerParameters { const SECTOR: usize = 0; }
+impl Stored for FirmwareConfig       { const SECTOR: usize = 3; const VERSION: u16 = 2; }
+impl Stored for [f32; 6]             { const SECTOR: usize = 2; const VERSION: u16 = 1; } // hall sensor calibrations
+impl Stored for MotorParamsEstimate  { const SECTOR: usize = 1; const VERSION: u16 = 1; }
+impl Stored for ControllerParameters { const SECTOR: usize = 0; const VERSION: u16 = 1; }
 
 pub(crate) const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 pub(crate) const SECTOR_SIZE: u32 = MAX_ERASE_SIZE as u32;
 const TOTAL_FLASH_SECTORS: usize = FLASH_SIZE / MAX_ERASE_SIZE;
 
-/// Scratch-buffer size, in **bytes**, for one record (postcard payload + 4-byte CRC).
+/// Scratch-buffer size, in **bytes**, for one record (4-byte header + postcard payload + 4-byte CRC).
 /// Must be a multiple of the flash write granularity and fit within a sector.
 pub(crate) const MAX_RECORD_BYTES: usize = 64;
 

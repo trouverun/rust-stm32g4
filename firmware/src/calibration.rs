@@ -4,7 +4,6 @@ use field_oriented::{
 };
 
 pub struct CalibrationInputs {
-    pub num_pole_pairs: Option<u8>,
     pub dc_bus_voltage_v: f32,
     pub angle_type: AngleType,
     pub theta: f32,
@@ -97,13 +96,12 @@ impl StageResult {
 
 const DT: f32 = 1.0 / PWM_FREQ.0 as f32;
 impl CalibrationRunner {
-    pub fn new() -> Self {
+    pub fn new(num_pole_pairs: u8) -> Self {
         let config = CalibrationConfig::default();
         let hall_calibrator = HallCalibrator::new(config.hall_settle_s, DT);
-        // Pole pairs are synced from step inputs before any estimator use
-        let motor_estimator = OfflineMotorEstimator::new(config.estimator, 0);
+        let motor_estimator = OfflineMotorEstimator::new(config.estimator, num_pole_pairs);
         Self {
-            num_pole_pairs: 0,
+            num_pole_pairs,
             hall_calibrator,
             motor_estimator,
             phase: CalibrationPhase::EncoderZeroing { duration_waited_s: 0.0, reset_sent: false },
@@ -117,12 +115,6 @@ impl CalibrationRunner {
     }
 
     pub fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>) {
-        let Some(num_pole_pairs) = inputs.num_pole_pairs else {
-            let result = StageResult::Failure { cause: CalibrationFailureCause::MissingParameter };
-            return (self.idle_output(inputs), Some(result));
-        };
-        self.num_pole_pairs = num_pole_pairs;
-        self.motor_estimator.params.num_pole_pairs = Some(num_pole_pairs);
         match &mut self.phase {
             CalibrationPhase::EncoderZeroing { duration_waited_s, reset_sent } => {
                 *duration_waited_s += DT;

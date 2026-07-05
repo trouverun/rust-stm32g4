@@ -68,12 +68,10 @@ pub fn foc_step(
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
-    let num_pole_pairs = params.params.num_pole_pairs;
     let mut estimator: &mut dyn MotorParamEstimator = params;
     let mut stage_result = None;
     let (angle_type, theta, foc_command) = if let OperatingMode::Calibration { calibrator } = mode {
         let (output, result) = calibrator.step(CalibrationInputs {
-            num_pole_pairs,
             dc_bus_voltage_v,
             angle_type,
             theta,

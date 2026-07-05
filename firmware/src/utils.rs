@@ -53,12 +53,12 @@ pub struct FilteredPhases {
 pub struct PhaseCurrentFilter {
     filters: FilteredPhases,
     rated_current_limit_a: f32,
-    phase_current_limit_a: f32,
+    current_limit_a: f32,
     active_limit_a: f32
 }
 
 impl PhaseCurrentFilter {
-    pub fn new(lowpass_cutoff_hz: f32, rated_current_limit_a: f32, phase_current_limit_a: f32) -> Self {
+    pub fn new(lowpass_cutoff_hz: f32, rated_current_limit_a: f32, current_limit_a: f32) -> Self {
         let filters = FilteredPhases {
             u: LowPassFilter::new(PWM_FREQ.0 as f32, lowpass_cutoff_hz),
             v: LowPassFilter::new(PWM_FREQ.0 as f32, lowpass_cutoff_hz),
@@ -67,7 +67,7 @@ impl PhaseCurrentFilter {
         Self {
             filters,
             rated_current_limit_a,
-            phase_current_limit_a,
+            current_limit_a,
             active_limit_a: rated_current_limit_a
         }
     }
@@ -85,9 +85,9 @@ impl PhaseCurrentFilter {
             || self.filters.w.filtered().abs() > self.active_limit_a
     }
 
-    pub fn set_limits(&mut self, rated_current_limit_a: f32, phase_current_limit_a: f32) {
+    pub fn set_limits(&mut self, rated_current_limit_a: f32, current_limit_a: f32) {
         self.rated_current_limit_a = rated_current_limit_a;
-        self.phase_current_limit_a = phase_current_limit_a;
+        self.current_limit_a = current_limit_a;
         self.active_limit_a = rated_current_limit_a;
     }
 

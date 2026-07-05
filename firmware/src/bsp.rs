@@ -10,7 +10,12 @@ use embassy_stm32::adc::{
 };
 use embassy_stm32::can::{
     BufferedCan, BufferedCanReceiver, BufferedCanSender, OperatingMode, RxBuf, TxBuf,
+    config::GlobalFilter,
+    filter::{Action, FilterType, StandardFilter, StandardFilterSlot},
 };
+use crate::can::messages::DeviceIdAssign;
+use crate::can::transport::{COMMAND_FILTER_ID, COMMAND_FILTER_MASK};
+use embedded_can::StandardId;
 use static_cell::StaticCell;
 use embassy_stm32::flash::WRITE_SIZE;
 use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
@@ -684,16 +689,48 @@ pub struct CanBus {
 }
 
 impl CanBus {
-    pub fn new(mappings: CanMappings, bitrate: u32) -> Self {
+    pub fn new(mappings: CanMappings, bitrate: u32, device_id: u8) -> Self {
         static TX_BUF: StaticCell<TxBuf<CAN_TX_BUF_SIZE>> = StaticCell::new();
         static RX_BUF: StaticCell<RxBuf<CAN_RX_BUF_SIZE>> = StaticCell::new();
 
         let mut configurator = mappings.configurator;
         configurator.set_bitrate(bitrate);
+        let config = configurator.config().set_global_filter(GlobalFilter::reject_all());
+        configurator.set_config(config);
+        configurator.properties().set_standard_filter(
+            StandardFilterSlot::_0,
+            Self::command_filter(device_id),
+        );
+        configurator.properties().set_standard_filter(
+            StandardFilterSlot::_1,
+            StandardFilter {
+                filter: FilterType::DedicatedSingle(
+                    StandardId::new(DeviceIdAssign::MESSAGE_ID as u16).unwrap(),
+                ),
+                action: Action::StoreInFifo0,
+            },
+        );
         let can = configurator.start(OperatingMode::NormalOperationMode);
         let buffered = can.buffered(TX_BUF.init(TxBuf::new()), RX_BUF.init(RxBuf::new()));
 
         Self { buffered }
+    }
+
+    /// Accept host command frames addressed to `device_id`
+    fn command_filter(device_id: u8) -> StandardFilter {
+        StandardFilter {
+            filter: FilterType::BitMask {
+                filter: COMMAND_FILTER_ID | device_id as u16,
+                mask: COMMAND_FILTER_MASK,
+            },
+            action: Action::StoreInFifo0,
+        }
+    }
+
+    pub fn set_device_id(&self, device_id: u8) {
+        self.buffered
+            .properties()
+            .set_standard_filter(StandardFilterSlot::_0, Self::command_filter(device_id));
     }
 
     pub fn writer(&self) -> BufferedCanSender {
@@ -953,8 +990,12 @@ impl Memory {
 
     /// Reads the record of type `T` from its flash sector.
     ///
-    /// `Ok(None)` means the sector was never written; `Err(Corrupt)` means a
-    /// record is present but failed to decode or its CRC didn't match.
+    /// Record layout: `[version: u16 le][payload len: u16 le][postcard payload][crc32 le]`,
+    /// CRC over header + payload.
+    ///
+    /// `Ok(None)` means the sector was never written, or holds a valid record with a
+    /// different `VERSION` (older firmware); `Err(Corrupt)` means a record is present
+    /// but its CRC didn't match or the payload failed to decode.
     pub fn load<T: Stored>(&mut self) -> Result<Option<T>, MemoryFault> {
         let mut buf = [0u8; MAX_RECORD_BYTES];
         self.flash
@@ -963,27 +1004,44 @@ impl Memory {
         if buf.iter().all(|&b| b == 0xFF) {
             return Ok(None); // erased sector
         }
-        let (value, rest) = postcard::take_from_bytes::<T>(&buf).map_err(|_| MemoryFault::CorruptedData)?;
-        let used = buf.len() - rest.len();
-        let crc_bytes = buf.get(used..used + 4).ok_or(MemoryFault::CorruptedData)?;
+        let version = u16::from_le_bytes(buf[0..2].try_into().unwrap());
+        let len = u16::from_le_bytes(buf[2..4].try_into().unwrap()) as usize;
+        let crc_bytes = buf.get(4 + len..4 + len + 4).ok_or(MemoryFault::CorruptedData)?;
         let stored = u32::from_le_bytes(crc_bytes.try_into().unwrap());
-        if CRC32.checksum(&buf[..used]) != stored {
+        if CRC32.checksum(&buf[..4 + len]) != stored {
+            return Err(MemoryFault::CorruptedData);
+        }
+        if version != T::VERSION {
+            return Ok(None); // valid record from another layout version
+        }
+        let (value, rest) = postcard::take_from_bytes::<T>(&buf[4..4 + len])
+            .map_err(|_| MemoryFault::CorruptedData)?;
+        if !rest.is_empty() {
             return Err(MemoryFault::CorruptedData);
         }
         Ok(Some(value))
     }
 
     /// Erases the record's sector and writes `value` back.
+    /// No-op when the stored record already matches.
     pub fn store<T: Stored>(&mut self, value: &T) -> Result<(), MemoryFault> {
         let mut buf = [0u8; MAX_RECORD_BYTES];
-        let used = postcard::to_slice(value, &mut buf[..MAX_RECORD_BYTES - 4])
+        let used = postcard::to_slice(value, &mut buf[4..MAX_RECORD_BYTES - 4])
             .map_err(|_| MemoryFault::TooLarge)?
             .len();
-        let crc = CRC32.checksum(&buf[..used]);
-        buf[used..used + 4].copy_from_slice(&crc.to_le_bytes());
-        let write_len = (used + 4).next_multiple_of(WRITE_SIZE);
+        buf[0..2].copy_from_slice(&T::VERSION.to_le_bytes());
+        buf[2..4].copy_from_slice(&(used as u16).to_le_bytes());
+        let crc = CRC32.checksum(&buf[..4 + used]);
+        buf[4 + used..4 + used + 4].copy_from_slice(&crc.to_le_bytes());
+        let write_len = (4 + used + 4).next_multiple_of(WRITE_SIZE);
 
         let off = sector_offset(T::SECTOR);
+        let mut current = [0u8; MAX_RECORD_BYTES];
+        if self.flash.blocking_read(off, &mut current).is_ok()
+            && current[..write_len] == buf[..write_len]
+        {
+            return Ok(());
+        }
         self.flash
             .blocking_erase(off, off + SECTOR_SIZE)
             .map_err(|_| MemoryFault::FlashInternalFault)?;

@@ -36,13 +36,17 @@ mod app {
     use crate::can::messages::{
         Messages, MotorCurrents, MotorCurrentsInit, RotorEstimates, RotorEstimatesInit,
         EncoderReading, EncoderReadingInit, Fault, FaultInit, Heartbeat, HeartbeatInit,
-        ConfigQueryBlockId, MotorParameterReport1, MotorParameterReport1Init,
+        ConfigQueryBlockId, OperatingModeRequestRequestedMode,
+        DeviceIdReport, DeviceIdReportInit,
+        MotorParameterReport1, MotorParameterReport1Init,
         MotorParameterReport2, MotorParameterReport2Init,
         CurrentGainsDReport, CurrentGainsDReportInit, CurrentGainsQReport, CurrentGainsQReportInit,
     };
     use embedded_can::Id;
     use crate::can::periodic::{Periodic, Slot};
-    use crate::can::transport::IntoFrame;
+    use crate::can::transport::{
+        address_frame, IntoFrame, FIXED_ID_BASE, MAX_DEVICE_ID, NODE_ADDR_MASK,
+    };
     use embassy_stm32::can::{
         BufferedCanReceiver, BufferedCanSender, IT0InterruptHandler,
     };
@@ -82,7 +86,7 @@ mod app {
         can_periodic_tx: BufferedCanSender,
         can_response_tx: BufferedCanSender,
         can_rx: BufferedCanReceiver,
-        _can_bus: CanBus,
+        can_bus: CanBus,
     }
 
     #[init]
@@ -117,8 +121,8 @@ mod app {
                 FirmwareConfig::default() 
             }
         };
-        config.phase_current_limit_a = 2.5;
-        let current_filter = PhaseCurrentFilter::new(2500.0, config.rated_current_limit_a, config.phase_current_limit_a);
+        config.current_limit_a = 2.5;
+        let current_filter = PhaseCurrentFilter::new(2500.0, config.rated_current_limit_a, config.current_limit_a);
 
         let foc_cfg = FocConfig {
             saturation_d_ratio: 0.1,
@@ -146,7 +150,7 @@ mod app {
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
 
-        let can_bus = bsp::CanBus::new(can_mappings, 1_000_000);
+        let can_bus = bsp::CanBus::new(can_mappings, 1_000_000, config.device_id);
         let can_periodic_tx = can_bus.writer();
         let can_response_tx = can_bus.writer();
         let can_rx = can_bus.reader();
@@ -184,7 +188,7 @@ mod app {
             can_periodic_tx,
             can_response_tx,
             can_rx,
-            _can_bus: can_bus,
+            can_bus,
         })
     }
 
@@ -428,7 +432,7 @@ mod app {
         })
     }
 
-    #[task(priority = 1, local = [can_periodic_tx], shared = [current_loop_snapshot, feedback_arbitrator, mode, board_status])]
+    #[task(priority = 1, local = [can_periodic_tx], shared = [current_loop_snapshot, feedback_arbitrator, mode, board_status, config])]
     async fn can_tx_task(mut cx: can_tx_task::Context) {
         if Periodic::COUNT == 0 {
             core::future::pending::<()>().await;
@@ -439,6 +443,7 @@ mod app {
             let next = slots.iter().map(|s| s.next_due).min().unwrap();
             Mono::delay_until(next).await;
             let now = Mono::now();
+            let device_id = cx.shared.config.lock(|cfg| cfg.device_id);
 
             let need_rotor_feedback = slots.iter().any(|s| {
                 s.next_due <= now && matches!(s.kind, Periodic::RotorEstimates | Periodic::EncoderReading)
@@ -518,28 +523,49 @@ mod app {
                     }
                 };
                 if let Some(f) = frame {
-                    cx.local.can_periodic_tx.write(f).await;
+                    cx.local.can_periodic_tx.write(address_frame(f, device_id)).await;
                 }
                 slot.next_due += slot.period;
             }
         }
     }
 
-    #[task(priority = 1, shared = [mode, runtime_values, config, current_filter, foc, motor_parameters], local = [can_rx, can_response_tx])]
+    #[task(
+        priority = 1,
+        shared = [
+            mode, runtime_values, config, current_filter,
+            foc, motor_parameters],
+        local = [can_rx, can_response_tx, can_bus]
+    )]
     async fn can_rx_task(mut cx: can_rx_task::Context) {
+        let mut device_id = cx.shared.config.lock(|cfg| cfg.device_id);
         loop {
             let frame = match cx.local.can_rx.receive().await {
                 Ok(envelope) => envelope.frame,
                 Err(_) => continue,
             };
             let id = match frame.id() {
-                Id::Standard(s) => s.as_raw() as u32,
+                Id::Standard(s) => s.as_raw(),
                 Id::Extended(_) => continue,
             };
-            match Messages::from_can_message(id, frame.data()) {
+            let base_id = if id < FIXED_ID_BASE { id & !NODE_ADDR_MASK } else { id };
+            match Messages::from_can_message(base_id as u32, frame.data()) {
                 Ok(Messages::OperatingModeRequest(msg)) => {
+                    let command = match msg.requested_mode() {
+                        OperatingModeRequestRequestedMode::Idle => Command::Idle,
+                        OperatingModeRequestRequestedMode::Calibration => {
+                            match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
+                                Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs },
+                                None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
+                            }
+                        }
+                        OperatingModeRequestRequestedMode::TorqueControl => Command::EnableTorqueControl,
+                        OperatingModeRequestRequestedMode::VelocityControl => Command::EnableVelocityControl,
+                        OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
+                        OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
+                    };
                     cx.shared.mode.lock(|mode| {
-                        mode.on_command(msg.requested_mode().into());
+                        mode.on_command(command);
                     });
                 }
                 Ok(Messages::Setpoint(msg)) => {
@@ -555,13 +581,20 @@ mod app {
                         cfg.setpoint_timeout_ms = msg.setpoint_timeout() as f32;
                         cfg.temp_max_c = msg.temp_max();
                     });
+                    let _ = persist_config::spawn();
                 }
                 Ok(Messages::MotorConfig(msg)) => {
                     cx.shared.config.lock(|cfg| {
                         cfg.rated_current_limit_a = msg.rated_current_limit();
-                        cfg.phase_current_limit_a = msg.phase_current_limit();
-                        cx.shared.current_filter.lock(|cf| cf.set_limits(msg.rated_current_limit(), msg.phase_current_limit()))
+                        cfg.current_limit_a = msg.phase_current_limit();
                     });
+                    cx.shared.current_filter.lock(|cf| {
+                        cf.set_limits(msg.rated_current_limit(), msg.phase_current_limit())
+                    });
+                    cx.shared.motor_parameters.lock(|mp| {
+                        mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
+                    });
+                    let _ = persist_config::spawn();
                 }
                 Ok(Messages::CalibrationTargets(msg)) => {
                     cx.shared.config.lock(|cfg| {
@@ -569,10 +602,32 @@ mod app {
                         cfg.calibration_current_a = msg.target_current();
                         cfg.calibration_omega = msg.target_velocity();
                     });
+                    let _ = persist_config::spawn();
                 }
                 Ok(Messages::CurrentGainsD(_msg)) => {
                 }
                 Ok(Messages::CurrentGainsQ(_msg)) => {
+                }
+                Ok(Messages::DeviceIdAssign(msg)) => {
+                    let new_id = msg.new_device_id();
+                    if new_id <= MAX_DEVICE_ID {
+                        let applied = cx.shared.config.lock(|cfg| {
+                            if cfg.device_id == msg.current_device_id() {
+                                cfg.device_id = new_id;
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        if applied {
+                            device_id = new_id;
+                            cx.local.can_bus.set_device_id(device_id);
+                            let _ = persist_config::spawn();
+                            if let Ok(m) = DeviceIdReport::try_from(DeviceIdReportInit { device_id }) {
+                                cx.local.can_response_tx.write(m.into_frame()).await;
+                            }
+                        }
+                    }
                 }
                 Ok(Messages::ConfigQuery(msg)) => {
                     let block = msg.block_id();
@@ -586,7 +641,7 @@ mod app {
                             flux_valid: est.pm_flux_linkage.is_some(),
                         }).ok().map(|m| m.into_frame());
                         if let Some(f) = f {
-                            cx.local.can_response_tx.write(f).await;
+                            cx.local.can_response_tx.write(address_frame(f, device_id)).await;
                         }
                         let f = MotorParameterReport2::try_from(MotorParameterReport2Init {
                             d_inductance: est.d_inductance.unwrap_or(0.0),
@@ -595,7 +650,7 @@ mod app {
                             lq_valid: est.q_inductance.is_some(),
                         }).ok().map(|m| m.into_frame());
                         if let Some(f) = f {
-                            cx.local.can_response_tx.write(f).await;
+                            cx.local.can_response_tx.write(address_frame(f, device_id)).await;
                         }
                     }
                     if all || matches!(block, ConfigQueryBlockId::CurrentGainsD | ConfigQueryBlockId::CurrentGainsQ) {
@@ -606,7 +661,7 @@ mod app {
                                     kr: d_pi.kr, kp: d_pi.kp, ki: d_pi.ki, kt: d_pi.kt,
                                 }).ok().map(|m| m.into_frame());
                                 if let Some(f) = f {
-                                    cx.local.can_response_tx.write(f).await;
+                                    cx.local.can_response_tx.write(address_frame(f, device_id)).await;
                                 }
                             }
                             if all || matches!(block, ConfigQueryBlockId::CurrentGainsQ) {
@@ -614,7 +669,7 @@ mod app {
                                     kr: q_pi.kr, kp: q_pi.kp, ki: q_pi.ki, kt: q_pi.kt,
                                 }).ok().map(|m| m.into_frame());
                                 if let Some(f) = f {
-                                    cx.local.can_response_tx.write(f).await;
+                                    cx.local.can_response_tx.write(address_frame(f, device_id)).await;
                                 }
                             }
                         }
@@ -623,6 +678,25 @@ mod app {
                 Ok(_) => {}
                 Err(_) => {}
             }
+        }
+    }
+
+    /// Deferred flash write until FOC is inactive
+    #[task(priority = 1, shared = [mode, config, motor_parameters, memory])]
+    async fn persist_config(mut cx: persist_config::Context) {
+        loop {
+            if !cx.shared.mode.lock(|m| m.foc_gate().active) {
+                let cfg = cx.shared.config.lock(|c| *c);
+                let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
+                let (r1, r2) = cx.shared.memory.lock(|memory| {
+                    (memory.store(&cfg), memory.store(&params))
+                });
+                if let Err(f) = r1.and(r2) {
+                    cx.shared.mode.lock(|m| m.on_command(Command::AssertFault { cause: f.into() }));
+                }
+                return;
+            }
+            Mono::delay(100.millis()).await;
         }
     }
 
@@ -657,14 +731,19 @@ mod app {
         });
     }
 
-    #[task(priority = 1, shared=[debug_mappings, button_state, runtime_values, mode])]
+    #[task(priority = 1, shared=[debug_mappings, button_state, runtime_values, mode, motor_parameters])]
     async fn button_timeout(mut cx: button_timeout::Context) {
         Mono::delay(1000.millis()).await;
         let press_type = cx.shared.button_state.lock(|bs| *bs);
         let command = match press_type {
             ButtonState::ShortPress => Command::Idle,
             ButtonState::DoublePress => Command::EnableTorqueControl,
-            ButtonState::LongPress => Command::StartCalibration,
+            ButtonState::LongPress => {
+                match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
+                    Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs },
+                    None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
+                }
+            }
             _ => {return}
         };
         cx.shared.mode.lock(|mode| {

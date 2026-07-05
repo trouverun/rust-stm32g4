@@ -6,13 +6,20 @@ BS_:
 
 BU_: Hyperdrive Host
 
+BO_ 2032 DeviceIdAssign: 2 Host
+ SG_ current_device_id : 0|8@1+ (1,0) [0|15] "" Hyperdrive
+ SG_ new_device_id : 8|8@1+ (1,0) [0|15] "" Hyperdrive
+
+BO_ 2033 DeviceIdReport: 1 Hyperdrive
+ SG_ device_id : 0|8@1+ (1,0) [0|15] "" Host
+
 BO_ 256 MotorCurrents: 8 Hyperdrive
  SG_ iQ_meas : 0|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iD_meas : 16|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iQ_target : 32|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iD_target : 48|16@1- (0.001,0) [-32.768|32.767] "A" Host
 
-BO_ 257 RotorEstimates: 8 Hyperdrive
+BO_ 272 RotorEstimates: 8 Hyperdrive
  SG_ hall_pos : 0|12@1+ (0.0015339808,0) [0|6.2817] "rad" Host
  SG_ sensl_pos : 12|14@1+ (0.00038349519,0) [0|6.2829] "rad" Host
  SG_ hall_vel : 26|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
@@ -20,12 +27,12 @@ BO_ 257 RotorEstimates: 8 Hyperdrive
  SG_ hall_valid : 58|1@1+ (1,0) [0|1] "" Host
  SG_ sensl_valid : 59|1@1+ (1,0) [0|1] "" Host
 
-BO_ 258 EncoderReading: 4 Hyperdrive
+BO_ 288 EncoderReading: 4 Hyperdrive
  SG_ enc_pos : 0|12@1+ (0.0015339808,0) [0|6.2817] "rad" Host
  SG_ enc_vel : 12|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
  SG_ enc_valid : 28|1@1+ (1,0) [0|1] "" Host
 
-BO_ 259 Fault: 8 Hyperdrive
+BO_ 304 Fault: 8 Hyperdrive
  SG_ fault_0 : 0|8@1+ (1,0) [0|255] "" Host
  SG_ fault_1 : 8|8@1+ (1,0) [0|255] "" Host
  SG_ fault_2 : 16|8@1+ (1,0) [0|255] "" Host
@@ -35,102 +42,103 @@ BO_ 259 Fault: 8 Hyperdrive
  SG_ fault_6 : 48|8@1+ (1,0) [0|255] "" Host
  SG_ fault_7 : 56|8@1+ (1,0) [0|255] "" Host
 
-BO_ 260 Heartbeat: 6 Hyperdrive
+BO_ 320 Heartbeat: 6 Hyperdrive
  SG_ mode : 0|8@1+ (1,0) [0|255] "" Host
  SG_ dc_bus_voltage : 8|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ temperature : 24|16@1- (0.1,0) [-3276.8|3276.7] "degC" Host
  SG_ dc_bus_valid : 40|1@1+ (1,0) [0|1] "" Host
  SG_ temp_valid : 41|1@1+ (1,0) [0|1] "" Host
 
-BO_ 261 ProtectionLimitsReport: 8 Hyperdrive
+BO_ 336 ProtectionLimitsReport: 8 Hyperdrive
  SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ setpoint_timeout : 32|16@1+ (1,0) [0|65535] "ms" Host
  SG_ temp_max : 48|16@1- (0.1,0) [-3276.8|3276.7] "degC" Host
 
-BO_ 262 MotorConfigReport: 5 Hyperdrive
+BO_ 352 MotorConfigReport: 5 Hyperdrive
  SG_ num_pole_pairs : 0|8@1+ (1,0) [0|255] "" Host
  SG_ phase_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ rated_current_limit : 24|16@1+ (0.001,0) [0|65.535] "A" Host
 
-BO_ 263 CalibrationTargetsReport: 6 Hyperdrive
+BO_ 368 CalibrationTargetsReport: 6 Hyperdrive
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Host
 
-BO_ 264 CurrentGainsDReport: 8 Hyperdrive
+BO_ 384 CurrentGainsDReport: 8 Hyperdrive
  SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
  SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
  SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
  SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
 
-BO_ 265 CurrentGainsQReport: 8 Hyperdrive
+BO_ 400 CurrentGainsQReport: 8 Hyperdrive
  SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
  SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
  SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
  SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
 
-BO_ 266 MotorParameterReport1: 7 Hyperdrive
+BO_ 416 MotorParameterReport1: 7 Hyperdrive
  SG_ stator_resistance : 0|24@1+ (1e-05,0) [0|167.77215] "ohm" Host
  SG_ pm_flux_linkage : 24|24@1+ (2e-08,0) [0|0.3355443] "Wb" Host
  SG_ rs_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ flux_valid : 49|1@1+ (1,0) [0|1] "" Host
 
-BO_ 267 MotorParameterReport2: 7 Hyperdrive
+BO_ 432 MotorParameterReport2: 7 Hyperdrive
  SG_ d_inductance : 0|24@1+ (1e-07,0) [0|1.6777215] "H" Host
  SG_ q_inductance : 24|24@1+ (1e-07,0) [0|1.6777215] "H" Host
  SG_ ld_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ lq_valid : 49|1@1+ (1,0) [0|1] "" Host
 
-BO_ 320 Setpoint: 4 Host
+BO_ 512 Setpoint: 4 Host
  SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
  SG_ target_velocity : 16|16@1- (0.25,0) [-8192|8191.75] "rad/s" Hyperdrive
 
-BO_ 321 OperatingModeRequest: 1 Host
+BO_ 528 OperatingModeRequest: 1 Host
  SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Hyperdrive
 
-BO_ 323 ProtectionLimits: 8 Host
+BO_ 544 ProtectionLimits: 8 Host
  SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
  SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
  SG_ setpoint_timeout : 32|16@1+ (1,0) [0|65535] "ms" Hyperdrive
  SG_ temp_max : 48|16@1- (0.1,0) [-3276.8|3276.7] "degC" Hyperdrive
 
-BO_ 324 MotorConfig: 5 Host
+BO_ 560 MotorConfig: 5 Host
  SG_ num_pole_pairs : 0|8@1+ (1,0) [0|255] "" Hyperdrive
  SG_ phase_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
  SG_ rated_current_limit : 24|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
 
-BO_ 325 CalibrationTargets: 6 Host
+BO_ 576 CalibrationTargets: 6 Host
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
  SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
  SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Hyperdrive
 
-BO_ 326 CurrentGainsD: 8 Host
+BO_ 592 CurrentGainsD: 8 Host
  SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Hyperdrive
  SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Hyperdrive
  SG_ ki : 32|16@1+ (2,0) [0|131070] "" Hyperdrive
  SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Hyperdrive
 
-BO_ 327 CurrentGainsQ: 8 Host
+BO_ 608 CurrentGainsQ: 8 Host
  SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Hyperdrive
  SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Hyperdrive
  SG_ ki : 32|16@1+ (2,0) [0|131070] "" Hyperdrive
  SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Hyperdrive
 
-BO_ 328 ConfigQuery: 1 Host
+BO_ 624 ConfigQuery: 1 Host
  SG_ block_id : 0|8@1+ (1,0) [0|255] "" Hyperdrive
 
-CM_ SG_ 260 mode "0=Idle 1=Calibration 2=TorqueControl 3=VelocityControl 4=Fault";
+CM_ "Frame ID = base ID + device address (low 4 bits, 0-15). 0x100-0x1FF device reports, 0x200-0x2FF host commands, 0x7F0+ fixed-ID broadcast.";
+CM_ SG_ 320 mode "0=Idle 1=Calibration 2=TorqueControl 3=VelocityControl 4=Fault";
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ BO_  "GenMsgCycleTimeUs" INT 0 1000000;
 BA_DEF_DEF_  "GenMsgCycleTime" 0;
 BA_DEF_DEF_  "GenMsgCycleTimeUs" 0;
 BA_ "GenMsgCycleTimeUs" BO_ 256 400;
-BA_ "GenMsgCycleTimeUs" BO_ 257 1000;
-BA_ "GenMsgCycleTimeUs" BO_ 258 1000;
-BA_ "GenMsgCycleTimeUs" BO_ 259 100000;
-BA_ "GenMsgCycleTimeUs" BO_ 260 100000;
+BA_ "GenMsgCycleTimeUs" BO_ 272 1000;
+BA_ "GenMsgCycleTimeUs" BO_ 288 1000;
+BA_ "GenMsgCycleTimeUs" BO_ 304 100000;
+BA_ "GenMsgCycleTimeUs" BO_ 320 100000;
 
-VAL_ 321 requested_mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 3 "VelocityControl" 4 "FaultClear" ;
-VAL_ 328 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 255 "all" ;
+VAL_ 528 requested_mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 3 "VelocityControl" 4 "FaultClear" ;
+VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 255 "all" ;
