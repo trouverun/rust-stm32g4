@@ -135,8 +135,7 @@ impl HallCalibrator {
 
 #[cfg(test)]
 mod test {
-    use core::f32::consts::PI;
-    use super::{HallCalibrator};
+    use super::HallCalibrator;
     use crate::{
         ClarkParkValue, FOC, FocConfig, FocInput, MotorParams, ConstantMotorParameters, MotorParamsEstimate,
         PMSMConfig, PMSMSim, HallEncoder, FocInputType, AngleType, DummyAccelerator, plot_simulation, SimRecord
@@ -193,6 +192,7 @@ mod test {
                     input: foc_input,
                     result: foc_result.unwrap(),
                     sim: state,
+                    estimates: std::vec::Vec::new(),
                 });
             }
 

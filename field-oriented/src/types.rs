@@ -4,7 +4,7 @@ pub enum AngleType {
     Electrical,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum RotorFeedbackFault {
     NotCalibrated,
     NoResponse,

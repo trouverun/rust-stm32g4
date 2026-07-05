@@ -220,11 +220,11 @@ mod app {
             let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
                 (fa.read(), fa.get_hall_pattern())
             });
-            let (calibration_voltage_v, calibration_current_a, calibration_omega_rads) =
+            let (calibration_voltage_v, calibration_current_a, calibration_omega) =
                 cx.shared.config.lock(|cfg| {
                     (cfg.calibration_voltage_v, cfg.calibration_current_a, cfg.calibration_omega)
                 });
-            let target_torque_nm = cx.shared.runtime_values.lock(|rtv| rtv.target_torque);
+            let target_torque = cx.shared.runtime_values.lock(|rtv| rtv.target_torque);
 
             // FOC compute:
             let inputs = FocStepInputs {
@@ -236,8 +236,8 @@ mod app {
                 hall_pattern,
                 calibration_voltage_v,
                 calibration_current_a,
-                calibration_omega_rads,
-                target_torque_nm,
+                calibration_omega,
+                target_torque,
             };
             let outcome = (cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
                 |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),

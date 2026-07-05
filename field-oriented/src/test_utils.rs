@@ -2,11 +2,70 @@ extern crate std;
 use std::vec::Vec;
 use std::string::String;
 use plotly::{Plot, Scatter, Layout};
-use plotly::common::{Fill, Line, LineShape, Mode};
+use plotly::common::{DashType, Fill, Line, LineShape, Mode};
 use plotly::layout::Axis;
-use crate::{DoesFocMath, FocInput, FocInputType, FocResult};
-use crate::sim::SimOutput;
+use crate::{DoesFocMath, FocInput, FocInputType, FocResult, HallEstimatorInput};
+use crate::sim::{HallEncoder, SimOutput};
 use crate::types::*;
+
+/// Host model of the hall capture timer: counts ticks since the last hall edge
+/// and measures the duration of the previous hall sector, like the STM32 timer
+/// in hall-sensor mode does in hardware.
+pub struct SimulatedHallTimer {
+    tick_frequency_hz: f32,
+    ticks_per_sample: u32,
+    ticks_since_edge: u32,
+    previous_period_reciprocal: f32,
+    pattern: u8,
+    prev_pattern: u8,
+}
+
+impl SimulatedHallTimer {
+    pub fn new(sample_rate_hz: f32, ticks_per_sample: u32, initial_pattern: u8) -> Self {
+        Self {
+            tick_frequency_hz: sample_rate_hz * ticks_per_sample as f32,
+            ticks_per_sample,
+            ticks_since_edge: 0,
+            previous_period_reciprocal: 0.0,
+            pattern: initial_pattern,
+            prev_pattern: initial_pattern,
+        }
+    }
+
+    /// Advance one sample period with the currently observed hall pattern.
+    pub fn sample(&mut self, pattern: u8) -> HallEstimatorInput {
+        if pattern != self.pattern {
+            self.previous_period_reciprocal = 1.0 / self.ticks_since_edge.max(1) as f32;
+            self.prev_pattern = self.pattern;
+            self.pattern = pattern;
+            self.ticks_since_edge = 0;
+        }
+        self.ticks_since_edge += self.ticks_per_sample;
+        HallEstimatorInput {
+            prev_hall_pattern: self.prev_pattern,
+            hall_pattern: self.pattern,
+            tick_counter: self.ticks_since_edge,
+            previous_period_reciprocal: self.previous_period_reciprocal,
+            tick_frequency_hz: self.tick_frequency_hz,
+        }
+    }
+}
+
+/// Shortest wrapped distance between two angles.
+pub fn angle_error(a: f32, b: f32) -> f32 {
+    let d = a - b;
+    d.sin().atan2(d.cos())
+}
+
+/// Calibration table for the ideal encoder, indexed by pattern - 1.
+pub fn ideal_hall_table() -> [f32; 6] {
+    let encoder = HallEncoder::ideal();
+    let mut table = [0.0; 6];
+    for i in 0..6 {
+        table[(encoder.patterns[i] - 1) as usize] = encoder.edges[i];
+    }
+    table
+}
 
 pub struct DummyAccelerator;
 impl DoesFocMath for DummyAccelerator {
@@ -25,6 +84,20 @@ pub struct SimRecord {
     pub input: FocInput,
     pub result: FocResult,
     pub sim: SimOutput,
+    /// Estimator outputs at this record point, overlaid dashed on the angle and
+    /// speed rows. Any number of estimators (hall, encoder, sensorless, ...) can
+    /// be recorded side by side, keyed by name.
+    pub estimates: Vec<EstimatorRecord>,
+}
+
+/// One estimator's output at a record point, for overlaying on the plot.
+/// Values must be in the same frame and units as `SimOutput::theta` /
+/// `SimOutput::omega` (mechanical).
+#[derive(Clone, Copy)]
+pub struct EstimatorRecord {
+    pub name: &'static str,
+    pub theta: f32,
+    pub omega: f32,
 }
 
 pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
@@ -50,6 +123,9 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
             .name(name)
             .x_axis(&xa)
             .y_axis(&ya)
+    };
+    let dashed_trace = |time: &[f64], data: &[f32], name: &str, row: u32| {
+        line_trace(time, data, name, row).line(Line::new().dash(DashType::Dash))
     };
 
     // Collect series
@@ -103,11 +179,32 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
         }
         row += 1;
     }
+    // Distinct estimator names, in first-seen order:
+    let mut estimator_names: Vec<&'static str> = Vec::new();
+    for r in records {
+        for e in &r.estimates {
+            if !estimator_names.contains(&e.name) {
+                estimator_names.push(e.name);
+            }
+        }
+    }
+    let estimate_series = |name: &str, f: fn(&EstimatorRecord) -> f32| -> Vec<f32> {
+        records.iter()
+            .map(|r| r.estimates.iter().find(|e| e.name == name).map_or(f32::NAN, f))
+            .collect()
+    };
+
     // Rotor angle
     plot.add_trace(line_trace(&time, &theta, "θ", row));
+    for name in &estimator_names {
+        plot.add_trace(dashed_trace(&time, &estimate_series(name, |e| e.theta), &std::format!("θ {name}"), row));
+    }
     row += 1;
     // Rotor speed
     plot.add_trace(line_trace(&time, &omega, "ω", row));
+    for name in &estimator_names {
+        plot.add_trace(dashed_trace(&time, &estimate_series(name, |e| e.omega), &std::format!("ω {name}"), row));
+    }
     row += 1;
     // Duty cycles
     plot.add_trace(line_trace(&time, &d_u, "D_u", row));

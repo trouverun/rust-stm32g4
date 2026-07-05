@@ -15,8 +15,8 @@ pub struct FocStepInputs {
     pub hall_pattern: u8,
     pub calibration_voltage_v: f32,
     pub calibration_current_a: f32,
-    pub calibration_omega_rads: f32,
-    pub target_torque_nm: f32,
+    pub calibration_omega: f32,
+    pub target_torque: f32,
 }
 
 pub struct FocStepOutcome {
@@ -77,13 +77,13 @@ pub fn foc_step(
             hall_pattern: inputs.hall_pattern,
             target_voltage_v: inputs.calibration_voltage_v,
             target_current_a: inputs.calibration_current_a,
-            target_omega_rads: inputs.calibration_omega_rads,
+            target_omega_rads: inputs.calibration_omega,
         });
         estimator = calibrator.get_estimator();
         stage_result = result;
         (output.angle_type, output.theta, output.foc_command)
     } else {
-        (angle_type, theta, FocInputType::TargetTorque(inputs.target_torque_nm))
+        (angle_type, theta, FocInputType::TargetTorque(inputs.target_torque))
     };
 
     let foc_input = FocInput {

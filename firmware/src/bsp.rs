@@ -34,7 +34,8 @@ use embedded_can::StandardId;
 use static_cell::StaticCell;
 use field_oriented::{
     AngleType, DoesFocMath, HasRotorFeedback,
-    PhaseValues, RotorFeedback, RotorFeedbackFault, SinCosResult
+    PhaseValues, RotorFeedback, RotorFeedbackFault, SinCosResult,
+    HallEstimator, HallEstimatorInput, HallEstimatorOutput
 };
 
 const ADC_VOLTAGE: f32 = 3.3;
@@ -334,48 +335,11 @@ impl AdcFeedback {
     }
 }
 
-enum HallInterpolationState {
-    Stationary,
-    DirectionChange,
-    Normal,
-}
-
-impl HallInterpolationState {
-    pub fn step(&mut self, prev_pattern: u8, pattern: u8, prev_dir: i8, dir: i8) {
-        match self {
-            HallInterpolationState::Stationary => {
-                if prev_pattern != pattern {
-                    *self = HallInterpolationState::DirectionChange;
-                }
-            }
-            HallInterpolationState::DirectionChange => {
-                if prev_pattern != pattern && prev_dir == dir {
-                    *self = HallInterpolationState::Normal;
-                }
-            }
-            HallInterpolationState::Normal => {
-                if prev_dir != dir {
-                    *self = HallInterpolationState::DirectionChange;
-                }
-            }
-        };
-    }
-}
-
 #[cfg(feature = "hall-feedback")]
 pub struct HallFeedback {
     sensor: HallSensor<'static, HallFeedbackTimer>,
     read_timer: Timer<'static, HallReadTimer>,
-    hall_pattern_to_theta: Option<[f32; 6]>,
-    /// Unsigned angular span of each hall sector, indexed by pattern - 1.
-    /// Computed from the calibration table: distance from this edge to the next edge in the forward direction.
-    sector_span: Option<[f32; 6]>,
-    /// Forward hall sequence: sector_span[pattern] leads to forward_next[pattern].
-    /// Used to determine rotation direction from pattern transitions.
-    forward_next: Option<[u8; 6]>,
-    state: HallInterpolationState,
-    prev_pattern: u8,
-    prev_dir: i8,
+    estimator: HallEstimator,
     filter: LowPassFilter,
 }
 
@@ -393,12 +357,7 @@ impl HallFeedback {
         Self {
             sensor: mappings.sensor,
             read_timer,
-            hall_pattern_to_theta: None,
-            sector_span: None,
-            forward_next: None,
-            state: HallInterpolationState::Stationary,
-            prev_pattern: 0,
-            prev_dir: 0,
+            estimator: HallEstimator::new(),
             filter: LowPassFilter::new(sample_rate_hz as f32, cutoff_hz),
         }
     }
@@ -408,41 +367,7 @@ impl HallFeedback {
     }
 
     pub fn set_calibration(&mut self, calibrations: [f32; 6]) {
-        self.hall_pattern_to_theta = Some(calibrations);
-
-        // Build (angle, pattern) pairs and sort by angle.
-        // This gives the forward (increasing angle) sequence.
-        // Hall patterns are 1..6, stored at index pattern-1.
-        let mut by_angle: [(f32, u8); 6] =
-            core::array::from_fn(|i| (calibrations[i], (i + 1) as u8));
-        for i in 1..6 {
-            let mut j = i;
-            while j > 0 && by_angle[j].0 < by_angle[j - 1].0 {
-                by_angle.swap(j, j - 1);
-                j -= 1;
-            }
-        }
-
-        // Walk the sorted sequence. For each pattern, record:
-        //  - which pattern comes next in the forward direction
-        //  - the angular distance to that next pattern (wrapping around at 2pi)
-        let mut forward_next = [0; 6];
-        let mut sector_span = [0.0; 6];
-        for i in 0..6 {
-            let (angle, pattern) = by_angle[i];
-            let (next_angle, next_pattern) = by_angle[(i + 1) % 6];
-            let idx = (pattern - 1) as usize;
-
-            forward_next[idx] = next_pattern;
-
-            let mut span = next_angle - angle;
-            if span < 0.0 {
-                span += core::f32::consts::TAU;
-            }
-            sector_span[idx] = span;
-        }
-        self.forward_next = Some(forward_next);
-        self.sector_span = Some(sector_span);
+        self.estimator.set_calibration(calibrations);
     }
 
     pub fn on_hall_interrupt(&mut self) {
@@ -452,95 +377,26 @@ impl HallFeedback {
     pub fn on_read_interrupt(&self) {
         self.read_timer.clear_update_interrupt();
     }
-
-    /// Determine rotation direction from a pattern transition.
-    /// Returns 1 for forward, -1 for reverse, 0 if patterns are equal.
-    fn direction(&self, forward_next: [u8; 6], prev_pattern: u8, pattern: u8) -> i8 {
-        if prev_pattern == pattern {
-            return 0;
-        }
-        let prev_idx = prev_pattern.wrapping_sub(1) as usize;
-        if prev_idx < 6 && forward_next[prev_idx] == pattern {
-            1
-        } else {
-            -1
-        }
-    }
 }
 
 #[cfg(feature = "hall-feedback")]
 impl HasRotorFeedback for HallFeedback {
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
-        // Return fault if this has not been calibrated yet:
-        let hall_pattern_to_theta = self.hall_pattern_to_theta.ok_or(RotorFeedbackFault::NotCalibrated)?;
-        let forward_next = self.forward_next.ok_or(RotorFeedbackFault::NotCalibrated)?;
-        let sector_span = self.sector_span.ok_or(RotorFeedbackFault::NotCalibrated)?;
-
         let raw_state = self.sensor.read_state();
-        if raw_state.pattern == 0 || raw_state.pattern == 7 {
-            return Err(RotorFeedbackFault::ErroneousValue);
-        }
-        let dir = self.direction(forward_next, raw_state.prev_pattern, raw_state.pattern);
-        let prev_idx = (raw_state.prev_pattern.wrapping_sub(1) as usize).min(5);
-        let idx = (raw_state.pattern.wrapping_sub(1) as usize).min(5);
 
-        // The hall angle map gives the electrical angle when entering pattern with positive omega,
-        // so for reverse direction we need to use the previous pattern we just left from
-        let entry_idx = if dir >= 0 {
-            idx
-        } else {
-            (raw_state.prev_pattern.wrapping_sub(1) as usize).min(5)
+        let estimator_input = HallEstimatorInput {
+            prev_hall_pattern: raw_state.prev_pattern,
+            hall_pattern: raw_state.pattern,
+            tick_counter: raw_state.extended_counter,
+            previous_period_reciprocal: raw_state.hall_period_reciprocal_count,
+            tick_frequency_hz: self.sensor.get_tick_frequency_hz()  
         };
-
-        // Size of the Hall sector corresponding to the period (i.e. previous sector), in electrical angle radians:
-        let prev_span = sector_span[prev_idx] as f32;
-        // Size of the current Hall sector, in electrical angle radians:
-        let span = sector_span[idx] as f32;
-        // Fraction of previous period elapsed:
-        let fraction = raw_state.extended_counter as f32 * raw_state.hall_period_reciprocal_count;
-
-        self.state.step(self.prev_pattern, raw_state.pattern, self.prev_dir, dir);
-        let (theta, omega) = match self.state {
-            HallInterpolationState::Stationary => {
-                // Best standstill guess, midpoint of the current sector:
-                let theta = hall_pattern_to_theta[entry_idx] + 0.5 * sector_span[idx];
-                let omega = 0.0;
-                (theta, omega)
-            }
-            HallInterpolationState::DirectionChange => {
-                // Continuous rotation in one direction not yet proven, so:
-                // - allow interpolation up to the midpoint of the current sector
-                //   (prevent being off by a full sector, if oscillating around same edge)
-                // - set omega to zero, to avoid huge values caused by oscillating around same edge rapidly
-                let theta_interpolation = dir as f32 * (prev_span * fraction).clamp(0.0, 0.5 * span);
-                let theta = hall_pattern_to_theta[entry_idx] + theta_interpolation;
-                let omega = 0.0;
-                (theta, omega)
-            }
-            HallInterpolationState::Normal => {
-                // Interpolate up to the next Hall edge angle:
-                let theta_interpolation = dir as f32 * (prev_span * fraction).clamp(0.0, span);
-                let theta = hall_pattern_to_theta[entry_idx] + theta_interpolation;
-                let signed_prev_span = dir as f32 * prev_span;
-                // Compute angular velocity from: rad * 1/ticks * Hz (ticks/s) = rad/s
-                let mut omega = signed_prev_span * raw_state.hall_period_reciprocal_count * self.sensor.get_tick_frequency_hz();
-                // The fraction of the current hall sector we should have traveled, accounting for different size of span vs prev span:
-                let effective_fraction = (prev_span / span) * fraction;
-                // If we should have reached the next hall edge already, we need to taper down the overestimated velocity:
-                if effective_fraction > 1.0 {
-                    omega /= effective_fraction;
-                }
-                (theta, omega)
-            }
-        };
-        self.prev_pattern = raw_state.pattern;
-        self.prev_dir = dir;
-
-        let filtered_omega = self.filter.update(omega);
+        let estimate = self.estimator.get_estimate(estimator_input)?;
+        let filtered_omega = self.filter.update(estimate.omega);
 
         Ok(RotorFeedback {
             angle_type: AngleType::Electrical,
-            theta,
+            theta: estimate.theta,
             omega: filtered_omega,
         })
     }

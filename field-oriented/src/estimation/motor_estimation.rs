@@ -467,6 +467,7 @@ mod test {
                 input: foc_input,
                 result: foc_result.unwrap(),
                 sim: state,
+                estimates: std::vec::Vec::new(),
             });
 
             t += dt;
