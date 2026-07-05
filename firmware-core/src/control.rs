@@ -1,10 +1,18 @@
-use crate::bsp::Acceleration;
 use crate::calibration::{CalibrationInputs, StageResult};
-use crate::types::{Command, CurrentLoopSnapshot, FaultCause, OperatingMode};
+use crate::modes::{Command, OperatingMode};
+use crate::faults::FaultCause;
 use field_oriented::{
     AngleType, ConstantMotorParameters, FOC, FocInput, FocInputType, MotorParamEstimator,
-    PhaseValues, RotorFeedback, RotorFeedbackFault,
+    PhaseValues, RotorFeedback, RotorFeedbackFault, DoesFocMath
 };
+
+#[derive(Clone, Copy, Default)]
+pub struct CurrentLoopSnapshot {
+    pub iq_meas_a: f32,
+    pub id_meas_a: f32,
+    pub iq_target_a: f32,
+    pub id_target_a: f32,
+}
 
 pub struct FocStepInputs {
     pub phase_currents: PhaseValues,
@@ -39,13 +47,13 @@ impl FocStepOutcome {
 
 /// One iteration of the current control loop.
 /// Failure stage results assert the fault here, other stage results propagate through the output.
-pub fn foc_step(
+pub fn foc_step<A>(
     mode: &mut OperatingMode,
     params: &mut ConstantMotorParameters,
     foc: &mut FOC,
-    acceleration: &mut Acceleration,
+    acceleration: &mut A,
     inputs: FocStepInputs,
-) -> FocStepOutcome {
+) -> FocStepOutcome where A: DoesFocMath {
     if inputs.watchdog_fault {
         mode.on_command(Command::AssertFault { cause: FaultCause::Watchdog });
     }

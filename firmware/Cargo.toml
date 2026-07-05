@@ -19,6 +19,7 @@ rtic = { version = "2.0.0", features = ["thumbv7-backend"] }
 rtic-monotonics = { version = "1.5", default-features = false, features = ["stm32g473qe", "stm32_tim2"] }
 embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["stm32g473qe", "defmt", "memory-x", "unstable-pac", "exti", "dual-bank"] }
 embedded-can = "0.4"
+firmware-core = { path = "../firmware-core" }
 field-oriented = { path = "../field-oriented" }
 defmt-rtt = "1.1.0"
 num-traits = { version = "0.2", default-features = false }

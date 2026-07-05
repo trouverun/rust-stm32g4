@@ -6,9 +6,7 @@
 use servo_firmware as _;
 mod boards;
 mod bsp;
-mod calibration;
 mod can;
-mod control;
 mod memory;
 mod types;
 mod utils;
@@ -36,10 +34,8 @@ mod app {
         self, Acceleration, AdcFeedback, AmtEncoder, CanBus, HallFeedback, Memory,
         PwmOutput, Watchdog
     };
-    use crate::types::{Command, *};
-    use crate::types::{BoardStatus, OperatingMode};
-    use crate::calibration::StageResult;
-    use crate::control::{foc_step, FocStepInputs};
+    use firmware_core::{Command, FaultCause, OperatingMode, StageResult, foc_step, FocStepInputs, CurrentLoopSnapshot};
+    use crate::types::*;
     use field_oriented::{
         ConstantMotorParameters, ControllerParameters, FOC, FocConfig, HasRotorFeedback,
         MotorParamEstimator, MotorParamsEstimate, compute_current_pi_controller_gains
@@ -548,8 +544,9 @@ mod app {
                     let command = match msg.requested_mode() {
                         OperatingModeRequestRequestedMode::Idle => Command::Idle,
                         OperatingModeRequestRequestedMode::Calibration => {
+                            let dt: f32 = 1.0 / PWM_FREQ.0 as f32;
                             match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
-                                Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs },
+                                Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs, dt },
                                 None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
                             }
                         }

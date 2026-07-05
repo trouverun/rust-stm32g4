@@ -1,0 +1,8 @@
+[package]
+name = "firmware-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+defmt = { version = "0.3", features = ["encoding-rzcobs"] }
+field-oriented = { path = "../field-oriented" }

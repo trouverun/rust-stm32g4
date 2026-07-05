@@ -1,4 +1,3 @@
-use crate::boards::PWM_FREQ;
 use field_oriented::{
     AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibrationFault, 
     HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig, 
@@ -51,6 +50,7 @@ pub enum CalibrationPhase {
 }
 
 pub struct CalibrationConfig {
+    pub dt: f32,
     pub encoder_zero_request_s: f32,
     pub encoder_zero_timeout_s: f32,
     pub hall_settle_s: f32,
@@ -58,15 +58,16 @@ pub struct CalibrationConfig {
     pub estimator: OfflineEstimatorConfig,
 }
 
-impl Default for CalibrationConfig {
-    fn default() -> Self {
+impl CalibrationConfig {
+    pub fn new(dt: f32) -> Self {
         Self {
+            dt,
             encoder_zero_request_s: 3.0,
             encoder_zero_timeout_s: 5.0,
             hall_settle_s: 3.0,
             hall_timeout_s: 30.0,
             estimator: OfflineEstimatorConfig {
-                dt: DT,
+                dt,
                 settle_time_s: 3.0,
                 test_time_s: 5.0,
                 max_spin_time_s: 15.0,
@@ -96,11 +97,10 @@ impl StageResult {
     }
 }
 
-const DT: f32 = 1.0 / PWM_FREQ.0 as f32;
 impl CalibrationRunner {
-    pub fn new(num_pole_pairs: u8) -> Self {
-        let config = CalibrationConfig::default();
-        let hall_calibrator = HallCalibrator::new(config.hall_settle_s, DT);
+    pub fn new(num_pole_pairs: u8, dt: f32) -> Self {
+        let config = CalibrationConfig::new(dt);
+        let hall_calibrator = HallCalibrator::new(config.hall_settle_s, dt);
         let motor_estimator = OfflineMotorEstimator::new(config.estimator, num_pole_pairs);
         Self {
             num_pole_pairs,
@@ -119,7 +119,7 @@ impl CalibrationRunner {
     pub fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>) {
         match &mut self.phase {
             CalibrationPhase::EncoderZeroing { duration_waited_s, reset_sent } => {
-                *duration_waited_s += DT;
+                *duration_waited_s += self.config.dt;
                 let mut result = None;
                 let output = CalibrationOutput {
                     angle_type: AngleType::Electrical,
@@ -138,7 +138,7 @@ impl CalibrationRunner {
                 (output, result)
             }
             CalibrationPhase::HallCalibration { time_passed_s } => {
-                *time_passed_s += DT;
+                *time_passed_s += self.config.dt;
                 if *time_passed_s > self.config.hall_timeout_s {
                     let result = StageResult::Failure { cause: CalibrationFailureCause::Timeout };
                     let output = self.idle_output(inputs);
