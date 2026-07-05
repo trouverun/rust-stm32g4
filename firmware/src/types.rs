@@ -294,28 +294,3 @@ pub struct CurrentLoopSnapshot {
     pub iq_target_a: f32,
     pub id_target_a: f32,
 }
-
-#[derive(Clone, Copy)]
-pub enum EdgeType {
-    Rising,
-    Falling,
-}
-
-#[derive(Clone, Copy)]
-pub enum ButtonState {
-    Waiting,
-    LongPress,
-    ShortPress,
-    DoublePress,
-}
-
-impl ButtonState {
-    pub fn on_edge(&self, edge: EdgeType) -> Self {
-        match (self, edge) {
-            (ButtonState::Waiting, EdgeType::Rising) => ButtonState::LongPress,
-            (ButtonState::LongPress, EdgeType::Falling) => ButtonState::ShortPress,
-            (ButtonState::ShortPress, EdgeType::Rising) => ButtonState::DoublePress,
-            (_, _) => *self,
-        }
-    }
-}

@@ -1,7 +1,7 @@
-use crate::boards::PWM_FREQ;
 use core::{f32::consts::TAU};
-use field_oriented::{PhaseValues, HasRotorFeedback, RotorFeedback, RotorFeedbackFault};
 use num_traits::Float;
+use crate::boards::PWM_FREQ;
+use field_oriented::{PhaseValues, HasRotorFeedback, RotorFeedback, RotorFeedbackFault};
 
 pub fn wrap_to_pi(angle_rad: f32) -> f32 {
     const INV_TAU: f32 = 1.0 / TAU;

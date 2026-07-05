@@ -1,9 +1,24 @@
-use crate::boards::*;
-use crate::memory::{sector_offset, Stored, MemoryFault, CRC32, MAX_RECORD_BYTES, SECTOR_SIZE};
-use crate::utils::{wrap_to_pi, LowPassFilter};
 use core::cell::SyncUnsafeCell;
 use core::f32::consts::{PI, TAU};
 use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use embassy_stm32::flash::{Blocking as BlockingFlash, Flash, WRITE_SIZE};
+use embassy_stm32::pac::gpio::regs::Bsrr;
+use embassy_stm32::gpio::Output;
+use embassy_stm32::pac::timer::vals::Bkp;
+use embassy_stm32::spi::DmaDrivenSpi;
+use embassy_stm32::timer::{
+    Channel, hall::HallSensor, low_level::{Timer, FilterValue}, trigger_output::BasicTrgoOutput
+};
+use embassy_stm32::timer::pwm::{Running as PwmRunning, PWM};
+use embassy_stm32::dma::StreamingChannel;
+use embassy_stm32::time::Hertz;
+use embassy_stm32::peripherals::CORDIC;
+use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
+use embassy_stm32::cordic::{Cordic, NoScale, Precision, Sin, Sqrt, SqrtScale, Q15};
+
+use crate::boards::*;
+use crate::memory::{sector_offset, Stored, MemoryFault, CRC32, MAX_RECORD_BYTES, SECTOR_SIZE};
+use crate::utils::{wrap_to_pi, LowPassFilter};
 use embassy_stm32::adc::{
     Adc, AdcConfig, AnyAdcChannel, Dual, EocInterruptEnabled, Exten, ExternalTriggeredADC,
     JeosInterruptEnabled, Queued, Running as AdcRunning, SampleTime, StartMode,
@@ -17,23 +32,6 @@ use crate::can::messages::DeviceIdAssign;
 use crate::can::transport::{COMMAND_FILTER_ID, COMMAND_FILTER_MASK};
 use embedded_can::StandardId;
 use static_cell::StaticCell;
-use embassy_stm32::flash::WRITE_SIZE;
-use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
-use embassy_stm32::cordic::{Cordic, NoScale, Precision, Sin, Sqrt, SqrtScale, Q15};
-use embassy_stm32::flash::{Blocking as BlockingFlash, Flash};
-use embassy_stm32::gpio::Output;
-use embassy_stm32::pac::timer::vals::Bkp;
-use embassy_stm32::peripherals::CORDIC;
-use embassy_stm32::spi::DmaDrivenSpi;
-use embassy_stm32::timer::hall::HallSensor;
-use embassy_stm32::timer::low_level::FilterValue;
-use embassy_stm32::timer::pwm::{Running as PwmRunning, PWM};
-use embassy_stm32::timer::trigger_output::BasicTrgoOutput;
-use embassy_stm32::timer::Channel;
-use embassy_stm32::dma::StreamingChannel;
-use embassy_stm32::timer::low_level::{Timer};
-use embassy_stm32::time::Hertz;
-use embassy_stm32::pac::gpio::regs::Bsrr;
 use field_oriented::{
     AngleType, DoesFocMath, HasRotorFeedback,
     PhaseValues, RotorFeedback, RotorFeedbackFault, SinCosResult
@@ -993,9 +991,8 @@ impl Memory {
     /// Record layout: `[version: u16 le][payload len: u16 le][postcard payload][crc32 le]`,
     /// CRC over header + payload.
     ///
-    /// `Ok(None)` means the sector was never written, or holds a valid record with a
-    /// different `VERSION` (older firmware); `Err(Corrupt)` means a record is present
-    /// but its CRC didn't match or the payload failed to decode.
+    /// `Ok(None)` means the sector was never written, or holds a valid record with a different `VERSION` (older firmware) 
+    /// `Err(Corrupt)` means a record is present but its CRC didn't match or the payload failed to decode
     pub fn load<T: Stored>(&mut self) -> Result<Option<T>, MemoryFault> {
         let mut buf = [0u8; MAX_RECORD_BYTES];
         self.flash
@@ -1023,7 +1020,7 @@ impl Memory {
     }
 
     /// Erases the record's sector and writes `value` back.
-    /// No-op when the stored record already matches.
+    /// No-op when the flash stored record already matches the RAM contents.
     pub fn store<T: Stored>(&mut self, value: &T) -> Result<(), MemoryFault> {
         let mut buf = [0u8; MAX_RECORD_BYTES];
         let used = postcard::to_slice(value, &mut buf[4..MAX_RECORD_BYTES - 4])

@@ -38,8 +38,7 @@ impl FocStepOutcome {
 }
 
 /// One iteration of the current control loop.
-/// Failure stage results assert the fault here; the rest ride out in the
-/// outcome so the caller can dispatch the follow-up work.
+/// Failure stage results assert the fault here, other stage results propagate through the output.
 pub fn foc_step(
     mode: &mut OperatingMode,
     params: &mut ConstantMotorParameters,

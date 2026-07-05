@@ -1,6 +1,8 @@
 use crate::boards::PWM_FREQ;
 use field_oriented::{
-    AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibrationFault, HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig, OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
+    AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibrationFault, 
+    HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig, 
+    OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
 };
 
 pub struct CalibrationInputs {

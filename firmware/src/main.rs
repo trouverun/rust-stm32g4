@@ -19,45 +19,37 @@ pub mod pac {
 
 #[rtic::app(device = crate::pac, peripherals = false, dispatchers = [SPI2, SPI3, UART5])]
 mod app {
-    use crate::boards::*;
-    use crate::bsp::{
-        self, Acceleration, AdcFeedback, AmtEncoder, CanBus, HallFeedback, Memory,
-        PwmOutput, Watchdog
-    };
-    use crate::calibration::StageResult;
-    use crate::control::{foc_step, FocStepInputs};
-    use crate::types::{Command, *};
-    use crate::types::{BoardStatus, OperatingMode};
-    use crate::utils::{PhaseCurrentFilter, FeedbackArbitrator};
-    use crate::types::ButtonState;
     use defmt::info;
     use defmt_rtt as _;
     use embassy_stm32::time::Hertz;
-    use crate::can::messages::{
-        Messages, MotorCurrents, MotorCurrentsInit, RotorEstimates, RotorEstimatesInit,
-        EncoderReading, EncoderReadingInit, Fault, FaultInit, Heartbeat, HeartbeatInit,
-        ConfigQueryBlockId, OperatingModeRequestRequestedMode,
-        DeviceIdReport, DeviceIdReportInit,
-        MotorParameterReport1, MotorParameterReport1Init,
-        MotorParameterReport2, MotorParameterReport2Init,
-        CurrentGainsDReport, CurrentGainsDReportInit, CurrentGainsQReport, CurrentGainsQReportInit,
-    };
-    use embedded_can::Id;
-    use crate::can::periodic::{Periodic, Slot};
-    use crate::can::transport::{
-        address_frame, IntoFrame, FIXED_ID_BASE, MAX_DEVICE_ID, NODE_ADDR_MASK,
-    };
     use embassy_stm32::can::{
         BufferedCanReceiver, BufferedCanSender, IT0InterruptHandler,
     };
     use embassy_stm32::interrupt::typelevel::Handler;
     use embassy_stm32::{peripherals::TIM2, rcc};
+    use rtic_monotonics::stm32::{ExtU64, Tim2 as Mono};
+    use rtic_monotonics::Monotonic;
+    use embedded_can::Id;
+
+    use crate::boards::*;
+    use crate::bsp::{
+        self, Acceleration, AdcFeedback, AmtEncoder, CanBus, HallFeedback, Memory,
+        PwmOutput, Watchdog
+    };
+    use crate::types::{Command, *};
+    use crate::types::{BoardStatus, OperatingMode};
+    use crate::calibration::StageResult;
+    use crate::control::{foc_step, FocStepInputs};
     use field_oriented::{
         ConstantMotorParameters, ControllerParameters, FOC, FocConfig, HasRotorFeedback,
         MotorParamEstimator, MotorParamsEstimate, compute_current_pi_controller_gains
     };
-    use rtic_monotonics::stm32::{ExtU64, Tim2 as Mono};
-    use rtic_monotonics::Monotonic;
+    use crate::utils::{PhaseCurrentFilter, FeedbackArbitrator};
+    use crate::can::messages::*;
+    use crate::can::periodic::{Periodic, Slot};
+    use crate::can::transport::{
+        address_frame, IntoFrame, FIXED_ID_BASE, MAX_DEVICE_ID, NODE_ADDR_MASK,
+    };
 
     #[shared]
     struct Shared {
@@ -72,7 +64,6 @@ mod app {
         foc: FOC,
         motor_parameters: ConstantMotorParameters,
         debug_mappings: DebugMappings,
-        button_state: ButtonState,
         current_loop_snapshot: CurrentLoopSnapshot,
         feedback_arbitrator: FeedbackArbitrator,
         current_filter: PhaseCurrentFilter,
@@ -103,6 +94,7 @@ mod app {
             debug_mappings,
         ) = map_peripherals();
 
+        // Initialize HW:
         let pwm_output = bsp::PwmOutput::new(pwm_mappings);
         pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
         let mut adc_feedback = bsp::AdcFeedback::new(adc_mappings);
@@ -113,7 +105,8 @@ mod app {
         let mut memory = bsp::Memory::new(memory_mappings);
         let mut mode = OperatingMode::Idle;
 
-        let mut config = match memory.load::<FirmwareConfig>() {
+        // Load configs from flash:
+        let config = match memory.load::<FirmwareConfig>() {
             Ok(Some(c)) => c,
             Ok(None) => FirmwareConfig::default(),
             Err(e) => { 
@@ -121,15 +114,14 @@ mod app {
                 FirmwareConfig::default() 
             }
         };
-        config.current_limit_a = 2.5;
         let current_filter = PhaseCurrentFilter::new(2500.0, config.rated_current_limit_a, config.current_limit_a);
-
         let foc_cfg = FocConfig {
             saturation_d_ratio: 0.1,
         };
         let mut foc = FOC::new(foc_cfg, PWM_FREQ.0 as f32);
 
-        let mut motor_parameters = match memory.load::<MotorParamsEstimate>() {
+        // Load motor parameters from flash:
+        let motor_parameters = match memory.load::<MotorParamsEstimate>() {
             Ok(Some(p)) => {info!("Motpar {}", p); ConstantMotorParameters::from_other(p)},
             Ok(None) => ConstantMotorParameters { params: MotorParamsEstimate::new_empty() },
             Err(e) => { 
@@ -137,8 +129,6 @@ mod app {
                 ConstantMotorParameters { params: MotorParamsEstimate::new_empty() } 
             }
         };
-        motor_parameters.params.num_pole_pairs = Some(2);
-
         match memory.load::<[f32; 6]>() {
             Ok(Some(cal)) => {info!("Halcal {}", cal); hall_feedback.set_calibration(cal)},
             Ok(None) => {}
@@ -150,16 +140,15 @@ mod app {
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
 
+        // Start CAN interface:
         let can_bus = bsp::CanBus::new(can_mappings, 1_000_000, config.device_id);
         let can_periodic_tx = can_bus.writer();
         let can_response_tx = can_bus.writer();
         let can_rx = can_bus.reader();
-
         let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
         Mono::start(rcc::frequency::<TIM2>().0, token);
         can_tx_task::spawn().unwrap();
         can_rx_task::spawn().unwrap();
-        debug_print::spawn().unwrap();
 
         (Shared {
             mode,
@@ -176,7 +165,6 @@ mod app {
             foc,
             motor_parameters,
             debug_mappings,
-            button_state: ButtonState::Waiting,
             current_loop_snapshot: CurrentLoopSnapshot::default(),
             feedback_arbitrator: FeedbackArbitrator::new(),
             current_filter,
@@ -192,11 +180,14 @@ mod app {
         })
     }
 
+    /// Watchdog for tracking FOC ISR loop cycle time
     #[task(priority = 6, binds = TIM7_DAC, shared = [watchdog])]
     fn watchdog_isr(mut cx: watchdog_isr::Context) {
         cx.shared.watchdog.lock(|wd| wd.register_fault());
     }
 
+
+    /// Shared ISR for current control loop ADC (FOC) and board status ADC (DC voltage, temperature)
     #[task(
         priority = 6, binds = ADC3,
         local = [adc_feedback, acceleration],
@@ -206,7 +197,7 @@ mod app {
             current_loop_snapshot, current_filter, watchdog
         ]
     )]
-    fn currents_adc_isr(mut cx: currents_adc_isr::Context) {
+    fn shared_adc_isr(mut cx: shared_adc_isr::Context) {
         // if FOC ISR (sampled phase currents):
         if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
             cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
@@ -256,7 +247,7 @@ mod app {
             cx.shared.pwm_output.lock(|pwm| pwm.set_duty_cycles(outcome.duty_cycles));
             cx.shared.current_loop_snapshot.lock(|cs| *cs = outcome.snapshot);
 
-            // EEPROM writes and tuning happen outside this ISR:
+            // Do flash writes and tuning outside this ISR:
             match outcome.stage_result {
                 Some(StageResult::ZeroEncoderRequest) => {
                     let _ = zero_encoder::spawn();
@@ -437,14 +428,15 @@ mod app {
         if Periodic::COUNT == 0 {
             core::future::pending::<()>().await;
         }
-
         let mut slots = Periodic::all().map(|kind| Slot::new(kind, Mono::now()));
+
         loop {
             let next = slots.iter().map(|s| s.next_due).min().unwrap();
             Mono::delay_until(next).await;
             let now = Mono::now();
             let device_id = cx.shared.config.lock(|cfg| cfg.device_id);
 
+            // Pre-read rotor feedback if at least one scheduled message needs it:
             let need_rotor_feedback = slots.iter().any(|s| {
                 s.next_due <= now && matches!(s.kind, Periodic::RotorEstimates | Periodic::EncoderReading)
             });
@@ -534,7 +526,8 @@ mod app {
         priority = 1,
         shared = [
             mode, runtime_values, config, current_filter,
-            foc, motor_parameters],
+            foc, motor_parameters
+        ],
         local = [can_rx, can_response_tx, can_bus]
     )]
     async fn can_rx_task(mut cx: can_rx_task::Context) {
@@ -549,6 +542,7 @@ mod app {
                 Id::Extended(_) => continue,
             };
             let base_id = if id < FIXED_ID_BASE { id & !NODE_ADDR_MASK } else { id };
+
             match Messages::from_can_message(base_id as u32, frame.data()) {
                 Ok(Messages::OperatingModeRequest(msg)) => {
                     let command = match msg.requested_mode() {
@@ -643,6 +637,7 @@ mod app {
                         if let Some(f) = f {
                             cx.local.can_response_tx.write(address_frame(f, device_id)).await;
                         }
+                        
                         let f = MotorParameterReport2::try_from(MotorParameterReport2Init {
                             d_inductance: est.d_inductance.unwrap_or(0.0),
                             q_inductance: est.q_inductance.unwrap_or(0.0),
@@ -664,6 +659,7 @@ mod app {
                                     cx.local.can_response_tx.write(address_frame(f, device_id)).await;
                                 }
                             }
+
                             if all || matches!(block, ConfigQueryBlockId::CurrentGainsQ) {
                                 let f = CurrentGainsQReport::try_from(CurrentGainsQReportInit {
                                     kr: q_pi.kr, kp: q_pi.kp, ki: q_pi.ki, kt: q_pi.kt,
@@ -709,78 +705,6 @@ mod app {
     fn idle(mut cx: idle::Context) -> ! {
         loop {
             cortex_m::asm::wfi();
-        }
-    }
-
-    // ---------------------- Debug user inputs: -----------------------------------
-    #[task(priority = 1, binds = EXTI15_10, shared=[debug_mappings, button_state])]
-    fn on_exti15_10(mut cx: on_exti15_10::Context) {
-        let edge = cx.shared.debug_mappings.lock(|dm| {
-            dm.user_btn.clear_pending();
-            if dm.user_btn.is_low() {
-                EdgeType::Rising
-            } else {
-                EdgeType::Falling
-            }
-        });
-        cx.shared.button_state.lock(|bs| {
-            if matches!(bs, ButtonState::Waiting) && matches!(edge, EdgeType::Rising) {
-                let _ = button_timeout::spawn();
-            }
-            *bs = bs.on_edge(edge);
-        });
-    }
-
-    #[task(priority = 1, shared=[debug_mappings, button_state, runtime_values, mode, motor_parameters])]
-    async fn button_timeout(mut cx: button_timeout::Context) {
-        Mono::delay(1000.millis()).await;
-        let press_type = cx.shared.button_state.lock(|bs| *bs);
-        let command = match press_type {
-            ButtonState::ShortPress => Command::Idle,
-            ButtonState::DoublePress => Command::EnableTorqueControl,
-            ButtonState::LongPress => {
-                match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
-                    Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs },
-                    None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
-                }
-            }
-            _ => {return}
-        };
-        cx.shared.mode.lock(|mode| {
-            mode.on_command(command);
-        });
-        cx.shared.button_state.lock(|bs| *bs = ButtonState::Waiting);
-    }
-
-    const POT_RECIPROCAL: f32 = 0.05 / ((1 << 12) - 1) as f32;
-    #[task(priority = 1, binds = ADC1_2, shared=[debug_mappings, runtime_values])]
-    fn on_adc12(mut cx: on_adc12::Context) {
-        let adc_reading = cx.shared.debug_mappings.lock(|dm| {
-            if dm.pot_adc.check_eoc() {
-                Some(dm.pot_adc.read() as f32 * POT_RECIPROCAL)
-            } else {
-                None
-            }
-        });
-
-        if let Some(val) = adc_reading {
-            cx.shared.runtime_values.lock(|rc| {
-                rc.target_torque = val;
-            });
-        }
-    }
-
-    #[task(priority = 1, shared=[feedback_arbitrator])]
-    async fn debug_print(mut cx: debug_print::Context) {
-        loop {
-            /*let data = cx.shared.feedback_arbitrator.lock(|fa| {
-                fa.read()
-            });
-
-            if let Ok(vals) = data {
-                info!("Angle: {}, Omega {}", vals.theta, vals.omega);
-            }*/
-            Mono::delay(100.millis()).await;
         }
     }
 }
