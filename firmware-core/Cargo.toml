@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 field-oriented = { path = "../field-oriented" }
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1", default-features = false }
+crc = "3"

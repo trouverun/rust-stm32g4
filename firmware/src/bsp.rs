@@ -17,7 +17,8 @@ use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
 use embassy_stm32::cordic::{Cordic, NoScale, Precision, Sin, Sqrt, SqrtScale, Q15};
 
 use crate::boards::*;
-use crate::memory::{sector_offset, Stored, MemoryFault, CRC32, MAX_RECORD_BYTES, SECTOR_SIZE};
+use crate::memory::{sector_offset, Stored, SECTOR_SIZE};
+use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES};
 use embassy_stm32::adc::{
     Adc, AdcConfig, AnyAdcChannel, Dual, EocInterruptEnabled, Exten, ExternalTriggeredADC,
     JeosInterruptEnabled, Queued, Running as AdcRunning, SampleTime, StartMode,
@@ -843,49 +844,22 @@ impl Memory {
 
     /// Reads the record of type `T` from its flash sector.
     ///
-    /// Record layout: `[version: u16 le][payload len: u16 le][postcard payload][crc32 le]`,
-    /// CRC over header + payload.
-    ///
-    /// `Ok(None)` means the sector was never written, or holds a valid record with a different `VERSION` (older firmware) 
+    /// `Ok(None)` means the sector was never written, or holds a valid record with a different `VERSION` (older firmware)
     /// `Err(Corrupt)` means a record is present but its CRC didn't match or the payload failed to decode
     pub fn load<T: Stored>(&mut self) -> Result<Option<T>, MemoryFault> {
         let mut buf = [0u8; MAX_RECORD_BYTES];
         self.flash
             .blocking_read(sector_offset(T::SECTOR), &mut buf)
             .map_err(|_| MemoryFault::FlashInternalFault)?;
-        if buf.iter().all(|&b| b == 0xFF) {
-            return Ok(None); // erased sector
-        }
-        let version = u16::from_le_bytes(buf[0..2].try_into().unwrap());
-        let len = u16::from_le_bytes(buf[2..4].try_into().unwrap()) as usize;
-        let crc_bytes = buf.get(4 + len..4 + len + 4).ok_or(MemoryFault::CorruptedData)?;
-        let stored = u32::from_le_bytes(crc_bytes.try_into().unwrap());
-        if CRC32.checksum(&buf[..4 + len]) != stored {
-            return Err(MemoryFault::CorruptedData);
-        }
-        if version != T::VERSION {
-            return Ok(None); // valid record from another layout version
-        }
-        let (value, rest) = postcard::take_from_bytes::<T>(&buf[4..4 + len])
-            .map_err(|_| MemoryFault::CorruptedData)?;
-        if !rest.is_empty() {
-            return Err(MemoryFault::CorruptedData);
-        }
-        Ok(Some(value))
+        decode_record::<T>(&buf, T::VERSION)
     }
 
     /// Erases the record's sector and writes `value` back.
     /// No-op when the flash stored record already matches the RAM contents.
     pub fn store<T: Stored>(&mut self, value: &T) -> Result<(), MemoryFault> {
         let mut buf = [0u8; MAX_RECORD_BYTES];
-        let used = postcard::to_slice(value, &mut buf[4..MAX_RECORD_BYTES - 4])
-            .map_err(|_| MemoryFault::TooLarge)?
-            .len();
-        buf[0..2].copy_from_slice(&T::VERSION.to_le_bytes());
-        buf[2..4].copy_from_slice(&(used as u16).to_le_bytes());
-        let crc = CRC32.checksum(&buf[..4 + used]);
-        buf[4 + used..4 + used + 4].copy_from_slice(&crc.to_le_bytes());
-        let write_len = (4 + used + 4).next_multiple_of(WRITE_SIZE);
+        let record_len = encode_record(value, T::VERSION, &mut buf)?;
+        let write_len = record_len.next_multiple_of(WRITE_SIZE);
 
         let off = sector_offset(T::SECTOR);
         let mut current = [0u8; MAX_RECORD_BYTES];

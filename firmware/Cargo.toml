@@ -26,8 +26,6 @@ libm = "0.2"
 static_cell = "2"
 bitvec = { version = "1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
-postcard = { version = "1", default-features = false }
-crc = "3"
 
 [build-dependencies]
 dbc-codegen = "0.3"

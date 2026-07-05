@@ -91,3 +91,20 @@ impl From<PITuningFault> for FaultCause {
         }
     }
 }
+
+#[derive(Clone, Copy, defmt::Format)]
+pub enum MemoryFault {
+    FlashInternalFault,
+    CorruptedData,
+    TooLarge,
+}
+
+impl From<MemoryFault> for FaultCause {
+    fn from(f: MemoryFault) -> Self {
+        match f {
+            MemoryFault::FlashInternalFault => FaultCause::MemoryFlashFault,
+            MemoryFault::CorruptedData => FaultCause::MemoryCorruptedData,
+            MemoryFault::TooLarge => FaultCause::MemoryTooLarge,
+        }
+    }
+}

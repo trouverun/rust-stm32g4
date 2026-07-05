@@ -1,13 +1,7 @@
 use crate::types::FirmwareConfig;
 use embassy_stm32::flash::{FLASH_SIZE, MAX_ERASE_SIZE, WRITE_SIZE};
 use field_oriented::{ControllerParameters, MotorParamsEstimate};
-
-#[derive(Clone, Copy, defmt::Format)]
-pub enum MemoryFault {
-    FlashInternalFault,
-    CorruptedData,
-    TooLarge,
-}
+use firmware_core::MAX_RECORD_BYTES;
 
 /// An entry persisted in its own flash sector.
 /// `SECTOR` indexes sectors from the end of flash (0 = last sector) and must be unique.
@@ -24,13 +18,8 @@ impl Stored for [f32; 6]             { const SECTOR: usize = 2; const VERSION: u
 impl Stored for MotorParamsEstimate  { const SECTOR: usize = 1; const VERSION: u16 = 1; }
 impl Stored for ControllerParameters { const SECTOR: usize = 0; const VERSION: u16 = 1; }
 
-pub(crate) const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 pub(crate) const SECTOR_SIZE: u32 = MAX_ERASE_SIZE as u32;
 const TOTAL_FLASH_SECTORS: usize = FLASH_SIZE / MAX_ERASE_SIZE;
-
-/// Scratch-buffer size, in **bytes**, for one record (4-byte header + postcard payload + 4-byte CRC).
-/// Must be a multiple of the flash write granularity and fit within a sector.
-pub(crate) const MAX_RECORD_BYTES: usize = 64;
 
 /// Flash byte offset of the sector at `index`, counted from the end of flash:
 /// index 0 is the last sector, 1 the second-to-last, and so on.
