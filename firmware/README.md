@@ -1,0 +1,1 @@
+This crate contains the hardware interfacing main executable of the firmware.
