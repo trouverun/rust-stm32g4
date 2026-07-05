@@ -9,7 +9,6 @@ mod bsp;
 mod can;
 mod memory;
 mod types;
-mod utils;
 pub mod pac {
     pub use embassy_stm32::pac::Interrupt as interrupt;
     pub use embassy_stm32::pac::*;
@@ -34,13 +33,16 @@ mod app {
         self, Acceleration, AdcFeedback, AmtEncoder, CanBus, HallFeedback, Memory,
         PwmOutput, Watchdog
     };
-    use firmware_core::{Command, FaultCause, OperatingMode, StageResult, foc_step, FocStepInputs, CurrentLoopSnapshot};
+    use firmware_core::{
+        Command, FaultCause, OperatingMode, StageResult, foc_step, FocStepInputs, 
+        CurrentLoopSnapshot
+    };
     use crate::types::*;
     use field_oriented::{
         ConstantMotorParameters, ControllerParameters, FOC, FocConfig, HasRotorFeedback,
-        MotorParamEstimator, MotorParamsEstimate, compute_current_pi_controller_gains
+        MotorParamEstimator, MotorParamsEstimate, compute_current_pi_controller_gains,
+        PhaseCurrentFilter, FeedbackArbitrator
     };
-    use crate::utils::{PhaseCurrentFilter, FeedbackArbitrator};
     use crate::can::messages::*;
     use crate::can::periodic::{Periodic, Slot};
     use crate::can::transport::{
@@ -110,7 +112,7 @@ mod app {
                 FirmwareConfig::default() 
             }
         };
-        let current_filter = PhaseCurrentFilter::new(2500.0, config.rated_current_limit_a, config.current_limit_a);
+        let current_filter = PhaseCurrentFilter::new(PWM_FREQ.0 as f32, 2500.0, config.rated_current_limit_a, config.current_limit_a);
         let foc_cfg = FocConfig {
             saturation_d_ratio: 0.1,
         };

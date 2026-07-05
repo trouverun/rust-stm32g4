@@ -1,4 +1,5 @@
 use super::types::*;
+use num_traits::Float;
 use core::f32::consts::{PI, TAU};
 
 /// = sqrt(3)/2
@@ -14,6 +15,12 @@ pub(crate) fn wrapped_diff(a: f32, b: f32) -> f32 {
     } else {
         d
     }
+}
+
+/// Wrap an angle within one turn of range to `[0, PI)`
+pub fn wrap_to_pi(angle_rad: f32) -> f32 {
+    const INV_TAU: f32 = 1.0 / TAU;
+    angle_rad - TAU * (angle_rad * INV_TAU).round()
 }
 
 /// Wrap an angle within one turn of range to `[0, TAU)`

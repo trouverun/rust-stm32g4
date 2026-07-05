@@ -11,16 +11,19 @@ mod types;
 mod math;
 mod pi_control;
 mod estimation;
+mod filtering;
 
 pub use crate::types::*;
 use crate::{math::*};
+pub use crate::math::wrap_to_pi;
 pub use crate::pi_control::{PIController, PIGains, PITuningFault, compute_current_pi_controller_gains};
 pub use crate::estimation::{
     ConstantMotorParameters, HallCalibrator, HallCalibrationFault, OfflineMotorEstimator, OfflineEstimatorInput,
     OfflineEstimatorCommand, OfflineEstimatorOutput, OfflineEstimatorConfig,
     MotorParams, MotorParamsEstimate, MotorParamEstimator, EstimationStepFault,
-    HallEstimator, HallEstimatorInput, HallEstimatorOutput
+    HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator
 };
+pub use crate::filtering::{LowPassFilter, PhaseCurrentFilter};
 
 #[cfg(test)]
 pub use crate::sim::*;
