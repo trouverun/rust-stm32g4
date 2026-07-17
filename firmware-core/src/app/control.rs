@@ -1,6 +1,6 @@
-use crate::calibration::{CalibrationInputs, StageResult};
-use crate::modes::{Command, OperatingMode};
-use crate::faults::FaultCause;
+use super::calibration::{CalibrationInputs, StageResult};
+use super::modes::{Command, OperatingMode};
+use super::faults::FaultCause;
 use field_oriented::{
     AngleType, ConstantMotorParameters, FOC, FocInput, FocInputType, MotorParamEstimator,
     PhaseValues, RotorFeedback, RotorFeedbackFault, DoesFocMath

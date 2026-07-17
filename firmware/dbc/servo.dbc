@@ -82,14 +82,16 @@ BO_ 432 MotorParameterReport2: 7 Hyperdrive
  SG_ ld_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ lq_valid : 49|1@1+ (1,0) [0|1] "" Host
 
-BO_ 512 Setpoint: 6 Host
+BO_ 512 Setpoint: 8 Host
  SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
  SG_ target_velocity : 16|16@1- (0.25,0) [-8192|8191.75] "rad/s" Hyperdrive
- SG_ rolling_counter : 32|4@1+ (1,0) [0|15] "" Hyperdrive
- SG_ checksum : 40|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
+ SG_ checksum : 56|8@1+ (1,0) [0|255] "" Hyperdrive
 
-BO_ 528 OperatingModeRequest: 1 Host
+BO_ 528 OperatingModeRequest: 8 Host
  SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
+ SG_ checksum : 56|8@1+ (1,0) [0|255] "" Hyperdrive
 
 BO_ 544 ProtectionLimits: 8 Host
  SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
@@ -112,7 +114,8 @@ BO_ 624 ConfigQuery: 1 Host
 
 CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands.";
 CM_ SG_ 320 mode "0=Idle 1=Calibration 2=TorqueControl 3=VelocityControl 4=Fault";
-CM_ BO_ 512 "Torque/velocity setpoints. checksum = CRC-8 (SAE J1850) over data bytes 0-4.";
+CM_ BO_ 512 "Torque/velocity setpoints. checksum = CRC-8 (SAE J1850) over data bytes 0-6.";
+CM_ BO_ 528 "checksum = CRC-8 (SAE J1850) over data bytes 0-6.";
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ BO_  "GenMsgCycleTimeUs" INT 0 1000000;

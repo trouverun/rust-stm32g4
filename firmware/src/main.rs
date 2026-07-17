@@ -537,7 +537,8 @@ mod app {
         ],
         local = [
             can_rx, can_response_tx,
-            setpoint_integrity: FrameIntegrity = FrameIntegrity::new()
+            setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
+            mode_request_integrity: FrameIntegrity = FrameIntegrity::new()
         ]
     )]
     async fn can_rx_task(mut cx: can_rx_task::Context) {
@@ -553,6 +554,10 @@ mod app {
 
             match Messages::from_can_message(id as u32, frame.data()) {
                 Ok(Messages::OperatingModeRequest(msg)) => {
+                    if cx.local.mode_request_integrity.check(&frame.data()[..7], msg.rolling_counter(), msg.checksum()).is_err() {
+                        cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::CANMessageIntegrity }));
+                        continue;
+                    }
                     let command = match msg.requested_mode() {
                         OperatingModeRequestRequestedMode::Idle => Command::Idle,
                         OperatingModeRequestRequestedMode::Calibration => {
@@ -576,7 +581,7 @@ mod app {
                     });
                 }
                 Ok(Messages::Setpoint(msg)) => {
-                    match cx.local.setpoint_integrity.check(&frame.data()[..5], msg.rolling_counter(), msg.checksum()) {
+                    match cx.local.setpoint_integrity.check(&frame.data()[..7], msg.rolling_counter(), msg.checksum()) {
                         Ok(()) => {
                             let now = Mono::now();
                             cx.shared.runtime_values.lock(|rtv| {
@@ -585,7 +590,7 @@ mod app {
                             });
                         }
                         Err(_) => {
-                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::SetpointIntegrity }));
+                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::CANMessageIntegrity }));
                         }
                     }
                 }
