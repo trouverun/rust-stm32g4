@@ -35,7 +35,7 @@ mod app {
     };
     use firmware_core::{
         Command, FaultCause, OperatingMode, StageResult, foc_step, FocStepInputs,
-        CurrentLoopSnapshot, FrameIntegrity
+        CurrentLoopSnapshot, FrameIntegrity, Debounced, LeakyBucket
     };
     use crate::types::*;
     use field_oriented::{
@@ -107,10 +107,10 @@ mod app {
                 FirmwareConfig::default() 
             }
         };
-        let pwm_output = bsp::PwmOutput::new(pwm_mappings, config.current_limit_a);
+        let pwm_output = bsp::PwmOutput::new(pwm_mappings, config.current_limit_a());
         pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
 
-        let current_filter = PhaseCurrentFilter::new(PWM_FREQ.0 as f32, 2500.0, config.rated_current_limit_a, config.current_limit_a);
+        let current_filter = PhaseCurrentFilter::new(PWM_FREQ.0 as f32, 2500.0, config.rated_current_limit_a(), config.current_limit_a());
         let foc_cfg = FocConfig {
             saturation_d_ratio: 0.1,
         };
@@ -184,7 +184,12 @@ mod app {
     /// Shared ISR for current control loop ADC (FOC) and board status ADC (DC voltage, temperature)
     #[task(
         priority = 6, binds = ADC3,
-        local = [adc_feedback, acceleration],
+        local = [
+            adc_feedback, acceleration,
+            board_overtemp: Debounced<Instant> = Debounced::new(false),
+            dc_undervolt: Debounced<Instant> = Debounced::new(false),
+            dc_overvolt: Debounced<Instant> = Debounced::new(false)
+        ],
         shared = [
             pwm_output, foc, motor_parameters, feedback_arbitrator,
             mode, board_status, config, runtime_values, debug_mappings,
@@ -214,8 +219,14 @@ mod app {
             let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
                 (fa.read(), fa.get_hall_pattern())
             });
-            let (calibration_voltage_v, calibration_current_a, calibration_omega, setpoint_timeout_ms) = cx.shared.config.lock(|cfg| {
-                    (cfg.calibration_voltage_v, cfg.calibration_current_a, cfg.calibration_omega, cfg.setpoint_timeout_ms)
+            let (
+                calibration_voltage_v, calibration_current_a, 
+                calibration_omega, setpoint_timeout_ms,
+                active_current_limit_a
+            ) = cx.shared.config.lock(|cfg| {
+                    (cfg.calibration_voltage_v(), cfg.calibration_current_a(), 
+                    cfg.calibration_omega(), cfg.setpoint_timeout_ms(), 
+                    cfg.rated_current_limit_a())
                 });
             let target_torque = cx.shared.runtime_values.lock(|rtv| {
                 rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
@@ -233,6 +244,7 @@ mod app {
                 calibration_current_a,
                 calibration_omega,
                 target_torque,
+                active_current_limit_a
             };
             let outcome = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
                 |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
@@ -271,15 +283,18 @@ mod app {
                 bs.temperature_c = Some(tboard);
             });
             let (min_dc, max_dc, max_temp) = cx.shared.config.lock(|cfg| {
-                (cfg.dc_bus_min_voltage_v, cfg.dc_bus_max_voltage_v, cfg.temp_max_c)
+                (cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(), cfg.temp_max_c())
             });
             cx.shared.mode.lock(|mode| {
-                if vbus < min_dc {
+                cx.local.dc_undervolt.update(vbus < min_dc, Mono::now(), 500.millis());
+                cx.local.dc_overvolt.update(vbus > max_dc, Mono::now(), 500.millis());
+                if cx.local.dc_undervolt.state() {
                     mode.on_command(Command::AssertFault { cause: FaultCause::DcUnderVoltage });
-                } else if vbus > max_dc {
+                } else if cx.local.dc_overvolt.state() {
                     mode.on_command(Command::AssertFault { cause: FaultCause::DcOverVoltage });
                 }
-                if tboard > max_temp {
+                cx.local.board_overtemp.update(tboard > max_temp, Mono::now(), 500.millis());
+                if cx.local.board_overtemp.state() {
                     mode.on_command(Command::AssertFault { cause: FaultCause::Overtemperature });
                 }
             });
@@ -538,7 +553,8 @@ mod app {
         local = [
             can_rx, can_response_tx,
             setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
-            mode_request_integrity: FrameIntegrity = FrameIntegrity::new()
+            mode_request_integrity: FrameIntegrity = FrameIntegrity::new(),
+            setpoint_fault: LeakyBucket = LeakyBucket::new(2, 1, 3)
         ]
     )]
     async fn can_rx_task(mut cx: can_rx_task::Context) {
@@ -568,7 +584,6 @@ mod app {
                             }
                         }
                         OperatingModeRequestRequestedMode::TorqueControl => Command::EnableTorqueControl,
-                        OperatingModeRequestRequestedMode::VelocityControl => Command::EnableVelocityControl,
                         OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
                         OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
                     };
@@ -585,44 +600,65 @@ mod app {
                         Ok(()) => {
                             let now = Mono::now();
                             cx.shared.runtime_values.lock(|rtv| {
-                                rtv.target_torque.set(msg.target_torque(), now);
-                                rtv.target_omega = msg.target_velocity();
+                                let torque_demand = msg.target_torque();
+                                rtv.target_torque.set(torque_demand, now);
                             });
+                            cx.local.setpoint_fault.drain();
                         }
                         Err(_) => {
-                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::CANMessageIntegrity }));
+                            cx.local.setpoint_fault.fill();
+                            if cx.local.setpoint_fault.tripped() {
+                                cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::CANMessageIntegrity }));
+                            }
                         }
                     }
                 }
                 Ok(Messages::ProtectionLimits(msg)) => {
-                    cx.shared.config.lock(|cfg| {
-                        cfg.dc_bus_min_voltage_v = msg.dc_bus_v_min();
-                        cfg.dc_bus_max_voltage_v = msg.dc_bus_v_max();
-                        cfg.setpoint_timeout_ms = msg.setpoint_timeout() as f32;
-                        cfg.temp_max_c = msg.temp_max();
+                    let applied = cx.shared.config.lock(|cfg| {
+                        let mut candidate = *cfg;
+                        candidate.set_dc_bus_limits(msg.dc_bus_v_min(), msg.dc_bus_v_max())?;
+                        candidate.set_setpoint_timeout_ms(msg.setpoint_timeout())?;
+                        candidate.set_temp_max_c(msg.temp_max())?;
+                        *cfg = candidate;
+                        Ok::<(), ConfigError>(())
                     });
-                    let _ = persist_config::spawn();
+                    match applied {
+                        Ok(()) => { let _ = persist_config::spawn(); }
+                        Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    }
                 }
                 Ok(Messages::MotorConfig(msg)) => {
-                    cx.shared.config.lock(|cfg| {
-                        cfg.rated_current_limit_a = msg.rated_current_limit();
-                        cfg.current_limit_a = msg.phase_current_limit();
+                    let applied = cx.shared.config.lock(|cfg| {
+                        let mut candidate = *cfg;
+                        candidate.set_rated_current_limit_a(msg.rated_current_limit())?;
+                        candidate.set_current_limit_a(msg.phase_current_limit())?;
+                        *cfg = candidate;
+                        Ok::<(f32, f32), ConfigError>((candidate.rated_current_limit_a(), candidate.current_limit_a()))
                     });
-                    cx.shared.current_filter.lock(|cf| {
-                        cf.set_limits(msg.rated_current_limit(), msg.phase_current_limit())
-                    });
-                    cx.shared.motor_parameters.lock(|mp| {
-                        mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
-                    });
-                    let _ = persist_config::spawn();
+                    match applied {
+                        Ok((rated, limit)) => {
+                            cx.shared.current_filter.lock(|cf| cf.set_limits(rated, limit));
+                            cx.shared.motor_parameters.lock(|mp| {
+                                mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
+                            });
+                            let _ = persist_config::spawn();
+                        }
+                        Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    }
                 }
                 Ok(Messages::CalibrationTargets(msg)) => {
-                    cx.shared.config.lock(|cfg| {
-                        cfg.calibration_voltage_v = msg.target_voltage();
-                        cfg.calibration_current_a = msg.target_current();
-                        cfg.calibration_omega = msg.target_velocity();
+                    let applied = cx.shared.config.lock(|cfg| {
+                        let mut candidate = *cfg;
+                        candidate.set_calibration_voltage_v(msg.target_voltage())?;
+                        candidate.set_calibration_current_a(msg.target_current())?;
+                        candidate.set_calibration_omega(msg.target_velocity())?;
+                        *cfg = candidate;
+                        Ok::<(), ConfigError>(())
                     });
-                    let _ = persist_config::spawn();
+                    match applied {
+                        Ok(()) => { let _ = persist_config::spawn(); }
+                        Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    }
                 }
                 Ok(Messages::ConfigQuery(msg)) => {
                     let block = msg.block_id();

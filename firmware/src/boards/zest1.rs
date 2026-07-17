@@ -73,6 +73,7 @@ pub const BOARD: super::BoardInfo = super::BoardInfo {
         slope_c_per_v: 45.7,
         bias_c: 23.6,
     },
+    current_limit_a: 5.0
 };
 
 pub struct DebugMappings {
@@ -134,7 +135,7 @@ pub fn map_peripherals() -> (
         w_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PD14),
         vbus_channel: AdcChannel::<FeedbackAdcA>::degrade_adc(p.PB13),
         tboard_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PE15),
-        sample_trigger: BasicTrgoOutput::new(p.TIM6, Hertz(1)),
+        sample_trigger: BasicTrgoOutput::new(p.TIM6, Hertz(10)),
     };
 
     let hall_feedback = super::HallFeedbackMappings {

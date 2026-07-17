@@ -46,6 +46,7 @@ pub struct BoardInfo {
     pub opamp_ref_v: f32,
     pub vbus_divide_factor: f32,
     pub thermistor_scaling: ThermistorLinearScale,
+    pub current_limit_a: f32,
 }
 
 #[cfg(feature = "mcu-opamps")]
