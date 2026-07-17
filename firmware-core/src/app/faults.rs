@@ -1,4 +1,4 @@
-use crate::calibration::{CalibrationFailureCause};
+use super::calibration::{CalibrationFailureCause};
 use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuningFault};
 
 #[derive(Clone, Copy, defmt::Format)]
@@ -33,7 +33,7 @@ pub enum FaultCause {
     MemoryCorruptedData,
     MemoryTooLarge,
 
-    SetpointIntegrity,
+    CANMessageIntegrity,
     SetpointTimeout,
 }
 

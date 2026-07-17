@@ -1,4 +1,4 @@
-use crate::faults::MemoryFault;
+use crate::app::MemoryFault;
 
 /// Scratch-buffer size, in **bytes**, for one record (4-byte header + postcard payload + 4-byte CRC).
 /// The flash side must ensure this is a multiple of the write granularity and fits within a sector.
