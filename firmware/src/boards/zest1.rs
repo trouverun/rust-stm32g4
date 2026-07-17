@@ -67,6 +67,7 @@ pub type WatchdogTimer = TIM7;
 pub const BOARD: super::BoardInfo = super::BoardInfo {
     shunt_resistance_mohm: 15.0,
     opamp_gain: 15.0,
+    opamp_ref_v: 3.3,
     vbus_divide_factor: 25.3589743589744,
     thermistor_scaling: super::ThermistorLinearScale {
         slope_c_per_v: 45.7,

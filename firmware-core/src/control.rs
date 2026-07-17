@@ -24,7 +24,7 @@ pub struct FocStepInputs {
     pub calibration_voltage_v: f32,
     pub calibration_current_a: f32,
     pub calibration_omega: f32,
-    pub target_torque: f32,
+    pub target_torque: Option<f32>,
 }
 
 pub struct FocStepOutcome {
@@ -60,6 +60,9 @@ pub fn foc_step<A>(
     if inputs.overcurrent {
         mode.on_command(Command::AssertFault { cause: FaultCause::Overcurrent });
     }
+    if matches!(mode, OperatingMode::TorqueControl) && inputs.target_torque.is_none() {
+        mode.on_command(Command::AssertFault { cause: FaultCause::SetpointTimeout });
+    }
 
     let gate = mode.foc_gate();
     let rotor_feedback_fault = inputs.rotor_feedback.is_err() && !gate.feedback_optional;
@@ -91,7 +94,7 @@ pub fn foc_step<A>(
         stage_result = result;
         (output.angle_type, output.theta, output.foc_command)
     } else {
-        (angle_type, theta, FocInputType::TargetTorque(inputs.target_torque))
+        (angle_type, theta, FocInputType::TargetTorque(inputs.target_torque.unwrap_or(0.0)))
     };
 
     let foc_input = FocInput {
