@@ -25,6 +25,7 @@ pub struct FocStepInputs {
     pub calibration_current_a: f32,
     pub calibration_omega: f32,
     pub target_torque: Option<f32>,
+    pub active_current_limit_a: f32,
 }
 
 pub struct FocStepOutcome {
@@ -94,7 +95,12 @@ pub fn foc_step<A>(
         stage_result = result;
         (output.angle_type, output.theta, output.foc_command)
     } else {
-        (angle_type, theta, FocInputType::TargetTorque(inputs.target_torque.unwrap_or(0.0)))
+        let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
+        let max_torque = estimator.get_estimate().torque_constant().unwrap_or(0.0) * inputs.active_current_limit_a;
+        if torque_demand > max_torque {
+            torque_demand = max_torque;
+        }
+        (angle_type, theta, FocInputType::TargetTorque(torque_demand))
     };
 
     let foc_input = FocInput {

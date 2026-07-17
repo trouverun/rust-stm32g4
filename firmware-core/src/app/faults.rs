@@ -35,6 +35,7 @@ pub enum FaultCause {
 
     CANMessageIntegrity,
     SetpointTimeout,
+    ConfigOutOfRange,
 }
 
 impl FaultCause {

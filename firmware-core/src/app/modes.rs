@@ -9,7 +9,6 @@ pub enum Command {
     ResumeCalibration,
     FinishCalibration,
     EnableTorqueControl,
-    EnableVelocityControl,
     AssertFault { cause: FaultCause },
     ClearFault, 
     NoOp
@@ -19,7 +18,6 @@ pub enum OperatingMode {
     Idle,
     Calibration { calibrator: CalibrationRunner },
     TorqueControl,
-    VelocityControl,
     Fault {
         write_index: usize,
         trace: [FaultCause; 8],
@@ -39,9 +37,6 @@ impl Format for OperatingMode {
             }
             OperatingMode::TorqueControl => {
                 write!(f, "TorqueControl")
-            }
-            OperatingMode::VelocityControl => {
-                write!(f, "VelocityControl")
             }
             OperatingMode::Fault { write_index, trace, .. } => {
                 write!(f, "Fault {{ write_index: {}, trace: {} }}", write_index, trace)
@@ -99,7 +94,7 @@ impl OperatingMode {
                     CalibrationPhase::EncoderZeroing { .. } | CalibrationPhase::HallCalibration { .. }
                 ),
             },
-            OperatingMode::TorqueControl | OperatingMode::VelocityControl => FocGate {
+            OperatingMode::TorqueControl => FocGate {
                 active: true,
                 feedback_optional: false,
             },
@@ -122,7 +117,6 @@ impl OperatingMode {
             OperatingMode::Idle => 0,
             OperatingMode::Calibration { .. } => 1,
             OperatingMode::TorqueControl => 2,
-            OperatingMode::VelocityControl => 3,
             OperatingMode::Fault { .. } => 4,
         }
     }
