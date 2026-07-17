@@ -100,11 +100,8 @@ impl FOC {
             FocInputType::TargetTorque(target_torque) => {
                 // Derive target q,d-axis currents from torque command:
                 let pm_flux_linkage = motor_params.pm_flux_linkage.ok_or(FocFault::MissingMotorParams)?;
-                let k_tau = if pole_pairs != 0 && pm_flux_linkage != 0.0 {
-                    0.666667 / (pole_pairs as f32 * pm_flux_linkage)
-                } else {
-                    0.0
-                };
+                let torque_constant = motor_params.torque_constant().ok_or(FocFault::MissingMotorParams)?;
+                let k_tau = if torque_constant != 0.0 { 1.0 / torque_constant } else { 0.0 };
                 let target_i_dq = ClarkParkValue { d: 0.0, q: k_tau * target_torque };              
                 self.compute_voltages(target_i_dq, measured_i_dq, omega_e, pm_flux_linkage, motor_params)?
             }

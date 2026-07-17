@@ -6,13 +6,6 @@ BS_:
 
 BU_: Hyperdrive Host
 
-BO_ 2032 DeviceIdAssign: 2 Host
- SG_ current_device_id : 0|8@1+ (1,0) [0|15] "" Hyperdrive
- SG_ new_device_id : 8|8@1+ (1,0) [0|15] "" Hyperdrive
-
-BO_ 2033 DeviceIdReport: 1 Hyperdrive
- SG_ device_id : 0|8@1+ (1,0) [0|15] "" Host
-
 BO_ 256 MotorCurrents: 8 Hyperdrive
  SG_ iQ_meas : 0|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iD_meas : 16|16@1- (0.001,0) [-32.768|32.767] "A" Host
@@ -89,9 +82,11 @@ BO_ 432 MotorParameterReport2: 7 Hyperdrive
  SG_ ld_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ lq_valid : 49|1@1+ (1,0) [0|1] "" Host
 
-BO_ 512 Setpoint: 4 Host
+BO_ 512 Setpoint: 6 Host
  SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
  SG_ target_velocity : 16|16@1- (0.25,0) [-8192|8191.75] "rad/s" Hyperdrive
+ SG_ rolling_counter : 32|4@1+ (1,0) [0|15] "" Hyperdrive
+ SG_ checksum : 40|8@1+ (1,0) [0|255] "" Hyperdrive
 
 BO_ 528 OperatingModeRequest: 1 Host
  SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Hyperdrive
@@ -112,23 +107,12 @@ BO_ 576 CalibrationTargets: 6 Host
  SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
  SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Hyperdrive
 
-BO_ 592 CurrentGainsD: 8 Host
- SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Hyperdrive
- SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Hyperdrive
- SG_ ki : 32|16@1+ (2,0) [0|131070] "" Hyperdrive
- SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Hyperdrive
-
-BO_ 608 CurrentGainsQ: 8 Host
- SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Hyperdrive
- SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Hyperdrive
- SG_ ki : 32|16@1+ (2,0) [0|131070] "" Hyperdrive
- SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Hyperdrive
-
 BO_ 624 ConfigQuery: 1 Host
  SG_ block_id : 0|8@1+ (1,0) [0|255] "" Hyperdrive
 
-CM_ "Frame ID = base ID + device address (low 4 bits, 0-15). 0x100-0x1FF device reports, 0x200-0x2FF host commands, 0x7F0+ fixed-ID broadcast.";
+CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands.";
 CM_ SG_ 320 mode "0=Idle 1=Calibration 2=TorqueControl 3=VelocityControl 4=Fault";
+CM_ BO_ 512 "Torque/velocity setpoints. checksum = CRC-8 (SAE J1850) over data bytes 0-4.";
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ BO_  "GenMsgCycleTimeUs" INT 0 1000000;

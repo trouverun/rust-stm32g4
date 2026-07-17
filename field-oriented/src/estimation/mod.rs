@@ -21,6 +21,13 @@ pub struct MotorParams {
     pub pm_flux_linkage: f32,
 }
 
+impl MotorParams {
+    /// N·m per amp of q-axis current: 1.5 · p · λ
+    pub fn torque_constant(&self) -> f32 {
+        1.5 * self.num_pole_pairs as f32 * self.pm_flux_linkage
+    }
+}
+
 #[derive(Clone, Copy, defmt::Format, serde::Serialize, serde::Deserialize)]
 pub struct MotorParamsEstimate {
     pub num_pole_pairs: Option<u8>,
@@ -49,6 +56,10 @@ impl MotorParamsEstimate {
             q_inductance: None,
             pm_flux_linkage: None
         }
+    }
+
+    pub fn torque_constant(&self) -> Option<f32> {
+        Some(1.5 * self.num_pole_pairs? as f32 * self.pm_flux_linkage?)
     }
 
     pub fn to_params(&self) -> Option<MotorParams> {
