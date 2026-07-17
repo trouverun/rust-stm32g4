@@ -6,12 +6,15 @@ use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuni
 pub enum FaultCause {
     Empty,
     Overcurrent,
+    Overtemperature,
+    DcUnderVoltage,
+    DcOverVoltage,
     Break1,
     Break2,
     Watchdog,
+
     MissingMotorParams,
     MissingControllerGains,
-
     CalibrationTimeout,    
     HallEdgeDisagreement,
 
@@ -29,6 +32,9 @@ pub enum FaultCause {
     MemoryFlashFault,
     MemoryCorruptedData,
     MemoryTooLarge,
+
+    SetpointIntegrity,
+    SetpointTimeout,
 }
 
 impl FaultCause {

@@ -43,6 +43,7 @@ pub struct ThermistorLinearScale {
 pub struct BoardInfo {
     pub shunt_resistance_mohm: f32,
     pub opamp_gain: f32,
+    pub opamp_ref_v: f32,
     pub vbus_divide_factor: f32,
     pub thermistor_scaling: ThermistorLinearScale,
 }

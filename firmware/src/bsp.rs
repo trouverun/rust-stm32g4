@@ -28,9 +28,7 @@ use embassy_stm32::can::{
     config::GlobalFilter,
     filter::{Action, FilterType, StandardFilter, StandardFilterSlot},
 };
-use crate::can::messages::DeviceIdAssign;
 use crate::can::transport::{COMMAND_FILTER_ID, COMMAND_FILTER_MASK};
-use embedded_can::StandardId;
 use static_cell::StaticCell;
 use field_oriented::{
     AngleType, DoesFocMath, HasRotorFeedback,
@@ -404,21 +402,22 @@ impl HasRotorFeedback for HallFeedback {
 
 pub struct PwmOutput {
     #[cfg(feature = "overcurrent-comparators")]
-    _comparators: CurrentComparators,
+    comparators: CurrentComparators,
     pwm: PWM<'static, PwmTimer, PwmRunning>,
+
 }
 
 impl PwmOutput {
-    pub fn new(mappings: PwmOutputMappings) -> Self {
+    pub fn new(mappings: PwmOutputMappings, comparator_current_limit_a: f32) -> Self {
         let mut tmp = mappings.pwm
             .with_peak_trgo2_from_ch4()
             .with_deadtime(mappings.deadtime);
 
         #[cfg(feature = "overcurrent-comparators")]
         {
-            // Todo: make configurable:
-            mappings.comparators.dac_single.set_voltage(0.4);
-            mappings.comparators.dac_dual.set_voltage(0.4, 0.4);
+            let voltage_threshold = 0.9375 * BOARD.shunt_resistance_mohm / 1000.0 * comparator_current_limit_a + BOARD.opamp_ref_v / 32.0;
+            mappings.comparators.dac_single.set_voltage(voltage_threshold);
+            mappings.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
             tmp = tmp
                 .with_break1_comp(
                     &mappings.comparators.comp_u,
@@ -435,10 +434,11 @@ impl PwmOutput {
                     Bkp::ACTIVE_HIGH,
                     FilterValue::FCK_INT_N4,
                 );
+            
         }
 
         Self {
-            _comparators: mappings.comparators,
+            comparators: mappings.comparators,
             pwm: tmp.start(),
         }
     }
@@ -467,6 +467,12 @@ impl PwmOutput {
             Channel::Ch3,
             (duty_cycles.w * arv).clamp(0.0, u16::MAX as f32) as u16,
         );
+    }
+
+    pub fn set_comparator_current_limit(&self, comparator_current_limit_a: f32) {
+        let voltage_threshold = 0.9375 * BOARD.shunt_resistance_mohm / 1000.0 * comparator_current_limit_a + BOARD.opamp_ref_v / 32.0;
+        self.comparators.dac_single.set_voltage(voltage_threshold);
+        self.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
     }
 
     pub fn check_break1(&self) -> bool {
@@ -543,7 +549,7 @@ pub struct CanBus {
 }
 
 impl CanBus {
-    pub fn new(mappings: CanMappings, bitrate: u32, device_id: u8) -> Self {
+    pub fn new(mappings: CanMappings, bitrate: u32) -> Self {
         static TX_BUF: StaticCell<TxBuf<CAN_TX_BUF_SIZE>> = StaticCell::new();
         static RX_BUF: StaticCell<RxBuf<CAN_RX_BUF_SIZE>> = StaticCell::new();
 
@@ -553,16 +559,7 @@ impl CanBus {
         configurator.set_config(config);
         configurator.properties().set_standard_filter(
             StandardFilterSlot::_0,
-            Self::command_filter(device_id),
-        );
-        configurator.properties().set_standard_filter(
-            StandardFilterSlot::_1,
-            StandardFilter {
-                filter: FilterType::DedicatedSingle(
-                    StandardId::new(DeviceIdAssign::MESSAGE_ID as u16).unwrap(),
-                ),
-                action: Action::StoreInFifo0,
-            },
+            Self::command_filter(),
         );
         let can = configurator.start(OperatingMode::NormalOperationMode);
         let buffered = can.buffered(TX_BUF.init(TxBuf::new()), RX_BUF.init(RxBuf::new()));
@@ -570,21 +567,15 @@ impl CanBus {
         Self { buffered }
     }
 
-    /// Accept host command frames addressed to `device_id`
-    fn command_filter(device_id: u8) -> StandardFilter {
+    /// Accept host command frames
+    fn command_filter() -> StandardFilter {
         StandardFilter {
             filter: FilterType::BitMask {
-                filter: COMMAND_FILTER_ID | device_id as u16,
+                filter: COMMAND_FILTER_ID,
                 mask: COMMAND_FILTER_MASK,
             },
             action: Action::StoreInFifo0,
         }
-    }
-
-    pub fn set_device_id(&self, device_id: u8) {
-        self.buffered
-            .properties()
-            .set_standard_filter(StandardFilterSlot::_0, Self::command_filter(device_id));
     }
 
     pub fn writer(&self) -> BufferedCanSender {
