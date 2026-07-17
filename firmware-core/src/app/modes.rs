@@ -1,5 +1,5 @@
-use crate::calibration::{CalibrationPhase, CalibrationRunner};
-use crate::faults::FaultCause;
+use super::calibration::{CalibrationPhase, CalibrationRunner};
+use super::faults::FaultCause;
 use defmt::{Format, Formatter, write, info};
 
 #[derive(Clone, Copy, defmt::Format)]
