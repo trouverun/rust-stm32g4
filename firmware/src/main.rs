@@ -8,6 +8,7 @@ mod boards;
 mod bsp;
 mod can;
 mod memory;
+mod tasks;
 mod types;
 pub mod pac {
     pub use embassy_stm32::pac::Interrupt as interrupt;
@@ -24,9 +25,7 @@ mod app {
     };
     use embassy_stm32::interrupt::typelevel::Handler;
     use embassy_stm32::{peripherals::TIM2, rcc};
-    use rtic_monotonics::stm32::{ExtU64, Tim2 as Mono};
-    use rtic_monotonics::Monotonic;
-    use embedded_can::Id;
+    use rtic_monotonics::stm32::Tim2 as Mono;
 
     use crate::boards::*;
     use crate::bsp::{
@@ -34,18 +33,15 @@ mod app {
         PwmOutput, Watchdog
     };
     use firmware_core::{
-        Command, FaultCause, OperatingMode, StageResult, foc_step, FocStepInputs,
+        Command, FaultCause, OperatingMode,
         CurrentLoopSnapshot, FrameIntegrity, Debounced, LeakyBucket
     };
     use crate::types::*;
     use field_oriented::{
         ConstantMotorParameters, ControllerParameters, FOC, FocConfig, HasRotorFeedback,
-        MotorParamEstimator, MotorParamsEstimate, compute_current_pi_controller_gains,
-        PhaseCurrentFilter, FeedbackArbitrator
+        MotorParamsEstimate, PhaseCurrentFilter, FeedbackArbitrator
     };
-    use crate::can::messages::*;
-    use crate::can::periodic::{Periodic, Slot};
-    use crate::can::transport::IntoFrame;
+    use crate::tasks::*;
 
     #[shared]
     struct Shared {
@@ -181,217 +177,6 @@ mod app {
         cx.shared.watchdog.lock(|wd| wd.register_fault());
     }
 
-    /// Shared ISR for current control loop ADC (FOC) and board status ADC (DC voltage, temperature)
-    #[task(
-        priority = 6, binds = ADC3,
-        local = [
-            adc_feedback, acceleration,
-            board_overtemp: Debounced<Instant> = Debounced::new(false),
-            dc_undervolt: Debounced<Instant> = Debounced::new(false),
-            dc_overvolt: Debounced<Instant> = Debounced::new(false)
-        ],
-        shared = [
-            pwm_output, foc, motor_parameters, feedback_arbitrator,
-            mode, board_status, config, runtime_values, debug_mappings,
-            current_loop_snapshot, current_filter, watchdog
-        ]
-    )]
-    fn shared_adc_isr(mut cx: shared_adc_isr::Context) {
-        // if FOC ISR (sampled phase currents):
-        if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
-            cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
-
-            // Gather inputs:
-            let watchdog_fault = cx.shared.watchdog.lock(|wd| {
-                if wd.is_faulted() && !wd.fault_acknowledged() {
-                    wd.acknowledge_fault();
-                    true
-                } else {
-                    wd.feed();
-                    false
-                }
-            });
-            let overcurrent = cx.shared.current_filter.lock(|cf| {
-                cf.update(phase_currents);
-                cf.check_overcurrent()
-            });
-            let dc_bus_reading_v = cx.shared.board_status.lock(|bs| bs.dc_bus_voltage_v);
-            let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
-                (fa.read(), fa.get_hall_pattern())
-            });
-            let (
-                calibration_voltage_v, calibration_current_a, 
-                calibration_omega, setpoint_timeout_ms,
-                active_current_limit_a
-            ) = cx.shared.config.lock(|cfg| {
-                    (cfg.calibration_voltage_v(), cfg.calibration_current_a(), 
-                    cfg.calibration_omega(), cfg.setpoint_timeout_ms(), 
-                    cfg.rated_current_limit_a())
-                });
-            let target_torque = cx.shared.runtime_values.lock(|rtv| {
-                rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
-            });
-
-            // FOC compute:
-            let inputs = FocStepInputs {
-                phase_currents,
-                watchdog_fault,
-                overcurrent,
-                dc_bus_reading_v,
-                rotor_feedback,
-                hall_pattern,
-                calibration_voltage_v,
-                calibration_current_a,
-                calibration_omega,
-                target_torque,
-                active_current_limit_a
-            };
-            let outcome = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
-                |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
-            );
-
-            // Apply outputs:
-            cx.shared.pwm_output.lock(|pwm| pwm.set_duty_cycles(outcome.duty_cycles));
-            cx.shared.current_loop_snapshot.lock(|cs| *cs = outcome.snapshot);
-
-            // Do flash writes and tuning outside this ISR:
-            match outcome.stage_result {
-                Some(StageResult::ZeroEncoderRequest) => {
-                    let _ = zero_encoder::spawn();
-                }
-                Some(StageResult::HallCalibration { angle_table }) => {
-                    let _ = update_hall_table::spawn(angle_table);
-                }
-                Some(StageResult::TuningRequest { params_estimate }) => {
-                    let _ = tune_pi::spawn(params_estimate);
-                }
-                Some(StageResult::MotorParameters { motor_params }) => {
-                    let _ = update_motor_params::spawn(motor_params);
-                }
-                _ => {}
-            }
-
-            // Always sample something to keep the ADC EOC ISRs running:
-            cx.local.adc_feedback.sample_sector(outcome.sector);
-            cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
-        }
-
-        // if board status ISR (sampled DC bus voltage and board temperature):
-        if let Some((vbus, tboard)) = cx.local.adc_feedback.read_board_info() {
-            cx.shared.board_status.lock(|bs| {
-                bs.dc_bus_voltage_v = Some(vbus);
-                bs.temperature_c = Some(tboard);
-            });
-            let (min_dc, max_dc, max_temp) = cx.shared.config.lock(|cfg| {
-                (cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(), cfg.temp_max_c())
-            });
-            cx.shared.mode.lock(|mode| {
-                cx.local.dc_undervolt.update(vbus < min_dc, Mono::now(), 500.millis());
-                cx.local.dc_overvolt.update(vbus > max_dc, Mono::now(), 500.millis());
-                if cx.local.dc_undervolt.state() {
-                    mode.on_command(Command::AssertFault { cause: FaultCause::DcUnderVoltage });
-                } else if cx.local.dc_overvolt.state() {
-                    mode.on_command(Command::AssertFault { cause: FaultCause::DcOverVoltage });
-                }
-                cx.local.board_overtemp.update(tboard > max_temp, Mono::now(), 500.millis());
-                if cx.local.board_overtemp.state() {
-                    mode.on_command(Command::AssertFault { cause: FaultCause::Overtemperature });
-                }
-            });
-        }
-    }
-
-    #[task(priority = 1, shared = [amt_encoder, mode])]    
-    async fn zero_encoder(mut cx: zero_encoder::Context) {
-        cx.shared.amt_encoder.lock(|ae| {
-            ae.stop();
-        });
-        
-        // After 100ms there can no longer be an active dma request,
-        // and we can safely change the DMA source buffer values:
-        Mono::delay(100.millis()).await;
-        cx.shared.amt_encoder.lock(|ae| {
-            ae.send_zero_request();
-        });
-
-        // After 300ms the encoder will be ready to respond again,
-        // and we can safely revert the DMA source buffer values:
-        Mono::delay(300.millis()).await;
-        cx.shared.amt_encoder.lock(|ae| {
-            ae.normal_mode();
-        });
-
-        cx.shared.mode.lock(|mode| {
-            mode.on_command(Command::ResumeCalibration);
-        });
-    }
-
-    #[task(priority = 1, shared = [mode, hall_feedback, memory])]
-    async fn update_hall_table(mut cx: update_hall_table::Context, angle_table: [f32; 6]) {
-        info!("Angle table {}", angle_table);
-        cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
-        let command = cx.shared.memory.lock(|memory| {
-            match memory.store(&angle_table) {
-                Ok( .. ) => Command::ResumeCalibration,
-                Err(f) => Command::AssertFault { cause: f.into() }
-            }
-        });
-        cx.shared.mode.lock(|mode| {
-            mode.on_command(command);
-        });
-    }
-
-    #[task(priority = 1, shared = [mode, foc, memory])]
-    async fn tune_pi(mut cx: tune_pi::Context, estimate: MotorParamsEstimate) {
-        let result = compute_current_pi_controller_gains::<50>(estimate, PWM_FREQ.0 as f32);
-        info!("PI gains {}", result);
-        match result {
-            Ok(pi_gains) => {
-                cx.shared.foc.lock(|foc| {
-                    foc.set_pi_gains(Some(pi_gains));
-                    foc.clear_windup();
-                });
-                let command = cx.shared.memory.lock(|memory| {
-                    match memory.store(&pi_gains) {
-                        Ok( .. ) => Command::ResumeCalibration,
-                        Err(f) => Command::AssertFault { cause: f.into() }
-                    }
-                });
-                cx.shared.mode.lock(|mode| {
-                    mode.on_command(command);
-                });
-            }
-            Err(fault) => {
-                cx.shared.foc.lock(|foc| {
-                    foc.set_pi_gains(None);
-                    foc.clear_windup();
-                });
-                cx.shared.mode.lock(|mode| {
-                    mode.on_command(Command::AssertFault {
-                        cause: fault.into(),
-                    });
-                });
-            }
-        }
-    }
-
-    #[task(priority = 1, shared = [motor_parameters, mode, memory])]
-    async fn update_motor_params(mut cx: update_motor_params::Context, parameters: MotorParamsEstimate) {
-        info!("Params {}", parameters);
-        cx.shared.motor_parameters.lock(|active_params| {
-            active_params.copy_other(parameters);
-        });
-        let command = cx.shared.memory.lock(|memory| {
-            match memory.store(&parameters) {
-                Ok( .. ) => Command::FinishCalibration,
-                Err(f) => Command::AssertFault { cause: f.into() }
-            }
-        });
-        cx.shared.mode.lock(|mode| {
-            mode.on_command(command);
-        });
-    }
-
     #[task(priority = 6, binds = TIM8_BRK, shared = [mode, pwm_output])]
     fn on_tim8(mut cx: on_tim8::Context) {
         let bk1_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break1());
@@ -446,291 +231,55 @@ mod app {
         })
     }
 
-    #[task(priority = 1, local = [can_periodic_tx], shared = [current_loop_snapshot, feedback_arbitrator, mode, board_status])]
-    async fn can_tx_task(mut cx: can_tx_task::Context) {
-        if Periodic::COUNT == 0 {
-            core::future::pending::<()>().await;
-        }
-        let mut slots = Periodic::all().map(|kind| Slot::new(kind, Mono::now()));
+    extern "Rust" {
+        #[task(
+            priority = 6, binds = ADC3,
+            local = [
+                adc_feedback, acceleration,
+                board_overtemp: Debounced<Instant> = Debounced::new(false),
+                dc_undervolt: Debounced<Instant> = Debounced::new(false),
+                dc_overvolt: Debounced<Instant> = Debounced::new(false)
+            ],
+            shared = [
+                pwm_output, foc, motor_parameters, feedback_arbitrator,
+                mode, board_status, config, runtime_values, debug_mappings,
+                current_loop_snapshot, current_filter, watchdog
+            ]
+        )]
+        fn shared_adc_isr(_: shared_adc_isr::Context);
 
-        loop {
-            let next = slots.iter().map(|s| s.next_due).min().unwrap();
-            Mono::delay_until(next).await;
-            let now = Mono::now();
+        #[task(priority = 1, shared = [amt_encoder, mode])]
+        async fn zero_encoder(_: zero_encoder::Context);
 
-            // Pre-read rotor feedback if at least one scheduled message needs it:
-            let need_rotor_feedback = slots.iter().any(|s| {
-                s.next_due <= now && matches!(s.kind, Periodic::RotorEstimates | Periodic::EncoderReading)
-            });
-            let (encoder_feedback, hall_feedback, sensorless_feedback) = if need_rotor_feedback {
-                cx.shared.feedback_arbitrator.lock(|fa| {
-                    (fa.read_encoder(), fa.read_hall(), fa.read_sensorless())
-                })
-            } else {
-                (None, None, None)
-            };
+        #[task(priority = 1, shared = [mode, hall_feedback, memory])]
+        async fn update_hall_table(_: update_hall_table::Context, angle_table: [f32; 6]);
 
-            for slot in slots.iter_mut().filter(|s| s.next_due <= now) {
-                let frame = match slot.kind {
-                    Periodic::MotorCurrents => {
-                        let s = cx.shared.current_loop_snapshot.lock(|s| *s);
-                        MotorCurrents::try_from(MotorCurrentsInit {
-                            i_q_meas:   s.iq_meas_a,
-                            i_d_meas:   s.id_meas_a,
-                            i_q_target: s.iq_target_a,
-                            i_d_target: s.id_target_a,
-                        }).ok().map(|m| m.into_frame())
-                    }
-                    Periodic::RotorEstimates => {
-                        let (hall_pos, hall_vel, hall_valid) = match hall_feedback {
-                            Some(Ok(f)) => (f.theta, f.omega, true),
-                            _ => (0.0, 0.0, false),
-                        };
-                        let (sensl_pos, sensl_vel, sensl_valid) = match sensorless_feedback {
-                            Some(Ok(f)) => (f.theta, f.omega, true),
-                            _ => (0.0, 0.0, false),
-                        };
-                        RotorEstimates::try_from(RotorEstimatesInit {
-                            hall_pos,
-                            hall_vel,
-                            hall_valid,
-                            sensl_pos,
-                            sensl_vel,
-                            sensl_valid,
-                        }).ok().map(|m| m.into_frame())
-                    }
-                    Periodic::EncoderReading => {
-                        let (enc_pos, enc_vel, enc_valid) = match encoder_feedback {
-                            Some(Ok(f)) => (f.theta, f.omega, true),
-                            _ => (0.0, 0.0, false),
-                        };
-                        EncoderReading::try_from(EncoderReadingInit {
-                            enc_pos: enc_pos,
-                            enc_vel: enc_vel,
-                            enc_valid,
-                        }).ok().map(|m| m.into_frame())
-                    }
-                    Periodic::Fault => {
-                        cx.shared.mode.lock(|m| m.fault_trace()).and_then(|t| {
-                            Fault::try_from(FaultInit {
-                                fault_0: t[0].encode(), 
-                                fault_1: t[1].encode(),
-                                fault_2: t[2].encode(), 
-                                fault_3: t[3].encode(),
-                                fault_4: t[4].encode(), 
-                                fault_5: t[5].encode(),
-                                fault_6: t[6].encode(), 
-                                fault_7: t[7].encode(),
-                            }).ok()
-                        }).map(|m| m.into_frame())
-                    }
-                    Periodic::Heartbeat => {
-                        let mode = cx.shared.mode.lock(|m| m.encode());
-                        let (vbus, temp) = cx.shared.board_status.lock(|bs| (bs.dc_bus_voltage_v, bs.temperature_c));
-                        Heartbeat::try_from(HeartbeatInit {
-                            mode,
-                            dc_bus_voltage: vbus.unwrap_or(0.0),
-                            temperature: temp.unwrap_or(0.0),
-                            dc_bus_valid: vbus.is_some(),
-                            temp_valid: temp.is_some(),
-                        }).ok().map(|m| m.into_frame())
-                    }
-                };
-                if let Some(f) = frame {
-                    cx.local.can_periodic_tx.write(f).await;
-                }
-                slot.next_due += slot.period;
-            }
-        }
-    }
+        #[task(priority = 1, shared = [mode, foc, memory])]
+        async fn tune_pi(_: tune_pi::Context, estimate: MotorParamsEstimate);
 
-    #[task(
-        priority = 1,
-        shared = [
-            mode, runtime_values, config, current_filter,
-            foc, motor_parameters
-        ],
-        local = [
-            can_rx, can_response_tx,
-            setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
-            mode_request_integrity: FrameIntegrity = FrameIntegrity::new(),
-            setpoint_fault: LeakyBucket = LeakyBucket::new(2, 1, 3)
-        ]
-    )]
-    async fn can_rx_task(mut cx: can_rx_task::Context) {
-        loop {
-            let frame = match cx.local.can_rx.receive().await {
-                Ok(envelope) => envelope.frame,
-                Err(_) => continue,
-            };
-            let id = match frame.id() {
-                Id::Standard(s) => s.as_raw(),
-                Id::Extended(_) => continue,
-            };
+        #[task(priority = 1, shared = [motor_parameters, mode, memory])]
+        async fn update_motor_params(_: update_motor_params::Context, parameters: MotorParamsEstimate);
 
-            match Messages::from_can_message(id as u32, frame.data()) {
-                Ok(Messages::OperatingModeRequest(msg)) => {
-                    if cx.local.mode_request_integrity.check(&frame.data()[..7], msg.rolling_counter(), msg.checksum()).is_err() {
-                        cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::CANMessageIntegrity }));
-                        continue;
-                    }
-                    let command = match msg.requested_mode() {
-                        OperatingModeRequestRequestedMode::Idle => Command::Idle,
-                        OperatingModeRequestRequestedMode::Calibration => {
-                            let dt: f32 = 1.0 / PWM_FREQ.0 as f32;
-                            match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
-                                Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs, dt },
-                                None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
-                            }
-                        }
-                        OperatingModeRequestRequestedMode::TorqueControl => Command::EnableTorqueControl,
-                        OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
-                        OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
-                    };
-                    if matches!(command, Command::EnableTorqueControl) {
-                        let now = Mono::now();
-                        cx.shared.runtime_values.lock(|rtv| rtv.target_torque.set(0.0, now));
-                    }
-                    cx.shared.mode.lock(|mode| {
-                        mode.on_command(command);
-                    });
-                }
-                Ok(Messages::Setpoint(msg)) => {
-                    match cx.local.setpoint_integrity.check(&frame.data()[..7], msg.rolling_counter(), msg.checksum()) {
-                        Ok(()) => {
-                            let now = Mono::now();
-                            cx.shared.runtime_values.lock(|rtv| {
-                                let torque_demand = msg.target_torque();
-                                rtv.target_torque.set(torque_demand, now);
-                            });
-                            cx.local.setpoint_fault.drain();
-                        }
-                        Err(_) => {
-                            cx.local.setpoint_fault.fill();
-                            if cx.local.setpoint_fault.tripped() {
-                                cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::CANMessageIntegrity }));
-                            }
-                        }
-                    }
-                }
-                Ok(Messages::ProtectionLimits(msg)) => {
-                    let applied = cx.shared.config.lock(|cfg| {
-                        let mut candidate = *cfg;
-                        candidate.set_dc_bus_limits(msg.dc_bus_v_min(), msg.dc_bus_v_max())?;
-                        candidate.set_setpoint_timeout_ms(msg.setpoint_timeout())?;
-                        candidate.set_temp_max_c(msg.temp_max())?;
-                        *cfg = candidate;
-                        Ok::<(), ConfigError>(())
-                    });
-                    match applied {
-                        Ok(()) => { let _ = persist_config::spawn(); }
-                        Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
-                    }
-                }
-                Ok(Messages::MotorConfig(msg)) => {
-                    let applied = cx.shared.config.lock(|cfg| {
-                        let mut candidate = *cfg;
-                        candidate.set_rated_current_limit_a(msg.rated_current_limit())?;
-                        candidate.set_current_limit_a(msg.phase_current_limit())?;
-                        *cfg = candidate;
-                        Ok::<(f32, f32), ConfigError>((candidate.rated_current_limit_a(), candidate.current_limit_a()))
-                    });
-                    match applied {
-                        Ok((rated, limit)) => {
-                            cx.shared.current_filter.lock(|cf| cf.set_limits(rated, limit));
-                            cx.shared.motor_parameters.lock(|mp| {
-                                mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
-                            });
-                            let _ = persist_config::spawn();
-                        }
-                        Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
-                    }
-                }
-                Ok(Messages::CalibrationTargets(msg)) => {
-                    let applied = cx.shared.config.lock(|cfg| {
-                        let mut candidate = *cfg;
-                        candidate.set_calibration_voltage_v(msg.target_voltage())?;
-                        candidate.set_calibration_current_a(msg.target_current())?;
-                        candidate.set_calibration_omega(msg.target_velocity())?;
-                        *cfg = candidate;
-                        Ok::<(), ConfigError>(())
-                    });
-                    match applied {
-                        Ok(()) => { let _ = persist_config::spawn(); }
-                        Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
-                    }
-                }
-                Ok(Messages::ConfigQuery(msg)) => {
-                    let block = msg.block_id();
-                    let all = matches!(block, ConfigQueryBlockId::All);
-                    if all || matches!(block, ConfigQueryBlockId::MotorParameters) {
-                        let est = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
-                        let f = MotorParameterReport1::try_from(MotorParameterReport1Init {
-                            stator_resistance: est.stator_resistance.unwrap_or(0.0),
-                            pm_flux_linkage: est.pm_flux_linkage.unwrap_or(0.0),
-                            rs_valid: est.stator_resistance.is_some(),
-                            flux_valid: est.pm_flux_linkage.is_some(),
-                        }).ok().map(|m| m.into_frame());
-                        if let Some(f) = f {
-                            cx.local.can_response_tx.write(f).await;
-                        }
-                        
-                        let f = MotorParameterReport2::try_from(MotorParameterReport2Init {
-                            d_inductance: est.d_inductance.unwrap_or(0.0),
-                            q_inductance: est.q_inductance.unwrap_or(0.0),
-                            ld_valid: est.d_inductance.is_some(),
-                            lq_valid: est.q_inductance.is_some(),
-                        }).ok().map(|m| m.into_frame());
-                        if let Some(f) = f {
-                            cx.local.can_response_tx.write(f).await;
-                        }
-                    }
-                    if all || matches!(block, ConfigQueryBlockId::CurrentGainsD | ConfigQueryBlockId::CurrentGainsQ) {
-                        let gains = cx.shared.foc.lock(|foc| foc.get_pi_gains());
-                        if let Some(ControllerParameters { d_pi, q_pi }) = gains {
-                            if all || matches!(block, ConfigQueryBlockId::CurrentGainsD) {
-                                let f = CurrentGainsDReport::try_from(CurrentGainsDReportInit {
-                                    kr: d_pi.kr, kp: d_pi.kp, ki: d_pi.ki, kt: d_pi.kt,
-                                }).ok().map(|m| m.into_frame());
-                                if let Some(f) = f {
-                                    cx.local.can_response_tx.write(f).await;
-                                }
-                            }
+        #[task(priority = 1, local = [can_periodic_tx], shared = [current_loop_snapshot, feedback_arbitrator, mode, board_status])]
+        async fn can_tx_task(_: can_tx_task::Context);
 
-                            if all || matches!(block, ConfigQueryBlockId::CurrentGainsQ) {
-                                let f = CurrentGainsQReport::try_from(CurrentGainsQReportInit {
-                                    kr: q_pi.kr, kp: q_pi.kp, ki: q_pi.ki, kt: q_pi.kt,
-                                }).ok().map(|m| m.into_frame());
-                                if let Some(f) = f {
-                                    cx.local.can_response_tx.write(f).await;
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => {}
-            }
-        }
-    }
+        #[task(
+            priority = 1,
+            shared = [
+                mode, runtime_values, config, current_filter,
+                foc, motor_parameters
+            ],
+            local = [
+                can_rx, can_response_tx,
+                setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
+                mode_request_integrity: FrameIntegrity = FrameIntegrity::new(),
+                setpoint_fault: LeakyBucket = LeakyBucket::new(2, 1, 3)
+            ]
+        )]
+        async fn can_rx_task(_: can_rx_task::Context);
 
-    /// Deferred flash write until FOC is inactive
-    #[task(priority = 1, shared = [mode, config, motor_parameters, memory])]
-    async fn persist_config(mut cx: persist_config::Context) {
-        loop {
-            if !cx.shared.mode.lock(|m| m.foc_gate().active) {
-                let cfg = cx.shared.config.lock(|c| *c);
-                let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
-                let (r1, r2) = cx.shared.memory.lock(|memory| {
-                    (memory.store(&cfg), memory.store(&params))
-                });
-                if let Err(f) = r1.and(r2) {
-                    cx.shared.mode.lock(|m| m.on_command(Command::AssertFault { cause: f.into() }));
-                }
-                return;
-            }
-            Mono::delay(100.millis()).await;
-        }
+        #[task(priority = 1, shared = [mode, config, motor_parameters, memory])]
+        async fn persist_config(_: persist_config::Context);
     }
 
     #[task(priority = 2, binds = FDCAN1_IT0)]
