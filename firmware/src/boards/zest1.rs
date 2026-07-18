@@ -222,7 +222,8 @@ pub fn map_peripherals() -> (
     };
 
     let watchdog = super::WatchdogMappings {
-        timer: Timer::new(p.TIM7)
+        timer: Timer::new(p.TIM7),
+        iwdg: p.IWDG,
     };
 
     (
