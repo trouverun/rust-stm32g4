@@ -455,6 +455,14 @@ impl PwmOutput {
         self.pwm.clear_fault();
     }
 
+    pub fn enable(&self) {
+        self.pwm.enable();
+    }
+
+    pub fn disable(&self) {
+        self.pwm.disable();
+    }
+
     pub fn set_duty_cycles(&self, duty_cycles: PhaseValues) {
         let arv = self.pwm.get_autoreload_value() as f32;
         self.pwm.set_compare_value(

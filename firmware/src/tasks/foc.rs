@@ -5,12 +5,13 @@ use defmt::info;
 
 use crate::app;
 use crate::boards::PWM_FREQ;
-use firmware_core::{Command, FaultCause, StageResult, foc_step, FocStepInputs};
+use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
 use field_oriented::{MotorParamsEstimate, HasRotorFeedback, compute_current_pi_controller_gains};
 
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
     if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
+        cx.local.hardware_watchdog.feed();
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
 
         // Gather inputs:
@@ -58,16 +59,29 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             target_torque,
             active_current_limit_a
         };
-        let outcome = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
+        let (outcome, stage_result) = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
             |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
         );
 
         // Apply outputs:
-        cx.shared.pwm_output.lock(|pwm| pwm.set_duty_cycles(outcome.duty_cycles));
-        cx.shared.current_loop_snapshot.lock(|cs| *cs = outcome.snapshot);
+        let sector = match outcome {
+            FocStepOutcome::Normal { duty_cycles, snapshot, sector } => {
+                cx.shared.pwm_output.lock(|pwm| {
+                    pwm.enable();
+                    pwm.set_duty_cycles(duty_cycles);
+                });
+                cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
+                sector
+            }
+            FocStepOutcome::NonConducting => {  
+                cx.shared.pwm_output.lock(|pwm| pwm.disable());
+                cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
+                0
+            }
+        };
 
         // Do flash writes and tuning outside this ISR:
-        match outcome.stage_result {
+        match stage_result {
             Some(StageResult::ZeroEncoderRequest) => {
                 let _ = app::zero_encoder::spawn();
             }
@@ -84,9 +98,8 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         }
 
         // Always sample something to keep the ADC EOC ISRs running:
-        cx.local.adc_feedback.sample_sector(outcome.sector);
+        cx.local.adc_feedback.sample_sector(sector);
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
-        cx.local.hardware_watchdog.feed();
     }
 
     // if board status ISR (sampled DC bus voltage and board temperature):

@@ -7,7 +7,7 @@ use crate::boards::PWM_FREQ;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
-use firmware_core::{Command, FaultCause};
+use firmware_core::{Command, FaultCause, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
 pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
@@ -28,7 +28,7 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                     continue;
                 }
                 let command = match msg.requested_mode() {
-                    OperatingModeRequestRequestedMode::Idle => Command::Idle,
+                    OperatingModeRequestRequestedMode::Idle => Command::Idle { safe_strategy: SafeControlStrategy::STO },
                     OperatingModeRequestRequestedMode::Calibration => {
                         let dt: f32 = 1.0 / PWM_FREQ.0 as f32;
                         match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
