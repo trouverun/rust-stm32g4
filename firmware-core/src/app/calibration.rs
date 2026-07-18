@@ -21,7 +21,7 @@ pub struct CalibrationOutput {
     pub foc_command: FocInputType,
 }
 
-#[derive(defmt::Format)]
+#[derive(Clone, Copy, defmt::Format)]
 pub enum CalibrationFailureCause {
     MissingParameter,
     MotorParameterEstimation { fault: EstimationStepFault },
@@ -41,7 +41,7 @@ pub enum StageResult {
 
 #[derive(Clone, Copy, defmt::Format)]
 pub enum CalibrationPhase {
-    EncoderZeroing { duration_waited_s: f32, reset_sent: bool },
+    WaitingEncoderZeroing { duration_waited_s: f32, reset_sent: bool },
     HallCalibration { time_passed_s: f32 },
     MotorEstimation,
     WaitingHallCompletion,
@@ -106,19 +106,14 @@ impl CalibrationRunner {
             num_pole_pairs,
             hall_calibrator,
             motor_estimator,
-            phase: CalibrationPhase::EncoderZeroing { duration_waited_s: 0.0, reset_sent: false },
+            phase: CalibrationPhase::WaitingEncoderZeroing { duration_waited_s: 0.0, reset_sent: false },
             config,
         }
     }
 
-    pub fn start(&mut self) {
-        self.phase = CalibrationPhase::EncoderZeroing { duration_waited_s: 0.0, reset_sent: false };
-        
-    }
-
     pub fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>) {
         match &mut self.phase {
-            CalibrationPhase::EncoderZeroing { duration_waited_s, reset_sent } => {
+            CalibrationPhase::WaitingEncoderZeroing { duration_waited_s, reset_sent } => {
                 *duration_waited_s += self.config.dt;
                 let mut result = None;
                 let output = CalibrationOutput {
@@ -243,10 +238,10 @@ impl CalibrationRunner {
         &mut self.motor_estimator
     }
 
-    /// Resume after a wait state (e.g. EEPROM write, controller tuning, etc.)
-    pub fn force_step(&mut self) {
+    /// Resume after a wait state
+    pub fn resume(&mut self) {
         match &self.phase {
-            CalibrationPhase::EncoderZeroing { .. } => {
+            CalibrationPhase::WaitingEncoderZeroing { .. } => {
                 self.phase = CalibrationPhase::HallCalibration { time_passed_s: 0.0 };
                 self.hall_calibrator.start();
             }

@@ -33,7 +33,7 @@ mod app {
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
     };
     use firmware_core::{
-        Command, FaultCause, OperatingMode,
+        Command, FaultCause, OperatingMode, SafeControlStrategy,
         CurrentLoopSnapshot, FrameIntegrity, Debounced, LeakyBucket
     };
     use crate::types::*;
@@ -93,7 +93,7 @@ mod app {
         let amt_encoder = bsp::AmtEncoder::new(encoder_mappings, 1000.0);
         let acceleration = bsp::Acceleration::new(accel_mappings);
         let mut memory = bsp::Memory::new(memory_mappings);
-        let mut mode = OperatingMode::Idle;
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::STO };
 
         if HardwareWatchdog::caused_reset() {
             mode.on_command(Command::AssertFault { cause: FaultCause::WatchdogReboot });

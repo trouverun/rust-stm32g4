@@ -1,7 +1,7 @@
 use super::calibration::{CalibrationFailureCause};
 use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuningFault};
 
-#[derive(Clone, Copy, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, defmt::Format)]
 #[repr(u8)]
 pub enum FaultCause {
     Empty,
@@ -11,7 +11,12 @@ pub enum FaultCause {
     DcOverVoltage,
     Break1,
     Break2,
-    Watchdog,
+    WatchdogReboot,
+
+    MemoryFlashFault,
+    MemoryCorruptedData,
+    MemoryTooLarge,
+    ConfigOutOfRange,
 
     MissingMotorParams,
     MissingControllerGains,
@@ -27,24 +32,16 @@ pub enum FaultCause {
     TuningInfeasibleParameters,
     TuningMissingMotorParams,
 
+    InvalidRotorFeedback,
+    RealtimeViolated,
     ControllerNumericalError,
-
-    MemoryFlashFault,
-    MemoryCorruptedData,
-    MemoryTooLarge,
-
     CANMessageIntegrity,
     SetpointTimeout,
-    ConfigOutOfRange,
 }
 
 impl FaultCause {
     pub fn encode(&self) -> u8 {
         *self as u8
-    }
-
-    pub(crate) fn dedup_bit(&self) -> u32 {
-        1u32 << self.encode()
     }
 }
 

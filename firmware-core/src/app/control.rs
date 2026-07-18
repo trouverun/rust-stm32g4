@@ -1,3 +1,5 @@
+use crate::app::modes::SafeControlStrategy;
+
 use super::calibration::{CalibrationInputs, StageResult};
 use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
@@ -28,20 +30,33 @@ pub struct FocStepInputs {
     pub active_current_limit_a: f32,
 }
 
-pub struct FocStepOutcome {
-    pub duty_cycles: PhaseValues,
-    pub snapshot: CurrentLoopSnapshot,
-    pub sector: u8,
-    pub stage_result: Option<StageResult>,
+pub enum FocStepOutcome {
+    Normal {
+        duty_cycles: PhaseValues,
+        snapshot: CurrentLoopSnapshot,
+        sector: u8,
+    },
+    NonConducting
 }
 
 impl FocStepOutcome {
-    fn safe() -> Self {
-        Self {
-            duty_cycles: PhaseValues::safe(),
-            snapshot: CurrentLoopSnapshot::default(),
-            sector: 0,
-            stage_result: None,
+    fn not_ready() -> Self {
+        FocStepOutcome::NonConducting
+    }
+}
+
+impl From<SafeControlStrategy> for FocStepOutcome {
+    fn from(safe_strategy: SafeControlStrategy) -> Self {
+        match safe_strategy {
+            SafeControlStrategy::STO | SafeControlStrategy::STOf => FocStepOutcome::NonConducting,
+            SafeControlStrategy::ASC => {
+                FocStepOutcome::Normal { 
+                    duty_cycles: PhaseValues::safe(), 
+                    snapshot: CurrentLoopSnapshot::default(), 
+                    sector: 0 
+                }
+            }
+            _ => FocStepOutcome::not_ready()
         }
     }
 }
@@ -54,9 +69,10 @@ pub fn foc_step<A>(
     foc: &mut FOC,
     acceleration: &mut A,
     inputs: FocStepInputs,
-) -> FocStepOutcome where A: DoesFocMath {
+) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath {
+    // Fault transitions:
     if inputs.watchdog_fault {
-        mode.on_command(Command::AssertFault { cause: FaultCause::Watchdog });
+        mode.on_command(Command::AssertFault { cause: FaultCause::RealtimeViolated });
     }
     if inputs.overcurrent {
         mode.on_command(Command::AssertFault { cause: FaultCause::Overcurrent });
@@ -64,14 +80,23 @@ pub fn foc_step<A>(
     if matches!(mode, OperatingMode::TorqueControl) && inputs.target_torque.is_none() {
         mode.on_command(Command::AssertFault { cause: FaultCause::SetpointTimeout });
     }
-
-    let gate = mode.foc_gate();
+    let mut gate = mode.foc_gate();
     let rotor_feedback_fault = inputs.rotor_feedback.is_err() && !gate.feedback_optional;
+    if rotor_feedback_fault {
+        mode.on_command(Command::AssertFault { cause: FaultCause::InvalidRotorFeedback });
+    }
+    gate = mode.foc_gate();
+
     let Some(dc_bus_voltage_v) = inputs.dc_bus_reading_v else {
-        return FocStepOutcome::safe();
+        return (FocStepOutcome::not_ready(), None)
     };
-    if !gate.active || inputs.overcurrent || rotor_feedback_fault {
-        return FocStepOutcome::safe();
+    if !gate.active {
+        if let Some(safe_strategy) = &mut gate.safe_strategy {
+            safe_strategy.foc_tick(0.0, 0.0);
+            return ((*safe_strategy).into(), None)
+        } else {
+            return (FocStepOutcome::not_ready(), None)
+        }
     }
 
     // During encoder zeroing or hall calibration there may be no valid rotor feedback,
@@ -112,39 +137,44 @@ pub fn foc_step<A>(
         phase_currents: inputs.phase_currents,
     };
 
-    let mut outcome = match foc.compute(foc_input, estimator.get_estimate(), acceleration) {
-        Ok(result) => {
-            if stage_result.is_none() {
-                estimator.after_foc_iteration(result);
+    let outcome = match foc.compute(foc_input, estimator.get_estimate(), acceleration) {
+        Ok(foc_result) => {
+            if let Some(result) = &stage_result {
+                if result.clears_windup() {
+                    foc.clear_windup();
+                }
+                if let StageResult::Failure { cause } = result {
+                    mode.on_command(Command::AssertFault { cause: (*cause).into() });
+                }
+            } else {
+                estimator.after_foc_iteration(foc_result);
             }
-            FocStepOutcome {
-                duty_cycles: result.duty_cycles,
+            FocStepOutcome::Normal {
+                duty_cycles: foc_result.duty_cycles,
                 snapshot: CurrentLoopSnapshot {
-                    id_meas_a: result.measured_i_dq.d,
-                    iq_meas_a: result.measured_i_dq.q,
-                    id_target_a: result.target_i_dq.d,
-                    iq_target_a: result.target_i_dq.q,
+                    id_meas_a: foc_result.measured_i_dq.d,
+                    iq_meas_a: foc_result.measured_i_dq.q,
+                    id_target_a: foc_result.target_i_dq.d,
+                    iq_target_a: foc_result.target_i_dq.q,
                 },
-                sector: result.voltage_hexagon_sector,
-                stage_result: None,
+                sector: foc_result.voltage_hexagon_sector
             }
         }
         Err(fault) => {
             mode.on_command(Command::AssertFault { cause: fault.into() });
-            FocStepOutcome::safe()
-        }
-    };
-
-    if let Some(result) = stage_result {
-        if result.clears_windup() {
-            foc.clear_windup();
-        }
-        match result {
-            StageResult::Failure { cause } => {
-                mode.on_command(Command::AssertFault { cause: cause.into() });
+            if let OperatingMode::Fault { safe_strategy, .. } = mode {
+                (*safe_strategy).into()
+            } else {
+                FocStepOutcome::not_ready()
             }
-            other => outcome.stage_result = Some(other),
+        }
+    };   
+    
+    if let Some(result) = &stage_result {
+        if let StageResult::Failure { cause } = result {
+            mode.on_command(Command::AssertFault { cause: (*cause).into() });
         }
     }
-    outcome
+
+    (outcome, stage_result)
 }
