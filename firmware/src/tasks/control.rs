@@ -1,0 +1,201 @@
+use rtic::Mutex as _;
+use rtic::mutex::prelude::*;
+use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
+use defmt::info;
+
+use crate::app;
+use crate::boards::PWM_FREQ;
+use firmware_core::{Command, FaultCause, StageResult, foc_step, FocStepInputs};
+use field_oriented::{MotorParamsEstimate, HasRotorFeedback, compute_current_pi_controller_gains};
+
+pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
+    // if FOC ISR (sampled phase currents):
+    if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
+        cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
+
+        // Gather inputs:
+        let watchdog_fault = cx.shared.watchdog.lock(|wd| {
+            if wd.is_faulted() && !wd.fault_acknowledged() {
+                wd.acknowledge_fault();
+                true
+            } else {
+                wd.feed();
+                false
+            }
+        });
+        let overcurrent = cx.shared.current_filter.lock(|cf| {
+            cf.update(phase_currents);
+            cf.check_overcurrent()
+        });
+        let dc_bus_reading_v = cx.shared.board_status.lock(|bs| bs.dc_bus_voltage_v);
+        let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
+            (fa.read(), fa.get_hall_pattern())
+        });
+        let (
+            calibration_voltage_v, calibration_current_a,
+            calibration_omega, setpoint_timeout_ms,
+            active_current_limit_a
+        ) = cx.shared.config.lock(|cfg| {
+                (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
+                cfg.calibration_omega(), cfg.setpoint_timeout_ms(),
+                cfg.rated_current_limit_a())
+            });
+        let target_torque = cx.shared.runtime_values.lock(|rtv| {
+            rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
+        });
+
+        // FOC compute:
+        let inputs = FocStepInputs {
+            phase_currents,
+            watchdog_fault,
+            overcurrent,
+            dc_bus_reading_v,
+            rotor_feedback,
+            hall_pattern,
+            calibration_voltage_v,
+            calibration_current_a,
+            calibration_omega,
+            target_torque,
+            active_current_limit_a
+        };
+        let outcome = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
+            |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
+        );
+
+        // Apply outputs:
+        cx.shared.pwm_output.lock(|pwm| pwm.set_duty_cycles(outcome.duty_cycles));
+        cx.shared.current_loop_snapshot.lock(|cs| *cs = outcome.snapshot);
+
+        // Do flash writes and tuning outside this ISR:
+        match outcome.stage_result {
+            Some(StageResult::ZeroEncoderRequest) => {
+                let _ = app::zero_encoder::spawn();
+            }
+            Some(StageResult::HallCalibration { angle_table }) => {
+                let _ = app::update_hall_table::spawn(angle_table);
+            }
+            Some(StageResult::TuningRequest { params_estimate }) => {
+                let _ = app::tune_pi::spawn(params_estimate);
+            }
+            Some(StageResult::MotorParameters { motor_params }) => {
+                let _ = app::update_motor_params::spawn(motor_params);
+            }
+            _ => {}
+        }
+
+        // Always sample something to keep the ADC EOC ISRs running:
+        cx.local.adc_feedback.sample_sector(outcome.sector);
+        cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
+    }
+
+    // if board status ISR (sampled DC bus voltage and board temperature):
+    if let Some((vbus, tboard)) = cx.local.adc_feedback.read_board_info() {
+        cx.shared.board_status.lock(|bs| {
+            bs.dc_bus_voltage_v = Some(vbus);
+            bs.temperature_c = Some(tboard);
+        });
+        let (min_dc, max_dc, max_temp) = cx.shared.config.lock(|cfg| {
+            (cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(), cfg.temp_max_c())
+        });
+        cx.shared.mode.lock(|mode| {
+            cx.local.dc_undervolt.update(vbus < min_dc, Mono::now(), 500.millis());
+            cx.local.dc_overvolt.update(vbus > max_dc, Mono::now(), 500.millis());
+            if cx.local.dc_undervolt.state() {
+                mode.on_command(Command::AssertFault { cause: FaultCause::DcUnderVoltage });
+            } else if cx.local.dc_overvolt.state() {
+                mode.on_command(Command::AssertFault { cause: FaultCause::DcOverVoltage });
+            }
+            cx.local.board_overtemp.update(tboard > max_temp, Mono::now(), 500.millis());
+            if cx.local.board_overtemp.state() {
+                mode.on_command(Command::AssertFault { cause: FaultCause::Overtemperature });
+            }
+        });
+    }
+}
+
+pub async fn zero_encoder(mut cx: app::zero_encoder::Context<'_>) {
+    cx.shared.amt_encoder.lock(|ae| {
+        ae.stop();
+    });
+
+    // After 100ms there can no longer be an active dma request,
+    // and we can safely change the DMA source buffer values:
+    Mono::delay(100.millis()).await;
+    cx.shared.amt_encoder.lock(|ae| {
+        ae.send_zero_request();
+    });
+
+    // After 300ms the encoder will be ready to respond again,
+    // and we can safely revert the DMA source buffer values:
+    Mono::delay(300.millis()).await;
+    cx.shared.amt_encoder.lock(|ae| {
+        ae.normal_mode();
+    });
+
+    cx.shared.mode.lock(|mode| {
+        mode.on_command(Command::ResumeCalibration);
+    });
+}
+
+pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angle_table: [f32; 6]) {
+    info!("Angle table {}", angle_table);
+    cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
+    let command = cx.shared.memory.lock(|memory| {
+        match memory.store(&angle_table) {
+            Ok( .. ) => Command::ResumeCalibration,
+            Err(f) => Command::AssertFault { cause: f.into() }
+        }
+    });
+    cx.shared.mode.lock(|mode| {
+        mode.on_command(command);
+    });
+}
+
+pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEstimate) {
+    let result = compute_current_pi_controller_gains::<50>(estimate, PWM_FREQ.0 as f32);
+    info!("PI gains {}", result);
+    match result {
+        Ok(pi_gains) => {
+            cx.shared.foc.lock(|foc| {
+                foc.set_pi_gains(Some(pi_gains));
+                foc.clear_windup();
+            });
+            let command = cx.shared.memory.lock(|memory| {
+                match memory.store(&pi_gains) {
+                    Ok( .. ) => Command::ResumeCalibration,
+                    Err(f) => Command::AssertFault { cause: f.into() }
+                }
+            });
+            cx.shared.mode.lock(|mode| {
+                mode.on_command(command);
+            });
+        }
+        Err(fault) => {
+            cx.shared.foc.lock(|foc| {
+                foc.set_pi_gains(None);
+                foc.clear_windup();
+            });
+            cx.shared.mode.lock(|mode| {
+                mode.on_command(Command::AssertFault {
+                    cause: fault.into(),
+                });
+            });
+        }
+    }
+}
+
+pub async fn update_motor_params(mut cx: app::update_motor_params::Context<'_>, parameters: MotorParamsEstimate) {
+    info!("Params {}", parameters);
+    cx.shared.motor_parameters.lock(|active_params| {
+        active_params.copy_other(parameters);
+    });
+    let command = cx.shared.memory.lock(|memory| {
+        match memory.store(&parameters) {
+            Ok( .. ) => Command::FinishCalibration,
+            Err(f) => Command::AssertFault { cause: f.into() }
+        }
+    });
+    cx.shared.mode.lock(|mode| {
+        mode.on_command(command);
+    });
+}
