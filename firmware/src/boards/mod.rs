@@ -19,7 +19,7 @@ use embassy_stm32::gpio::Output;
 use embassy_stm32::mode::Blocking;
 #[cfg(feature = "mcu-opamps")]
 use embassy_stm32::opamp::OpAmpOutput;
-use embassy_stm32::peripherals::{CORDIC, FLASH};
+use embassy_stm32::peripherals::{CORDIC, FLASH, IWDG};
 #[cfg(feature = "spi-encoder")]
 use embassy_stm32::spi::{DmaDrivenSpi, Instance};
 #[cfg(feature = "spi-encoder")]
@@ -34,6 +34,7 @@ use embassy_stm32::Peri;
 
 pub const PWM_FREQ: Hertz = Hertz(20_000);
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
+pub const IWDG_TIMEOUT_US: u32 = 10_000;
 
 pub struct ThermistorLinearScale {
     pub slope_c_per_v: f32,
@@ -121,5 +122,6 @@ pub struct CanMappings {
 }
 
 pub struct WatchdogMappings {
-    pub timer: Timer<'static, WatchdogTimer>
+    pub timer: Timer<'static, WatchdogTimer>,
+    pub iwdg: Peri<'static, IWDG>,
 }

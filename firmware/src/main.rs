@@ -30,7 +30,7 @@ mod app {
     use crate::boards::*;
     use crate::bsp::{
         self, Acceleration, AdcFeedback, AmtEncoder, HallFeedback, Memory,
-        PwmOutput, Watchdog
+        PwmOutput, SoftwareWatchdog, HardwareWatchdog
     };
     use firmware_core::{
         Command, FaultCause, OperatingMode,
@@ -59,7 +59,7 @@ mod app {
         current_loop_snapshot: CurrentLoopSnapshot,
         feedback_arbitrator: FeedbackArbitrator,
         current_filter: PhaseCurrentFilter,
-        watchdog: Watchdog,
+        software_watchdog: SoftwareWatchdog,
     }
 
     #[local]
@@ -69,6 +69,7 @@ mod app {
         can_periodic_tx: BufferedCanSender,
         can_response_tx: BufferedCanSender,
         can_rx: BufferedCanReceiver,
+        hardware_watchdog: HardwareWatchdog,
     }
 
     #[init]
@@ -93,6 +94,10 @@ mod app {
         let acceleration = bsp::Acceleration::new(accel_mappings);
         let mut memory = bsp::Memory::new(memory_mappings);
         let mut mode = OperatingMode::Idle;
+
+        if HardwareWatchdog::caused_reset() {
+            mode.on_command(Command::AssertFault { cause: FaultCause::WatchdogReboot });
+        }
 
         // Load configs from flash:
         let config = match memory.load::<FirmwareConfig>() {
@@ -160,7 +165,7 @@ mod app {
             current_loop_snapshot: CurrentLoopSnapshot::default(),
             feedback_arbitrator: FeedbackArbitrator::new(),
             current_filter,
-            watchdog: Watchdog::new(watchdog_mappings, Hertz((0.95*PWM_FREQ.0 as f32) as u32))
+            software_watchdog: SoftwareWatchdog::new(watchdog_mappings.timer, Hertz((0.95*PWM_FREQ.0 as f32) as u32))
         },
         Local {
             adc_feedback,
@@ -168,13 +173,14 @@ mod app {
             can_periodic_tx,
             can_response_tx,
             can_rx,
+            hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
         })
     }
 
     /// Watchdog for tracking FOC ISR loop cycle time
-    #[task(priority = 6, binds = TIM7_DAC, shared = [watchdog])]
+    #[task(priority = 6, binds = TIM7_DAC, shared = [software_watchdog])]
     fn watchdog_isr(mut cx: watchdog_isr::Context) {
-        cx.shared.watchdog.lock(|wd| wd.register_fault());
+        cx.shared.software_watchdog.lock(|wd| wd.register_fault());
     }
 
     #[task(priority = 6, binds = TIM8_BRK, shared = [mode, pwm_output])]
@@ -235,7 +241,7 @@ mod app {
         #[task(
             priority = 6, binds = ADC3,
             local = [
-                adc_feedback, acceleration,
+                adc_feedback, acceleration, hardware_watchdog,
                 board_overtemp: Debounced<Instant> = Debounced::new(false),
                 dc_undervolt: Debounced<Instant> = Debounced::new(false),
                 dc_overvolt: Debounced<Instant> = Debounced::new(false)
@@ -243,7 +249,7 @@ mod app {
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator,
                 mode, board_status, config, runtime_values, debug_mappings,
-                current_loop_snapshot, current_filter, watchdog
+                current_loop_snapshot, current_filter, software_watchdog
             ]
         )]
         fn shared_adc_isr(_: shared_adc_isr::Context);

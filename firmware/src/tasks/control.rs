@@ -14,7 +14,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
 
         // Gather inputs:
-        let watchdog_fault = cx.shared.watchdog.lock(|wd| {
+        let watchdog_fault = cx.shared.software_watchdog.lock(|wd| {
             if wd.is_faulted() && !wd.fault_acknowledged() {
                 wd.acknowledge_fault();
                 true
@@ -86,6 +86,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         // Always sample something to keep the ADC EOC ISRs running:
         cx.local.adc_feedback.sample_sector(outcome.sector);
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
+        cx.local.hardware_watchdog.feed();
     }
 
     // if board status ISR (sampled DC bus voltage and board temperature):

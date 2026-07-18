@@ -12,7 +12,9 @@ use embassy_stm32::timer::{
 use embassy_stm32::timer::pwm::{Running as PwmRunning, PWM};
 use embassy_stm32::dma::StreamingChannel;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::peripherals::CORDIC;
+use embassy_stm32::peripherals::{CORDIC, IWDG};
+use embassy_stm32::wdg::IndependentWatchdog;
+use embassy_stm32::Peri;
 use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
 use embassy_stm32::cordic::{Cordic, NoScale, Precision, Sin, Sqrt, SqrtScale, Q15};
 
@@ -770,16 +772,15 @@ impl HasRotorFeedback for AmtEncoder {
     }
 }
 
-pub struct Watchdog {
+pub struct SoftwareWatchdog {
     timer: Timer<'static, WatchdogTimer>,
     started: bool,
     faulted: bool,
     acknowledged: bool,
 }
 
-impl Watchdog {
-    pub fn new(mappings: WatchdogMappings, frequency: Hertz) -> Self {
-        let timer = mappings.timer;
+impl SoftwareWatchdog {
+    pub fn new(timer: Timer<'static, WatchdogTimer>, frequency: Hertz) -> Self {
         timer.set_frequency(frequency ,embassy_stm32::timer::low_level::RoundTo::Slower);
         timer.generate_update_event();
         timer.clear_update_interrupt();
@@ -820,6 +821,32 @@ impl Watchdog {
             self.started = true;
         }
         self.timer.reset();
+    }
+}
+
+pub struct HardwareWatchdog {
+    iwdg: IndependentWatchdog<'static, IWDG>,
+    started: bool,
+}
+
+impl HardwareWatchdog {
+    pub fn new(iwdg: Peri<'static, IWDG>, timeout_us: u32) -> Self {
+        Self { iwdg: IndependentWatchdog::new(iwdg, timeout_us), started: false }
+    }
+
+    /// Whether the last reset was triggered by the IWDG, clearing the reset flags.
+    pub fn caused_reset() -> bool {
+        let flagged = embassy_stm32::pac::RCC.csr().read().iwdgrstf();
+        embassy_stm32::pac::RCC.csr().modify(|w| w.set_rmvf(true));
+        flagged
+    }
+
+    pub fn feed(&mut self) {
+        if !self.started {
+            self.iwdg.unleash();
+            self.started = true;
+        }
+        self.iwdg.pet();
     }
 }
 
