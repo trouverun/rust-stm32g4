@@ -28,7 +28,7 @@ pub struct OfflineEstimatorConfig {
     pub test_time_s: f32,
     pub max_spin_time_s: f32,
     pub min_spin_omega: f32,
-    pub dt: f32,
+    pub dt_s: f32,
 }
 
 enum OfflineEstimatorState {
@@ -86,11 +86,11 @@ impl OfflineEstimatorState {
         omega_e: f32,
         num_pole_pairs: u8
     ) -> Result<Option<StepResult>, EstimationStepFault> {
-        let dt = config.dt;
+        let dt_s = config.dt_s;
         match self {
             Self::Off | Self::Done | Self::Failure { .. } => Ok(None),
             Self::RotorLockWait { waited_s } => {
-                *waited_s += dt;
+                *waited_s += dt_s;
                 if *waited_s >= config.settle_time_s {
                     let result = Some(StepResult::Transition(
                         Self::EstR {
@@ -106,7 +106,7 @@ impl OfflineEstimatorState {
             Self::EstR { ran_s, lse } => {
                 // v_d = R * i_d
                 lse.accumulate(data.measured_i_dq.d, data.u_dq.d);
-                *ran_s += dt;
+                *ran_s += dt_s;
                 if *ran_s >= config.test_time_s {
                     let resistance = lse.solve(MIN_SOLVE_SAMPLES)?;
                     let result = Some(StepResult::EstimateR {
@@ -130,13 +130,13 @@ impl OfflineEstimatorState {
                 // |v| = L * |di/dt|
                 // use sign(v)*di/dt instead of abs(di/dt) to cancel out noise around low values
                 // (and invert sign(v) since there is a one cycle delay from command to measurement = "wrong" sign)
-                let x = -*voltage_sign * (data.measured_i_dq.d - *prev_i_d) / dt;
+                let x = -*voltage_sign * (data.measured_i_dq.d - *prev_i_d) / dt_s;
                 let y = data.u_dq.d.abs();
                 *prev_i_d = data.measured_i_dq.d;
                 lse.accumulate(x, y);
 
                 *voltage_sign *= -1.0;
-                *ran_s += dt;
+                *ran_s += dt_s;
                 if *ran_s >= config.test_time_s {
                     let d_inductance = lse.solve(MIN_SOLVE_SAMPLES)?;
                     let result = Some(StepResult::EstimateL {
@@ -165,7 +165,7 @@ impl OfflineEstimatorState {
                     }
                 }
                 
-                *ran_s += dt;
+                *ran_s += dt_s;
                 if *ran_s >= config.max_spin_time_s || lse.get_num_data() > 10000 {
                     let pm_flux_linkage = lse.solve(MIN_SOLVE_SAMPLES);
                     let result = match pm_flux_linkage {
@@ -193,7 +193,7 @@ impl OfflineEstimatorState {
                 }
             }
             Self::RampDown { pm_flux_linkage, pending_fault, ran_s, ramp_duration_s, .. } => {
-                *ran_s += dt;
+                *ran_s += dt_s;
                 if *ran_s >= *ramp_duration_s{
                     if let Some(fault) = *pending_fault {
                         Err(fault)

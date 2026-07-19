@@ -12,6 +12,7 @@ mod math;
 mod pi_control;
 mod estimation;
 mod filtering;
+mod braking;
 
 pub use crate::types::*;
 use crate::{math::*};
@@ -24,6 +25,7 @@ pub use crate::estimation::{
     HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator
 };
 pub use crate::filtering::{LowPassFilter, PhaseCurrentFilter};
+pub use crate::braking::{BangBangBrake, BangBangBrakeStepInput};
 
 #[cfg(test)]
 pub use crate::sim::*;

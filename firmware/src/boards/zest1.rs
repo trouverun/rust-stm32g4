@@ -135,7 +135,7 @@ pub fn map_peripherals() -> (
         w_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PD14),
         vbus_channel: AdcChannel::<FeedbackAdcA>::degrade_adc(p.PB13),
         tboard_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PE15),
-        sample_trigger: BasicTrgoOutput::new(p.TIM6, Hertz(10)),
+        sample_trigger: BasicTrgoOutput::new(p.TIM6, super::BOARD_SAMPLE_FREQ),
     };
 
     let hall_feedback = super::HallFeedbackMappings {

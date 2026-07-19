@@ -4,7 +4,7 @@ use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
 use defmt::info;
 
 use crate::app;
-use crate::boards::PWM_FREQ;
+use crate::boards::{BOARD_SAMPLE_FREQ, PWM_FREQ};
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
 use field_oriented::{MotorParamsEstimate, HasRotorFeedback, compute_current_pi_controller_gains};
 
@@ -35,15 +35,16 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let (
             calibration_voltage_v, calibration_current_a,
             calibration_omega, setpoint_timeout_ms,
-            active_current_limit_a
+            active_current_limit_a, dc_bus_max_v
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_omega(), cfg.setpoint_timeout_ms(),
-                cfg.rated_current_limit_a())
+                cfg.rated_current_limit_a(), cfg.dc_bus_max_voltage_v())
             });
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
         });
+        const DT_MS: f32 = 1000.0 / PWM_FREQ.0 as f32;
 
         // FOC compute:
         let inputs = FocStepInputs {
@@ -57,7 +58,14 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             calibration_current_a,
             calibration_omega,
             target_torque,
-            active_current_limit_a
+            active_current_limit_a,
+            back_emf_v: todo!(),
+            safety_deceleration_duration_ms: todo!(),
+            safety_deceleration_cutoff_omega: todo!(),
+            safety_deceleration_ramp_pct_ms: todo!(),
+            braking_current_limit_a: todo!(),
+            dc_bus_max_v,
+            tick_dt_ms: DT_MS,
         };
         let (outcome, stage_result) = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
             |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
@@ -111,15 +119,17 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let (min_dc, max_dc, max_temp) = cx.shared.config.lock(|cfg| {
             (cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(), cfg.temp_max_c())
         });
+        // 500 ms of board samples
+        const DEBOUNCE_TICKS: u32 = BOARD_SAMPLE_FREQ.0 / 2;
         cx.shared.mode.lock(|mode| {
-            cx.local.dc_undervolt.update(vbus < min_dc, Mono::now(), 500.millis());
-            cx.local.dc_overvolt.update(vbus > max_dc, Mono::now(), 500.millis());
+            cx.local.dc_undervolt.update(vbus < min_dc, DEBOUNCE_TICKS);
+            cx.local.dc_overvolt.update(vbus > max_dc, DEBOUNCE_TICKS);
             if cx.local.dc_undervolt.state() {
                 mode.on_command(Command::AssertFault { cause: FaultCause::DcUnderVoltage });
             } else if cx.local.dc_overvolt.state() {
                 mode.on_command(Command::AssertFault { cause: FaultCause::DcOverVoltage });
             }
-            cx.local.board_overtemp.update(tboard > max_temp, Mono::now(), 500.millis());
+            cx.local.board_overtemp.update(tboard > max_temp, DEBOUNCE_TICKS);
             if cx.local.board_overtemp.state() {
                 mode.on_command(Command::AssertFault { cause: FaultCause::Overtemperature });
             }
