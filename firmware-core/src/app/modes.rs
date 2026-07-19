@@ -1,54 +1,20 @@
+use crate::Debounced;
+
 use super::calibration::{CalibrationPhase, CalibrationRunner};
 use super::faults::FaultCause;
+use super::safe_strategy::SafeControlStrategy;
 use defmt::{Format, Formatter, write, info};
-
-#[derive(Clone, Copy, defmt::Format)]
-pub enum SafeControlStrategy {
-    /// terminal STO which does not allow switch to ASC
-    STOf,
-    /// STO which can switch to ASC
-    STO,
-    ASC,
-    SS1t
-}
-
-impl SafeControlStrategy {
-    pub fn foc_tick(&mut self, back_emf_v: f32, dc_bus_max_v: f32) {
-
-    }
-
-    pub fn fault_evolve(&mut self, new: &SafeControlStrategy) {
-        let new_strategy = match (&mut *self, new) {
-            (SafeControlStrategy::ASC, SafeControlStrategy::STOf) => SafeControlStrategy::STOf,
-            (SafeControlStrategy::ASC, SafeControlStrategy::STO) => SafeControlStrategy::STO,
-            (SafeControlStrategy::SS1t, SafeControlStrategy::STO) => SafeControlStrategy::STO,
-            (SafeControlStrategy::SS1t, SafeControlStrategy::ASC) => SafeControlStrategy::ASC,
-            _ => return
-        };
-        *self = new_strategy;
-    }
-}
-
-impl From<FaultCause> for SafeControlStrategy {
-    fn from(value: FaultCause) -> Self {
-        match value {
-            FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent => SafeControlStrategy::STO,
-            _ => SafeControlStrategy::STO
-        }
-    }
-}
 
 #[derive(Clone, Copy)]
 pub struct FocGate {
     pub active: bool,
-    pub feedback_optional: bool,
-    pub safe_strategy: Option<SafeControlStrategy>
+    pub feedback_optional: bool
 }
 
 #[derive(Clone, Copy, defmt::Format)]
 pub enum Command {
     Idle { safe_strategy: SafeControlStrategy },
-    StartCalibration { num_pole_pairs: u8, dt: f32 },
+    StartCalibration { num_pole_pairs: u8, dt_s: f32 },
     ResumeCalibration,
     FinishCalibration,
     EnableTorqueControl,
@@ -108,15 +74,19 @@ impl OperatingMode {
                 trace[0] = cause;
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
-            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, dt}) => {
-                OperatingMode::Calibration { calibrator: CalibrationRunner::new(num_pole_pairs, dt) }
+            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, dt_s}) => {
+                OperatingMode::Calibration { calibrator: CalibrationRunner::new(num_pole_pairs, dt_s) }
             }
             (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
                 calibrator.resume();
                 return;
             }
-            (OperatingMode::Calibration { .. }, Command::FinishCalibration) => OperatingMode::Idle { safe_strategy: SafeControlStrategy::STO },
+            (OperatingMode::Calibration { .. }, Command::FinishCalibration) => {
+                OperatingMode::Idle { 
+                    safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) } 
+                }
+            },
             (OperatingMode::TorqueControl, Command::Idle { safe_strategy } ) => OperatingMode::Idle { safe_strategy },
             (_, _) => return,
         };
@@ -125,10 +95,9 @@ impl OperatingMode {
 
     pub fn foc_gate(&self) -> FocGate {
         match self {
-            OperatingMode::Idle { safe_strategy } => FocGate { 
+            OperatingMode::Idle { .. } => FocGate { 
                 active: false, 
                 feedback_optional: false, 
-                safe_strategy: Some(*safe_strategy)
             },
             OperatingMode::Calibration { calibrator } => FocGate {
                 // Wait phases must not step the calibration state machine:
@@ -141,17 +110,14 @@ impl OperatingMode {
                     calibrator.phase,
                     CalibrationPhase::WaitingEncoderZeroing { .. } | CalibrationPhase::HallCalibration { .. }
                 ),
-                safe_strategy: Some(SafeControlStrategy::STO)
             },
             OperatingMode::TorqueControl => FocGate {
                 active: true,
                 feedback_optional: false,
-                safe_strategy: None
             },
             OperatingMode::Fault { safe_strategy, .. } => FocGate { 
-                active: false, 
+                active: matches!(safe_strategy, SafeControlStrategy::SS1t { .. }), 
                 feedback_optional: false, 
-                safe_strategy: Some(*safe_strategy)
             },
         }
     }

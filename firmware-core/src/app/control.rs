@@ -1,5 +1,6 @@
-use crate::app::modes::SafeControlStrategy;
-
+use crate::FocStepOutcome::NonConducting;
+use crate::SafeControlStrategy;
+use crate::app::safe_strategy::{SafeCommand, SafeControlStrategyInput};
 use super::calibration::{CalibrationInputs, StageResult};
 use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
@@ -23,11 +24,21 @@ pub struct FocStepInputs {
     pub dc_bus_reading_v: Option<f32>,
     pub rotor_feedback: Result<RotorFeedback, RotorFeedbackFault>,
     pub hall_pattern: u8,
+    pub back_emf_v: f32,
+
     pub calibration_voltage_v: f32,
     pub calibration_current_a: f32,
     pub calibration_omega: f32,
+
     pub target_torque: Option<f32>,
     pub active_current_limit_a: f32,
+
+    pub safety_deceleration_duration_ms: f32,
+    pub safety_deceleration_cutoff_omega: f32,
+    pub safety_deceleration_ramp_pct_ms: f32,
+    pub braking_current_limit_a: f32,
+    pub dc_bus_max_v: f32,
+    pub tick_dt_ms: f32
 }
 
 pub enum FocStepOutcome {
@@ -37,28 +48,6 @@ pub enum FocStepOutcome {
         sector: u8,
     },
     NonConducting
-}
-
-impl FocStepOutcome {
-    fn not_ready() -> Self {
-        FocStepOutcome::NonConducting
-    }
-}
-
-impl From<SafeControlStrategy> for FocStepOutcome {
-    fn from(safe_strategy: SafeControlStrategy) -> Self {
-        match safe_strategy {
-            SafeControlStrategy::STO | SafeControlStrategy::STOf => FocStepOutcome::NonConducting,
-            SafeControlStrategy::ASC => {
-                FocStepOutcome::Normal { 
-                    duty_cycles: PhaseValues::safe(), 
-                    snapshot: CurrentLoopSnapshot::default(), 
-                    sector: 0 
-                }
-            }
-            _ => FocStepOutcome::not_ready()
-        }
-    }
 }
 
 /// One iteration of the current control loop.
@@ -85,27 +74,54 @@ pub fn foc_step<A>(
     if rotor_feedback_fault {
         mode.on_command(Command::AssertFault { cause: FaultCause::InvalidRotorFeedback });
     }
-    gate = mode.foc_gate();
 
     let Some(dc_bus_voltage_v) = inputs.dc_bus_reading_v else {
-        return (FocStepOutcome::not_ready(), None)
+        return (FocStepOutcome::NonConducting, None)
     };
-    if !gate.active {
-        if let Some(safe_strategy) = &mut gate.safe_strategy {
-            safe_strategy.foc_tick(0.0, 0.0);
-            return ((*safe_strategy).into(), None)
-        } else {
-            return (FocStepOutcome::not_ready(), None)
-        }
-    }
 
     // During encoder zeroing or hall calibration there may be no valid rotor feedback,
     // but feedback is not used anyways, so we can safely default to zero values:
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
+    // Safe outputs for idle / fault:
+    gate = mode.foc_gate();
+    let safety_foc_command = if !gate.active {
+        let safe_strategy = match mode {
+            OperatingMode::Idle { safe_strategy } => safe_strategy,
+            OperatingMode::Fault { safe_strategy, .. } => safe_strategy,
+            _ => return (FocStepOutcome::NonConducting, None)
+        };
+        let safety_input = SafeControlStrategyInput {
+            omega, 
+            back_emf_v: inputs.back_emf_v,
+            dc_bus_max_v: inputs.dc_bus_max_v,
+            max_braking_torque: params.get_estimate().torque_constant().unwrap_or(0.0) * inputs.braking_current_limit_a,
+            deceleration_duration_ms: inputs.safety_deceleration_duration_ms,
+            deceleration_cutoff_omega: inputs.safety_deceleration_cutoff_omega,
+            deceleration_ramp_pct_ms: inputs.safety_deceleration_ramp_pct_ms,
+            tick_dt_ms: inputs.tick_dt_ms,
+        };
+        let safe_command = safe_strategy.foc_tick(safety_input);
+        match safe_command {
+            SafeCommand::NonConducting => return (FocStepOutcome::NonConducting, None),
+            SafeCommand::ActiveShort => {
+                let outcome = FocStepOutcome::Normal { 
+                    duty_cycles: PhaseValues::zero(), 
+                    snapshot: CurrentLoopSnapshot::default(), 
+                    sector: 0 
+                };
+                return (outcome, None);
+            }
+            SafeCommand::FOC(command) => Some(command)
+        }
+    } else {
+        None
+    };
+
     let mut estimator: &mut dyn MotorParamEstimator = params;
     let mut stage_result = None;
+    // Calibration / estimation:
     let (angle_type, theta, foc_command) = if let OperatingMode::Calibration { calibrator } = mode {
         let (output, result) = calibrator.step(CalibrationInputs {
             dc_bus_voltage_v,
@@ -120,12 +136,18 @@ pub fn foc_step<A>(
         stage_result = result;
         (output.angle_type, output.theta, output.foc_command)
     } else {
-        let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
-        let max_torque = estimator.get_estimate().torque_constant().unwrap_or(0.0) * inputs.active_current_limit_a;
-        if torque_demand > max_torque {
-            torque_demand = max_torque;
+        // Safety braking / deceleration:
+        if let Some(safety_command) = safety_foc_command {
+            (angle_type, theta, safety_command)
+        // Normal torque control:
+        } else {
+            let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
+            let max_torque = estimator.get_estimate().torque_constant().unwrap_or(0.0) * inputs.active_current_limit_a;
+            if torque_demand > max_torque {
+                torque_demand = max_torque;
+            }
+            (angle_type, theta, FocInputType::TargetTorque(torque_demand))
         }
-        (angle_type, theta, FocInputType::TargetTorque(torque_demand))
     };
 
     let foc_input = FocInput {
@@ -163,9 +185,18 @@ pub fn foc_step<A>(
         Err(fault) => {
             mode.on_command(Command::AssertFault { cause: fault.into() });
             if let OperatingMode::Fault { safe_strategy, .. } = mode {
-                (*safe_strategy).into()
+                match safe_strategy {
+                    SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf | SafeControlStrategy::SS1t { .. } => NonConducting,
+                    SafeControlStrategy::ASC { .. } => {
+                        FocStepOutcome::Normal { 
+                            duty_cycles: PhaseValues::zero(), 
+                            snapshot: CurrentLoopSnapshot::default(), 
+                            sector: 0 
+                        }
+                    }
+                }
             } else {
-                FocStepOutcome::not_ready()
+                FocStepOutcome::NonConducting
             }
         }
     };   

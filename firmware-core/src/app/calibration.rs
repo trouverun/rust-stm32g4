@@ -50,7 +50,7 @@ pub enum CalibrationPhase {
 }
 
 pub struct CalibrationConfig {
-    pub dt: f32,
+    pub dt_s: f32,
     pub encoder_zero_request_s: f32,
     pub encoder_zero_timeout_s: f32,
     pub hall_settle_s: f32,
@@ -59,15 +59,15 @@ pub struct CalibrationConfig {
 }
 
 impl CalibrationConfig {
-    pub fn new(dt: f32) -> Self {
+    pub fn new(dt_s: f32) -> Self {
         Self {
-            dt,
+            dt_s,
             encoder_zero_request_s: 3.0,
             encoder_zero_timeout_s: 5.0,
             hall_settle_s: 3.0,
             hall_timeout_s: 30.0,
             estimator: OfflineEstimatorConfig {
-                dt,
+                dt_s,
                 settle_time_s: 3.0,
                 test_time_s: 5.0,
                 max_spin_time_s: 15.0,
@@ -98,9 +98,9 @@ impl StageResult {
 }
 
 impl CalibrationRunner {
-    pub fn new(num_pole_pairs: u8, dt: f32) -> Self {
-        let config = CalibrationConfig::new(dt);
-        let hall_calibrator = HallCalibrator::new(config.hall_settle_s, dt);
+    pub fn new(num_pole_pairs: u8, dt_s: f32) -> Self {
+        let config = CalibrationConfig::new(dt_s);
+        let hall_calibrator = HallCalibrator::new(config.hall_settle_s, dt_s);
         let motor_estimator = OfflineMotorEstimator::new(config.estimator, num_pole_pairs);
         Self {
             num_pole_pairs,
@@ -114,7 +114,7 @@ impl CalibrationRunner {
     pub fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>) {
         match &mut self.phase {
             CalibrationPhase::WaitingEncoderZeroing { duration_waited_s, reset_sent } => {
-                *duration_waited_s += self.config.dt;
+                *duration_waited_s += self.config.dt_s;
                 let mut result = None;
                 let output = CalibrationOutput {
                     angle_type: AngleType::Electrical,
@@ -133,7 +133,7 @@ impl CalibrationRunner {
                 (output, result)
             }
             CalibrationPhase::HallCalibration { time_passed_s } => {
-                *time_passed_s += self.config.dt;
+                *time_passed_s += self.config.dt_s;
                 if *time_passed_s > self.config.hall_timeout_s {
                     let result = StageResult::Failure { cause: CalibrationFailureCause::Timeout };
                     let output = self.idle_output(inputs);

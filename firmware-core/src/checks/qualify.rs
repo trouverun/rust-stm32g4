@@ -1,32 +1,28 @@
-use core::ops::Sub;
-
 /// A boolean condition that commits to a new value only once the raw input has
-/// held it for `period`.
-pub struct Debounced<I> {
+/// held it for `period_ticks` consecutive samples.
+#[derive(Clone, Copy, defmt::Format)]
+pub struct Debounced {
     state: bool,
-    since: Option<I>,
+    count: u32,
 }
 
-impl<I: Copy> Debounced<I> {
+impl Debounced {
     pub const fn new(initial: bool) -> Self {
-        Self { state: initial, since: None }
+        Self { state: initial, count: 0 }
     }
 
     pub fn state(&self) -> bool {
         self.state
     }
 
-    pub fn update<D: PartialOrd>(&mut self, raw: bool, now: I, period: D) -> bool
-    where
-        I: Sub<I, Output = D>,
-    {
+    pub fn update(&mut self, raw: bool, period_ticks: u32) -> bool {
         if raw == self.state {
-            self.since = None;
+            self.count = 0;
         } else {
-            let started = *self.since.get_or_insert(now);
-            if now - started >= period {
+            self.count += 1;
+            if self.count >= period_ticks {
                 self.state = raw;
-                self.since = None;
+                self.count = 0;
             }
         }
         self.state
@@ -72,26 +68,28 @@ mod tests {
     #[test]
     fn commits_only_after_full_period() {
         let mut d = Debounced::new(false);
-        d.update(true, 100u64, 50);
-        assert_eq!(d.update(true, 149, 50), false);
-        assert_eq!(d.update(true, 150, 50), true);
+        assert_eq!(d.update(true, 3), false);
+        assert_eq!(d.update(true, 3), false);
+        assert_eq!(d.update(true, 3), true);
     }
 
     #[test]
     fn excursion_restarts_the_period() {
         let mut d = Debounced::new(false);
-        d.update(true, 100u64, 50);
-        assert_eq!(d.update(false, 130, 50), false);
-        assert_eq!(d.update(true, 175, 50), false);
-        assert_eq!(d.update(true, 225, 50), true);
+        d.update(true, 3);
+        d.update(true, 3);
+        assert_eq!(d.update(false, 3), false);
+        assert_eq!(d.update(true, 3), false);
+        assert_eq!(d.update(true, 3), false);
+        assert_eq!(d.update(true, 3), true);
     }
 
     #[test]
     fn debounces_the_falling_edge_too() {
         let mut d = Debounced::new(true);
-        d.update(false, 100u64, 50);
-        assert_eq!(d.update(false, 149, 50), true);
-        assert_eq!(d.update(false, 150, 50), false);
+        assert_eq!(d.update(false, 3), true);
+        assert_eq!(d.update(false, 3), true);
+        assert_eq!(d.update(false, 3), false);
     }
 
     #[test]

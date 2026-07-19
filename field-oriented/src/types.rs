@@ -52,7 +52,7 @@ pub struct PhaseValues {
 }
 
 impl PhaseValues {
-    pub fn safe() -> PhaseValues {
+    pub fn zero() -> PhaseValues {
         PhaseValues { u: 0.0, v: 0.0, w: 0.0 }
     }
 }
@@ -64,9 +64,13 @@ pub struct FocConfig {
 type TorqueNm = f32;
 #[derive(Clone, Copy)]
 pub enum FocInputType {
+    /// Raw voltage command which gets directly converted to duty cycles
     CalibrationVoltage(ClarkParkValue),
+    /// Command for calibration use, uses separate slow PI controllers, and has no feedforward compensation
     CalibrationCurrents(ClarkParkValue),
+    /// Command for estimation use, uses the normal fast PI controllers, but bypasses back-emf feedforward compensation
     TargetCurrents(ClarkParkValue),
+    /// Torque command for normal use
     TargetTorque(TorqueNm),
 }
 
