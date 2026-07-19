@@ -93,7 +93,7 @@ mod app {
         let amt_encoder = bsp::AmtEncoder::new(encoder_mappings, 1000.0);
         let acceleration = bsp::Acceleration::new(accel_mappings);
         let mut memory = bsp::Memory::new(memory_mappings);
-        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::STO };
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) } };
 
         if HardwareWatchdog::caused_reset() {
             mode.on_command(Command::AssertFault { cause: FaultCause::WatchdogReboot });
@@ -111,7 +111,10 @@ mod app {
         let pwm_output = bsp::PwmOutput::new(pwm_mappings, config.current_limit_a());
         pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
 
-        let current_filter = PhaseCurrentFilter::new(PWM_FREQ.0 as f32, 2500.0, config.rated_current_limit_a(), config.current_limit_a());
+        let current_filter = PhaseCurrentFilter::new(
+            PWM_FREQ.0 as f32, 2500.0, 
+            config.rated_current_limit_a(), config.current_limit_a()
+        );
         let foc_cfg = FocConfig {
             saturation_d_ratio: 0.1,
         };
@@ -165,7 +168,10 @@ mod app {
             current_loop_snapshot: CurrentLoopSnapshot::default(),
             feedback_arbitrator: FeedbackArbitrator::new(),
             current_filter,
-            software_watchdog: SoftwareWatchdog::new(watchdog_mappings.timer, Hertz((0.95*PWM_FREQ.0 as f32) as u32))
+            software_watchdog: SoftwareWatchdog::new(
+                watchdog_mappings.timer, 
+                Hertz((0.95*PWM_FREQ.0 as f32) as u32)
+            )
         },
         Local {
             adc_feedback,
@@ -242,9 +248,9 @@ mod app {
             priority = 6, binds = ADC3,
             local = [
                 adc_feedback, acceleration, hardware_watchdog,
-                board_overtemp: Debounced<Instant> = Debounced::new(false),
-                dc_undervolt: Debounced<Instant> = Debounced::new(false),
-                dc_overvolt: Debounced<Instant> = Debounced::new(false)
+                board_overtemp: Debounced = Debounced::new(false),
+                dc_undervolt: Debounced = Debounced::new(false),
+                dc_overvolt: Debounced = Debounced::new(false)
             ],
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator,
