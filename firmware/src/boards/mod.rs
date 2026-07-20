@@ -33,7 +33,7 @@ use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::Peri;
 
 pub const PWM_FREQ: Hertz = Hertz(20_000);
-pub const BOARD_SAMPLE_FREQ: Hertz = Hertz(10);
+pub const BOARD_SAMPLE_FREQ: Hertz = Hertz(50);
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
 pub const IWDG_TIMEOUT_US: u32 = 10_000;
 

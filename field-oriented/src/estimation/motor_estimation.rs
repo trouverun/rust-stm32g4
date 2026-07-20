@@ -398,9 +398,9 @@ mod test {
     #[test]
     fn motor_param_estimation() {
         let pwm_freq_hz = 20_000.0;
-        let dt = 1.0 / pwm_freq_hz;
+        let dt_s = 1.0 / pwm_freq_hz;
         let sim_cfg = PMSMConfig::default();
-        let mut sim = PMSMSim::new(dt, sim_cfg);
+        let mut sim = PMSMSim::new(dt_s, sim_cfg);
 
         let foc_cfg = FocConfig { saturation_d_ratio: 0.0 };
         let mut foc = FOC::new(foc_cfg, pwm_freq_hz);
@@ -413,7 +413,7 @@ mod test {
             test_time_s: 3.0,
             max_spin_time_s: 20.0,
             min_spin_omega: 100.0,
-            dt,
+            dt_s,
         };
         let mut estimator = OfflineMotorEstimator::new(est_config, 2);
         estimator.start(sim_cfg.num_pole_pairs as u8);
@@ -470,19 +470,19 @@ mod test {
                 estimates: std::vec::Vec::new(),
             });
 
-            t += dt;
+            t += dt_s;
             if t > timeout {
-                plot_simulation("motor_estimation.html", dt as f32, &records);
+                plot_simulation("motor_estimation.html", dt_s as f32, &records);
                 panic!("Estimation did not complete within {timeout}s");
             }
 
             if estimator.estimation_failed() {
-                plot_simulation("motor_estimation.html", dt as f32, &records);
+                plot_simulation("motor_estimation.html", dt_s as f32, &records);
                 panic!("Estimation failed!")
             }
         }
 
-        plot_simulation("motor_estimation.html", dt as f32, &records);
+        plot_simulation("motor_estimation.html", dt_s as f32, &records);
 
         let est = estimator.params;
         let r_err = (est.stator_resistance.unwrap() - sim_cfg.stator_resistance).abs() / sim_cfg.stator_resistance;
