@@ -82,6 +82,11 @@ BO_ 432 MotorParameterReport2: 7 Hyperdrive
  SG_ ld_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ lq_valid : 49|1@1+ (1,0) [0|1] "" Host
 
+BO_ 448 SafeStopConfigReport: 6 Hyperdrive
+ SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Host
+ SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Host
+ SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Host
+
 BO_ 512 Setpoint: 8 Host
  SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
  SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
@@ -108,6 +113,11 @@ BO_ 576 CalibrationTargets: 6 Host
  SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
  SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Hyperdrive
 
+BO_ 592 SafeStopConfig: 6 Host
+ SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
+ SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Hyperdrive
+ SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+
 BO_ 624 ConfigQuery: 1 Host
  SG_ block_id : 0|8@1+ (1,0) [0|255] "" Hyperdrive
 
@@ -127,4 +137,4 @@ BA_ "GenMsgCycleTimeUs" BO_ 304 100000;
 BA_ "GenMsgCycleTimeUs" BO_ 320 100000;
 
 VAL_ 528 requested_mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 4 "FaultClear" ;
-VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 255 "all" ;
+VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 6 "safe_stop_config" 255 "all" ;

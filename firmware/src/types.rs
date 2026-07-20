@@ -37,6 +37,9 @@ pub struct FirmwareConfig {
     current_limit_a: f32,
     setpoint_timeout_ms: u16,
     temp_max_c: f32,
+    ss1t_duration_ms: u16,
+    ss1t_velocity_threshold: f32,
+    braking_current_limit_a: f32,
 }
 
 impl Default for FirmwareConfig {
@@ -51,6 +54,9 @@ impl Default for FirmwareConfig {
             current_limit_a: 0.5,
             setpoint_timeout_ms: 50,
             temp_max_c: 80.0,
+            ss1t_duration_ms: 500,
+            ss1t_velocity_threshold: 1.0,
+            braking_current_limit_a: 0.0,
         }
     }
 }
@@ -74,10 +80,15 @@ impl FirmwareConfig {
         rated_current_limit_a,
         current_limit_a,
         temp_max_c,
+        ss1t_velocity_threshold,
+        braking_current_limit_a,
     }
 
     #[inline]
     pub fn setpoint_timeout_ms(&self) -> u16 { self.setpoint_timeout_ms }
+
+    #[inline]
+    pub fn ss1t_duration_ms(&self) -> u16 { self.ss1t_duration_ms }
 
     /// Enforce calibration_current <= current_limit <= rated_current.
     fn clamp_current_hierarchy(&mut self) {
@@ -140,6 +151,27 @@ impl FirmwareConfig {
 
     pub fn set_temp_max_c(&mut self, v: f32) -> Result<(), ConfigError> {
         self.temp_max_c = in_range(v, (-40.0, 150.0))?;
+        Ok(())
+    }
+
+    pub fn set_ss1t_duration_ms(&mut self, v: u16) -> Result<(), ConfigError> {
+        if v == 0 || v > 60_000 {
+            return Err(ConfigError::OutOfRange);
+        }
+        self.ss1t_duration_ms = v;
+        Ok(())
+    }
+
+    pub fn set_ss1t_velocity_threshold(&mut self, v: f32) -> Result<(), ConfigError> {
+        if v <= 0.0 || v > 1000.0 {
+            return Err(ConfigError::OutOfRange);
+        }
+        self.ss1t_velocity_threshold = v;
+        Ok(())
+    }
+
+    pub fn set_braking_current_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
+        self.braking_current_limit_a = in_range(v, (0.0, BOARD.current_limit_a))?;
         Ok(())
     }
 }
