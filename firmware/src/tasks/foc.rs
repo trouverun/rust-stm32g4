@@ -35,11 +35,13 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let (
             calibration_voltage_v, calibration_current_a,
             calibration_omega, setpoint_timeout_ms,
-            active_current_limit_a, dc_bus_max_v
+            active_current_limit_a, dc_bus_max_v,
+            ss1t_duration_ms, ss1t_velocity_threshold, braking_current_limit_a,
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_omega(), cfg.setpoint_timeout_ms(),
-                cfg.rated_current_limit_a(), cfg.dc_bus_max_voltage_v())
+                cfg.rated_current_limit_a(), cfg.dc_bus_max_voltage_v(),
+                cfg.ss1t_duration_ms(), cfg.ss1t_velocity_threshold(), cfg.braking_current_limit_a())
             });
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
@@ -60,10 +62,10 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             target_torque,
             active_current_limit_a,
             back_emf_v: todo!(),
-            safety_deceleration_duration_ms: todo!(),
-            safety_deceleration_cutoff_omega: todo!(),
+            safety_deceleration_duration_ms: ss1t_duration_ms as f32,
+            safety_deceleration_cutoff_omega: ss1t_velocity_threshold,
             safety_deceleration_ramp_pct_ms: todo!(),
-            braking_current_limit_a: todo!(),
+            braking_current_limit_a,
             dc_bus_max_v,
             tick_dt_ms: DT_MS,
         };

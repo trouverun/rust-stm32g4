@@ -113,6 +113,20 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                     Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
                 }
             }
+            Ok(Messages::SafeStopConfig(msg)) => {
+                let applied = cx.shared.config.lock(|cfg| {
+                    let mut candidate = *cfg;
+                    candidate.set_ss1t_duration_ms(msg.ss1t_duration_ms())?;
+                    candidate.set_ss1t_velocity_threshold(msg.ss1t_velocity_thresh())?;
+                    candidate.set_braking_current_limit_a(msg.braking_current_limit())?;
+                    *cfg = candidate;
+                    Ok::<(), ConfigError>(())
+                });
+                match applied {
+                    Ok(()) => { let _ = app::persist_config::spawn(); }
+                    Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                }
+            }
             Ok(Messages::ConfigQuery(msg)) => {
                 let block = msg.block_id();
                 let all = matches!(block, ConfigQueryBlockId::All);
@@ -158,6 +172,17 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                                 cx.local.can_response_tx.write(f).await;
                             }
                         }
+                    }
+                }
+                if all || matches!(block, ConfigQueryBlockId::SafeStopConfig) {
+                    let cfg = cx.shared.config.lock(|c| *c);
+                    let f = SafeStopConfigReport::try_from(SafeStopConfigReportInit {
+                        ss1t_duration_ms: cfg.ss1t_duration_ms(),
+                        ss1t_velocity_thresh: cfg.ss1t_velocity_threshold(),
+                        braking_current_limit: cfg.braking_current_limit_a(),
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.local.can_response_tx.write(f).await;
                     }
                 }
             }
