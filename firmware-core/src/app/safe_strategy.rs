@@ -9,7 +9,7 @@ pub enum SafeCommand {
 
 pub struct SafeControlStrategyInput {
     pub omega: f32,
-    pub back_emf_v: f32, 
+    pub dc_bus_v: f32, 
     pub dc_bus_max_v: f32,
     pub max_braking_torque: f32,
     pub deceleration_duration_ms: f32,
@@ -36,13 +36,13 @@ impl SafeControlStrategy {
         // Evolve strategy
         match self {
             SafeControlStrategy::STO { should_switch } => {
-                should_switch.update(input.back_emf_v > 0.9*input.dc_bus_max_v, 10);
+                should_switch.update(input.dc_bus_v > 1.025*input.dc_bus_max_v, 10);
                 if should_switch.state() {
                     *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
                 }
             }
             SafeControlStrategy::ASC { should_switch } => {
-                should_switch.update(input.back_emf_v < 0.8*input.dc_bus_max_v, 10);
+                should_switch.update(input.dc_bus_v <= input.dc_bus_max_v, 10);
                 if should_switch.state() {
                     *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) } ;
                 }
@@ -59,7 +59,7 @@ impl SafeControlStrategy {
                 let brake_done = brake.tick(braking_input);
                 done.update(brake_done, 10);
                 if done.state() {
-                    if input.back_emf_v > 0.9*input.dc_bus_max_v {
+                    if input.dc_bus_max_v > 1.025*input.dc_bus_max_v {
                         *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
                     } else {
                         *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) };

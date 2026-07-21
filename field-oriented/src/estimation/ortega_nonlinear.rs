@@ -1,3 +1,7 @@
+// Lee, J., Hong, J., Nam, K., Ortega, R., Praly, L., & Astolfi, A. (2009). 
+// Sensorless control of surface-mount permanent-magnet synchronous motors based on a nonlinear observer. 
+// IEEE Transactions on power electronics, 25(2), 290-297.
+
 use crate::{
     AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, PhaseValues, RotorFeedback, RotorFeedbackFault, forward_clarke, math::wrap_to_2pi, wrap_to_pi, wrapped_diff
 };
@@ -142,7 +146,7 @@ mod test {
         let sim_cfg = PMSMConfig::default();
         let mut sim = PMSMSim::new(dt, sim_cfg);
 
-        let mut foc = FOC::new(FocConfig { saturation_d_ratio: 0.0 }, pwm_freq_hz);
+        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, pwm_deadtime_ns: 0.0, pwm_deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
         let mut accelerator = DummyAccelerator;
         let motor_params = nominal_params(sim_cfg);
         foc.set_pi_gains(Some(
@@ -182,14 +186,9 @@ mod test {
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
 
-            let applied_voltages = PhaseValues {
-                u: sim_cfg.dc_bus_voltage * foc_result.duty_cycles.u,
-                v: sim_cfg.dc_bus_voltage * foc_result.duty_cycles.v,
-                w: sim_cfg.dc_bus_voltage * foc_result.duty_cycles.w,
-            };
             estimator.update(OrtegaPralyEstimatorInput {
                 currents: state.currents,
-                voltages: forward_clarke(applied_voltages),
+                voltages: foc_result.u_ab,
                 params: observer_params,
                 dt_s: dt,
             }, &mut accelerator);

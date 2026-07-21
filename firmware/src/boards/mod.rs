@@ -33,7 +33,7 @@ use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::Peri;
 
 pub const PWM_FREQ: Hertz = Hertz(20_000);
-pub const BOARD_SAMPLE_FREQ: Hertz = Hertz(50);
+pub const BOARD_SAMPLE_FREQ: Hertz = Hertz(1);
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
 pub const IWDG_TIMEOUT_US: u32 = 10_000;
 
@@ -49,6 +49,10 @@ pub struct BoardInfo {
     pub vbus_divide_factor: f32,
     pub thermistor_scaling: ThermistorLinearScale,
     pub current_limit_a: f32,
+    pub mosfet_deadtime_ns: u32,
+    pub mosfet_on_delay_ns: u32,
+    pub mosfet_off_delay_ns: u32,
+    pub mosfet_output_capacitance_nf: f32
 }
 
 #[cfg(feature = "mcu-opamps")]

@@ -73,13 +73,14 @@ pub const BOARD: super::BoardInfo = super::BoardInfo {
         slope_c_per_v: 45.7,
         bias_c: 23.6,
     },
-    current_limit_a: 5.0
+    current_limit_a: 5.0,
+    mosfet_deadtime_ns: 300,
+    mosfet_on_delay_ns: 15,
+    mosfet_off_delay_ns: 24,
+    mosfet_output_capacitance_nf: 0.36
 };
 
 pub struct DebugMappings {
-    pub pot_channel: AnyAdcChannel<'static, ADC1>,
-    pub pot_adc: ExternalTriggeredADC<'static, ADC1, Running, NotQueued>,
-    pub user_btn: ExtiInput<'static, Blocking>,
     pub la_a: Output<'static>,
     pub la_b: Output<'static>,
     pub la_c: Output<'static>,
@@ -184,7 +185,7 @@ pub fn map_peripherals() -> (
                 Bkp::ACTIVE_HIGH,
                 FilterValue::FCK_INT_N4,
             ),
-        deadtime: PwmDeadtime::Nanosecods(300),
+        deadtime: PwmDeadtime::Nanosecods(BOARD.mosfet_deadtime_ns),
     };
 
     let acceleration = super::AccelerationMappings { cordic: p.CORDIC };
@@ -194,27 +195,7 @@ pub fn map_peripherals() -> (
         configurator: unsafe { CanConfigurator::new_unbound(p.FDCAN1, p.PD0, p.PA12) },
     };
 
-    // Board specific debug assignments:
-    let pot_channel = AdcChannel::degrade_adc(p.PA3);
-    let mut pot_adc_config = AdcConfig::default();
-    pot_adc_config.resolution = Some(Resolution::BITS12);
-    let pot_adc = Adc::new(p.ADC1, pot_adc_config)
-        .to_external_triggered()
-        .using_sampletimes(&[(pot_channel.get_hw_channel(), SampleTime::CYCLES12_5)])
-        .with_sequence(
-            &[pot_channel.get_hw_channel()],
-            Adc12RegularTrigger::Tim6Trgo,
-            Exten::RISING_EDGE,
-        )
-        .start(EocInterruptEnabled::ENABLED, JeosInterruptEnabled::DISABLED);
-
-    let mut user_btn = ExtiInput::new_blocking(p.PC13, p.EXTI13, Pull::Up, TriggerEdge::Any);
-    user_btn.enable_interrupt();
-
     let debug = DebugMappings {
-        pot_channel,
-        pot_adc,
-        user_btn,
         la_a: Output::new(p.PE8, Level::Low, Speed::Low),
         la_b: Output::new(p.PE14, Level::Low, Speed::Low),
         la_c: Output::new(p.PD15, Level::Low, Speed::Low),

@@ -45,12 +45,13 @@ pub struct FOC {
     calibration_q_pi: PIController,
     d_pi: PIController,
     q_pi: PIController,
-    u_dq_saturation: ClarkParkValue
+    u_dq_saturation: ClarkParkValue,
+    deadtime_ratio: f32,
 }
 
 impl FOC {
-    pub fn new(config: FocConfig, pwm_freq_hz: f32) -> Self {
-        let sampling_time_s = 1.0 / pwm_freq_hz;
+    pub fn new(config: FocConfig) -> Self {
+        let sampling_time_s = 1.0 / config.pwm_frequency_hz;
 
         // Slow I controller for calibration steady-state use:
         let calibration_gains = PIGains { kr: 0.0, kp: 0.0, ki: 1.0, kt: 1.0 };
@@ -61,11 +62,19 @@ impl FOC {
         let d_pi = PIController::new(None, sampling_time_s);
         let q_pi = PIController::new(None, sampling_time_s);
 
+        let deadtime_ratio = if config.pwm_frequency_hz != 0.0 {
+            let pwm_period_ns = 1e9 / config.pwm_frequency_hz;
+            (config.mosfet_deadtime_ns + config.mosfet_on_delay_ns - config.mosfet_off_delay_ns) / pwm_period_ns
+        } else {
+            0.0
+        };
+
         Self {
             config,
             calibration_d_pi, calibration_q_pi,
             d_pi, q_pi,
-            u_dq_saturation: ClarkParkValue { d: 0.0, q: 0.0 }
+            u_dq_saturation: ClarkParkValue { d: 0.0, q: 0.0 },
+            deadtime_ratio
         }
     }
 
@@ -142,11 +151,24 @@ impl FOC {
         } else {
             0.0
         };
-        let duty_cycles = PhaseValues {
-            u: (0.5 + bus_reciprocal*(v_tgt.u + v0_tgt)).clamp(0.0, 1.0),
-            v: (0.5 + bus_reciprocal*(v_tgt.v + v0_tgt)).clamp(0.0, 1.0),
-            w: (0.5 + bus_reciprocal*(v_tgt.w + v0_tgt)).clamp(0.0, 1.0)
+        let mut duty_cycles = PhaseValues {
+            u: 0.5 + bus_reciprocal*(v_tgt.u + v0_tgt),
+            v: 0.5 + bus_reciprocal*(v_tgt.v + v0_tgt),
+            w: 0.5 + bus_reciprocal*(v_tgt.w + v0_tgt)
         };
+        
+        // Dead time compensation (simplified):
+        // Zhang, Z., & Xu, L. (2013). 
+        // Dead-time compensation of inverters considering snubber and parasitic capacitance. 
+        // IEEE Transactions on Power Electronics, 29(6), 3179-3187
+        let pwm_deadtime_compensation_band_a = 2.0*input.dc_bus_voltage*self.config.mosfet_output_capacitance_nf / self.config.mosfet_deadtime_ns;
+        let deadtime_band_reciprocal = 1.0 / (pwm_deadtime_compensation_band_a.abs() + 1e-5);
+        duty_cycles.u += self.deadtime_ratio * (input.phase_currents.u * deadtime_band_reciprocal).clamp(-1.0, 1.0);
+        duty_cycles.v += self.deadtime_ratio * (input.phase_currents.v * deadtime_band_reciprocal).clamp(-1.0, 1.0);
+        duty_cycles.w += self.deadtime_ratio * (input.phase_currents.w * deadtime_band_reciprocal).clamp(-1.0, 1.0);
+        duty_cycles.u = duty_cycles.u.clamp(0.0, 1.0);
+        duty_cycles.v = duty_cycles.v.clamp(0.0, 1.0);
+        duty_cycles.w = duty_cycles.w.clamp(0.0, 1.0);
 
         Ok(FocResult {
             omega_e,
@@ -155,6 +177,7 @@ impl FOC {
             measured_i_dq,
             target_i_dq,
             u_dq,
+            u_ab,
         })
     }
 
@@ -217,12 +240,15 @@ mod tests {
         let mut sim = PMSMSim::new(sim_dt, sim_cfg);
 
         let foc_cfg = FocConfig {
+            pwm_frequency_hz: pwm_freq_hz,
+            pwm_deadtime_ns: 0.0,
+            mosfet_output_capacitance_nf: 1.0,
             saturation_d_ratio: 0.0
         };
-        let mut foc = FOC::new(foc_cfg, pwm_freq_hz);
+        let mut foc = FOC::new(foc_cfg);
         let mut accelerator = DummyAccelerator;
         let motor_params = MotorParamsEstimate::from_nominal(
-            MotorParams { 
+            MotorParams {
                 num_pole_pairs: sim_cfg.num_pole_pairs as u8,
                 stator_resistance: sim_cfg.stator_resistance, 
                 d_inductance: sim_cfg.inductance, 
@@ -298,9 +324,12 @@ mod tests {
         let mut sim = PMSMSim::new(dt, sim_cfg).with_hall_encoder(HallEncoder::ideal());
 
         let foc_cfg = FocConfig {
+            pwm_frequency_hz: pwm_freq_hz,
+            pwm_deadtime_ns: 0.0,
+            mosfet_output_capacitance_nf: 1.0,
             saturation_d_ratio: 0.0
         };
-        let mut foc = FOC::new(foc_cfg, pwm_freq_hz);
+        let mut foc = FOC::new(foc_cfg);
         let mut accelerator = DummyAccelerator;
         let motor_params = MotorParamsEstimate::from_nominal(
             MotorParams {
