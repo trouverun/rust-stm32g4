@@ -7,8 +7,10 @@ pub enum AngleType {
 #[derive(Clone, Copy, Debug)]
 pub enum RotorFeedbackFault {
     NotCalibrated,
+    MissingParameter,
     NoResponse,
-    ErroneousValue
+    ErroneousValue,
+    Unobservable
 }
 
 #[derive(Clone, Copy)]
@@ -31,6 +33,7 @@ pub struct SinCosResult {
 pub trait DoesFocMath {
     fn sin_cos(&mut self, angle_rad: f32) -> SinCosResult;
     fn sqrt(&mut self, val: f32) -> f32;
+    fn atan2(&mut self, y: f32, x: f32) -> f32;
 }
 
 pub struct AlphaBeta {
@@ -58,7 +61,12 @@ impl PhaseValues {
 }
 
 pub struct FocConfig {
+    pub pwm_period_ns: f32,
+    pub pwm_deadtime_ns: f32,
+    pub pwn_on_delay_ns: f32,
+    pub pwn_off_delay_ns: f32,
     pub saturation_d_ratio: f32,
+
 }
 
 type TorqueNm = f32;
