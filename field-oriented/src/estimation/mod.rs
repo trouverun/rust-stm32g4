@@ -3,6 +3,8 @@ mod hall_estimation;
 mod motor_estimation;
 mod arbitration;
 pub(crate) mod utils;
+mod ortega_nonlinear;
+
 pub use hall_calibration::{HallCalibrator, HallCalibrationFault};
 pub use hall_estimation::{HallEstimator, HallEstimatorInput, HallEstimatorOutput};
 pub use motor_estimation::{
@@ -22,7 +24,7 @@ pub struct MotorParams {
 }
 
 impl MotorParams {
-    /// N·m per amp of q-axis current: 1.5 · p · λ
+    /// Nm of torque per amp of q-axis current
     pub fn torque_constant(&self) -> f32 {
         1.5 * self.num_pole_pairs as f32 * self.pm_flux_linkage
     }

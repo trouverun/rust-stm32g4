@@ -78,6 +78,10 @@ impl DoesFocMath for DummyAccelerator {
     fn sqrt(&mut self, val: f32) -> f32 {
         val.sqrt()
     }
+
+    fn atan2(&mut self, y: f32, x: f32) -> f32 {
+        y.atan2(x)
+    }
 }
 
 pub struct SimRecord {
