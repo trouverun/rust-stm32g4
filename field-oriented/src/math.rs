@@ -7,31 +7,19 @@ const SQRT3_2: f32 = 0.86602540378;
 
 /// Smallest signed difference `a - b` mapped to `(-PI, PI]`
 pub(crate) fn wrapped_diff(a: f32, b: f32) -> f32 {
-    let d = a - b;
-    if d > PI {
-        d - TAU
-    } else if d < -PI {
-        d + TAU
-    } else {
-        d
-    }
+    wrap_to_pi(a-b)
 }
 
-/// Wrap an angle within one turn of range to `[0, PI)`
+/// Wrap an angle within one turn of range to `(-PI, PI]`
 pub fn wrap_to_pi(angle_rad: f32) -> f32 {
     const INV_TAU: f32 = 1.0 / TAU;
     angle_rad - TAU * (angle_rad * INV_TAU).round()
 }
 
 /// Wrap an angle within one turn of range to `[0, TAU)`
-pub(crate) fn wrap_to_2pi(angle: f32) -> f32 {
-    if angle >= TAU {
-        angle - TAU
-    } else if angle < 0.0 {
-        angle + TAU
-    } else {
-        angle
-    }
+pub(crate) fn wrap_to_2pi(angle_rad: f32) -> f32 {
+    const INV_TAU: f32 = 1.0 / TAU;
+    angle_rad - TAU * (angle_rad * INV_TAU).floor()
 }
 
 pub(crate) fn forward_clarke(vals: PhaseValues) -> AlphaBeta {
