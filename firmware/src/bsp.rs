@@ -16,7 +16,7 @@ use embassy_stm32::peripherals::{CORDIC, IWDG};
 use embassy_stm32::wdg::IndependentWatchdog;
 use embassy_stm32::Peri;
 use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
-use embassy_stm32::cordic::{Cordic, NoScale, Precision, Sin, Sqrt, SqrtScale, Q15};
+use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin, Sqrt, SqrtScale};
 
 use crate::boards::*;
 use crate::memory::{sector_offset, Stored, SECTOR_SIZE};
@@ -436,7 +436,6 @@ impl PwmOutput {
                     Bkp::ACTIVE_HIGH,
                     FilterValue::FCK_INT_N4,
                 );
-            
         }
 
         Self {
@@ -511,8 +510,7 @@ impl DoesFocMath for Acceleration {
         let angle_normalized = (wrap_to_pi(angle_rad) * INV_PI).clamp(-1.0, 1.0);
         let angle_q15 = f32_to_q1_15(angle_normalized).unwrap();
         let mut sin_cfg = self.cordic.configure::<Sin, Q15>(Precision::Iters12, NoScale);
-        let started = sin_cfg.start_one_arg(angle_q15);
-        let (sin_raw, cos_raw) = started.result_two_values();
+        let (sin_raw, cos_raw) = sin_cfg.start_one_arg(angle_q15).result_two_values();
 
         SinCosResult {
             sin: q1_15_to_f32(sin_raw),
@@ -543,11 +541,26 @@ impl DoesFocMath for Acceleration {
         };
         let x_q15 = f32_to_q1_15(x * arg_mul).unwrap();
 
-        let mut cfg = self.cordic.configure::<Sqrt, Q15>(Precision::Iters12, scale);
-        let raw = cfg.start_one_arg(x_q15).result_one_value();
+        let mut sqrt_cfg = self.cordic.configure::<Sqrt, Q15>(Precision::Iters12, scale);
+        let raw = sqrt_cfg.start_one_arg(x_q15).result_one_value();
 
         // Unscale and convert to float:
         q1_15_to_f32(raw) * (1 << (n + k)) as f32
+    }
+    
+    fn atan2(&mut self, y: f32, x: f32) -> f32 {
+        let m = y.abs().max(x.abs());
+        if !m.is_normal() {
+            return 0.0
+        }
+        let inv = 1.0 / m;
+        let x_q15 = f32_to_q1_15(x * inv).unwrap();
+        let y_q15 = f32_to_q1_15(y * inv).unwrap();
+
+        let mut phase_cfg = self.cordic.configure::<Phase, Q15>(Precision::Iters12, NoScale);
+        let (phase, _modulus) = phase_cfg.start_two_args(x_q15, y_q15).result_two_values();
+
+        q1_15_to_f32(phase) * PI
     }
 }
 
@@ -839,7 +852,9 @@ pub struct HardwareWatchdog {
 
 impl HardwareWatchdog {
     pub fn new(iwdg: Peri<'static, IWDG>, timeout_us: u32) -> Self {
-        Self { iwdg: IndependentWatchdog::new(iwdg, timeout_us), started: false }
+        Self { 
+            iwdg: IndependentWatchdog::new(iwdg, timeout_us), started: false 
+        }
     }
 
     /// Whether the last reset was triggered by the IWDG, clearing the reset flags.
@@ -851,7 +866,7 @@ impl HardwareWatchdog {
 
     pub fn feed(&mut self) {
         if !self.started {
-            self.iwdg.unleash();
+            // self.iwdg.unleash();
             self.started = true;
         }
         self.iwdg.pet();

@@ -24,7 +24,6 @@ pub struct FocStepInputs {
     pub dc_bus_reading_v: Option<f32>,
     pub rotor_feedback: Result<RotorFeedback, RotorFeedbackFault>,
     pub hall_pattern: u8,
-    pub back_emf_v: f32,
 
     pub calibration_voltage_v: f32,
     pub calibration_current_a: f32,
@@ -94,7 +93,7 @@ pub fn foc_step<A>(
         };
         let safety_input = SafeControlStrategyInput {
             omega, 
-            back_emf_v: inputs.back_emf_v,
+            dc_bus_v: dc_bus_voltage_v,
             dc_bus_max_v: inputs.dc_bus_max_v,
             max_braking_torque: params.get_estimate().torque_constant().unwrap_or(0.0) * inputs.braking_current_limit_a,
             deceleration_duration_ms: inputs.safety_deceleration_duration_ms,

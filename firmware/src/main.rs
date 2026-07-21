@@ -69,11 +69,13 @@ mod app {
         can_periodic_tx: BufferedCanSender,
         can_response_tx: BufferedCanSender,
         can_rx: BufferedCanReceiver,
-        hardware_watchdog: HardwareWatchdog,
+        // hardware_watchdog: HardwareWatchdog,
     }
 
     #[init]
     fn init(_cx: init::Context) -> (Shared, Local) {
+        info!("init");
+
         let (
             adc_mappings,
             hall_mappings,
@@ -86,7 +88,10 @@ mod app {
             debug_mappings,
         ) = map_peripherals();
 
+
         // Initialize HW:
+        let pwm_output: PwmOutput = bsp::PwmOutput::new(pwm_mappings, 0.0);
+        pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
         let mut adc_feedback = bsp::AdcFeedback::new(adc_mappings);
         adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
         let mut hall_feedback = bsp::HallFeedback::new(hall_mappings, 10_000, 1000.0);
@@ -98,7 +103,7 @@ mod app {
         if HardwareWatchdog::caused_reset() {
             mode.on_command(Command::AssertFault { cause: FaultCause::WatchdogReboot });
         }
-
+        
         // Load configs from flash:
         let config = match memory.load::<FirmwareConfig>() {
             Ok(Some(c)) => c,
@@ -108,17 +113,21 @@ mod app {
                 FirmwareConfig::default() 
             }
         };
-        let pwm_output = bsp::PwmOutput::new(pwm_mappings, config.current_limit_a());
-        pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
+        pwm_output.set_comparator_current_limit(config.current_limit_a());
 
         let current_filter = PhaseCurrentFilter::new(
             PWM_FREQ.0 as f32, 2500.0, 
             config.rated_current_limit_a(), config.current_limit_a()
         );
         let foc_cfg = FocConfig {
-            saturation_d_ratio: 0.1,
+            pwm_frequency_hz: PWM_FREQ.0 as f32, 
+            mosfet_deadtime_ns: BOARD.mosfet_deadtime_ns as f32, 
+            mosfet_on_delay_ns: BOARD.mosfet_on_delay_ns as f32,
+            mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
+            mosfet_output_capacitance_nf: BOARD.mosfet_output_capacitance_nf,
+            saturation_d_ratio: 0.1
         };
-        let mut foc = FOC::new(foc_cfg, PWM_FREQ.0 as f32);
+        let mut foc = FOC::new(foc_cfg);
 
         // Load motor parameters from flash:
         let motor_parameters = match memory.load::<MotorParamsEstimate>() {
@@ -147,8 +156,8 @@ mod app {
         let can_rx = can_bus.reader();
         let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
         Mono::start(rcc::frequency::<TIM2>().0, token);
-        can_tx_task::spawn().unwrap();
-        can_rx_task::spawn().unwrap();
+        // can_tx_task::spawn().unwrap();
+        // can_rx_task::spawn().unwrap();
 
         (Shared {
             mode,
@@ -179,7 +188,7 @@ mod app {
             can_periodic_tx,
             can_response_tx,
             can_rx,
-            hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
+            // hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
         })
     }
 
@@ -247,7 +256,7 @@ mod app {
         #[task(
             priority = 6, binds = ADC3,
             local = [
-                adc_feedback, acceleration, hardware_watchdog,
+                adc_feedback, acceleration, // hardware_watchdog,
                 board_overtemp: Debounced = Debounced::new(false),
                 dc_undervolt: Debounced = Debounced::new(false),
                 dc_overvolt: Debounced = Debounced::new(false)

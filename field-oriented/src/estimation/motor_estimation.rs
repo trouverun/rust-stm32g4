@@ -402,8 +402,8 @@ mod test {
         let sim_cfg = PMSMConfig::default();
         let mut sim = PMSMSim::new(dt_s, sim_cfg);
 
-        let foc_cfg = FocConfig { saturation_d_ratio: 0.0 };
-        let mut foc = FOC::new(foc_cfg, pwm_freq_hz);
+        let foc_cfg = FocConfig { pwm_frequency_hz: pwm_freq_hz, pwm_deadtime_ns: 0.0, pwm_deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 };
+        let mut foc = FOC::new(foc_cfg);
         let mut accelerator = DummyAccelerator;
 
         let max_current = 1.5;

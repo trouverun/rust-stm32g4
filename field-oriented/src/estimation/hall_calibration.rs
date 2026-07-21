@@ -150,9 +150,12 @@ mod test {
             .with_hall_encoder(HallEncoder::ideal());
 
         let foc_cfg = FocConfig {
+            pwm_frequency_hz: pwm_freq_hz,
+            pwm_deadtime_ns: 0.0,
+            pwm_deadtime_compensation_band_a: 1.0,
             saturation_d_ratio: 0.0
         };
-        let mut foc = FOC::new(foc_cfg, pwm_freq_hz);
+        let mut foc = FOC::new(foc_cfg);
         let mut accelerator = DummyAccelerator;
         let motor_params = MotorParamsEstimate::from_nominal(
             MotorParams {
