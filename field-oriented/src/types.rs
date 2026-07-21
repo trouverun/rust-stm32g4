@@ -36,6 +36,7 @@ pub trait DoesFocMath {
     fn atan2(&mut self, y: f32, x: f32) -> f32;
 }
 
+#[derive(Clone, Copy)]
 pub struct AlphaBeta {
     pub alpha: f32,
     pub beta: f32
@@ -61,10 +62,11 @@ impl PhaseValues {
 }
 
 pub struct FocConfig {
-    pub pwm_period_ns: f32,
-    pub pwm_deadtime_ns: f32,
-    pub pwn_on_delay_ns: f32,
-    pub pwn_off_delay_ns: f32,
+    pub pwm_frequency_hz: f32,
+    pub mosfet_deadtime_ns: f32,
+    pub mosfet_on_delay_ns: f32,
+    pub mosfet_off_delay_ns: f32,
+    pub mosfet_output_capacitance_nf: f32,
     pub saturation_d_ratio: f32,
 
 }
@@ -107,4 +109,5 @@ pub struct FocResult {
     pub measured_i_dq: ClarkParkValue,
     pub target_i_dq: ClarkParkValue,
     pub u_dq: ClarkParkValue,
+    pub u_ab: AlphaBeta,
 }
