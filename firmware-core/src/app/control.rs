@@ -5,8 +5,7 @@ use super::calibration::{CalibrationInputs, StageResult};
 use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
 use field_oriented::{
-    AngleType, ConstantMotorParameters, FOC, FocInput, FocInputType, MotorParamEstimator,
-    PhaseValues, RotorFeedback, RotorFeedbackFault, DoesFocMath
+    AlphaBeta, AngleType, ConstantMotorParameters, DoesFocMath, FOC, FocInput, FocInputType, MotorParamEstimator, PhaseValues, RotorFeedback, RotorFeedbackFault
 };
 
 #[derive(Clone, Copy, Default)]
@@ -42,6 +41,7 @@ pub struct FocStepInputs {
 
 pub enum FocStepOutcome {
     Normal {
+        voltages: AlphaBeta,
         duty_cycles: PhaseValues,
         snapshot: CurrentLoopSnapshot,
         sector: u8,
@@ -106,6 +106,7 @@ pub fn foc_step<A>(
             SafeCommand::NonConducting => return (FocStepOutcome::NonConducting, None),
             SafeCommand::ActiveShort => {
                 let outcome = FocStepOutcome::Normal { 
+                    voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
                     duty_cycles: PhaseValues::zero(), 
                     snapshot: CurrentLoopSnapshot::default(), 
                     sector: 0 
@@ -171,6 +172,7 @@ pub fn foc_step<A>(
                 estimator.after_foc_iteration(foc_result);
             }
             FocStepOutcome::Normal {
+                voltages: foc_result.u_ab,
                 duty_cycles: foc_result.duty_cycles,
                 snapshot: CurrentLoopSnapshot {
                     id_meas_a: foc_result.measured_i_dq.d,
@@ -188,6 +190,7 @@ pub fn foc_step<A>(
                     SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf | SafeControlStrategy::SS1t { .. } => NonConducting,
                     SafeControlStrategy::ASC { .. } => {
                         FocStepOutcome::Normal { 
+                            voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
                             duty_cycles: PhaseValues::zero(), 
                             snapshot: CurrentLoopSnapshot::default(), 
                             sector: 0 

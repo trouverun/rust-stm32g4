@@ -8,15 +8,14 @@ use embassy_stm32::{rcc::*};
 use embassy_stm32::Config as RccConfig;
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::{comp::*};
-use embassy_stm32::dac::Ch2;
-use embassy_stm32::dac::{Dac, DacCh1, DacCh2};
+use embassy_stm32::dac::Dac;
 use embassy_stm32::exti::{ExtiInput, TriggerEdge};
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::mode::Blocking;
 use embassy_stm32::opamp::{OpAmp, OpAmpSpeed};
 use embassy_stm32::pac::timer::vals::{Bkinp, Bkp};
 use embassy_stm32::peripherals::{
-    ADC1, ADC3, ADC4, COMP4, COMP6, COMP7, DAC3, DAC4, FDCAN1, OPAMP3, OPAMP4, OPAMP5, TIM3, TIM4,
+    ADC1, ADC3, ADC4, COMP5, COMP6, COMP7, DAC4, FDCAN1, OPAMP3, OPAMP4, OPAMP5, TIM3, TIM4,
     TIM6, TIM8, SPI1, DAC1, DAC2, TIM5, TIM7
 };
 use embassy_stm32::time::Hertz;
@@ -49,15 +48,11 @@ pub type HallReadTimer = TIM5;
 pub type EncoderDMATimer = TIM4;
 pub type EncoderSpi = SPI1;
 
-// CAN:
-pub type CanPeriph = FDCAN1;
-
 // PWM output:
-pub type CompU = COMP4;
-pub type CompV = COMP6;
+// Comparators watch the filtered opamp outputs (PD11/PD12/PD14)
+pub type CompU = COMP6;
+pub type CompV = COMP5;
 pub type CompW = COMP7;
-pub type ComparatorDacSingle = DAC3;
-pub type ComparatorDacChannel = Ch2;
 pub type ComparatorDacDual = DAC4;
 pub type PwmTimer = TIM8;
 
@@ -67,7 +62,7 @@ pub type WatchdogTimer = TIM7;
 pub const BOARD: super::BoardInfo = super::BoardInfo {
     shunt_resistance_mohm: 15.0,
     opamp_gain: 15.0,
-    opamp_ref_v: 3.3,
+    opamp_bias_v: 1.65,
     vbus_divide_factor: 25.3589743589744,
     thermistor_scaling: super::ThermistorLinearScale {
         slope_c_per_v: 45.7,
@@ -77,7 +72,7 @@ pub const BOARD: super::BoardInfo = super::BoardInfo {
     mosfet_deadtime_ns: 300,
     mosfet_on_delay_ns: 15,
     mosfet_off_delay_ns: 24,
-    mosfet_output_capacitance_nf: 0.36
+    deadtime_compensation_band_a: 0.25
 };
 
 pub struct DebugMappings {
@@ -151,23 +146,22 @@ pub fn map_peripherals() -> (
 
     let pwm = super::PwmOutputMappings {
         comparators: super::CurrentComparators {
-            dac_single: DacCh2::new_internal_blocking(p.DAC3, 3.3),
             dac_dual: Dac::new_internal_blocking(p.DAC4, 3.3),
             comp_u: Comp::new(
-                p.COMP4,
-                Comp4InpSel::PB0,
-                Comp4InmSel::Dac1Ch1,
-                Comp4BlankSel::None,
-            ),
-            comp_v: Comp::new(
                 p.COMP6,
-                Comp6InpSel::PB11,
+                Comp6InpSel::PD11,
                 Comp6InmSel::Dac4Ch2,
                 Comp6BlankSel::None,
             ),
+            comp_v: Comp::new(
+                p.COMP5,
+                Comp5InpSel::PD12,
+                Comp5InmSel::Dac4Ch1,
+                Comp5BlankSel::None,
+            ),
             comp_w: Comp::new(
                 p.COMP7,
-                Comp7InpSel::PB14,
+                Comp7InpSel::PD14,
                 Comp7InmSel::Dac4Ch1,
                 Comp7BlankSel::None,
             ),

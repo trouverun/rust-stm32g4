@@ -26,12 +26,12 @@ use embassy_stm32::adc::{
     JeosInterruptEnabled, Queued, Running as AdcRunning, SampleTime, StartMode,
 };
 use embassy_stm32::can::{
-    BufferedCan, BufferedCanReceiver, BufferedCanSender, OperatingMode, RxBuf, TxBuf,
+    Frame, IsrDrivenCan, OperatingMode,
     config::GlobalFilter,
     filter::{Action, FilterType, StandardFilter, StandardFilterSlot},
+    frame::Envelope,
 };
 use crate::can::transport::{COMMAND_FILTER_ID, COMMAND_FILTER_MASK};
-use static_cell::StaticCell;
 use field_oriented::{
     AngleType, DoesFocMath, HasRotorFeedback,
     PhaseValues, RotorFeedback, RotorFeedbackFault, SinCosResult,
@@ -45,6 +45,12 @@ const ADC_SCALER: f32 = ADC_VOLTAGE / ((1 << 12) - 1) as f32;
 const CURRENT_READING_SCALER: f32 = -ADC_SCALER * OPAMP_GAIN_RECIPROCAL * SHUNT_CONDUCTANCE_SIEMENS;
 const VBUS_READING_SCLAER: f32 = ADC_SCALER * BOARD.vbus_divide_factor;
 const TBOARD_READING_SCLAER: f32 = ADC_SCALER * BOARD.thermistor_scaling.slope_c_per_v;
+
+/// Opamp output voltage at the given phase current magnitude
+#[cfg(feature = "overcurrent-comparators")]
+fn comparator_threshold_v(current_limit_a: f32) -> f32 {
+    BOARD.opamp_gain * BOARD.shunt_resistance_mohm / 1000.0 * current_limit_a + BOARD.opamp_bias_v
+}
 
 pub type BusVoltage = f32;
 pub type BoardTemperature = f32;
@@ -325,13 +331,17 @@ impl AdcFeedback {
     }
 
     pub fn read_board_info(&self) -> Option<(BusVoltage, BoardTemperature)> {
-        if self.adc_a.check_eoc() {
-            let vbus = self.adc_a.read() as f32 * VBUS_READING_SCLAER;
-            let tboard = self.adc_b.read() as f32 * TBOARD_READING_SCLAER + BOARD.thermistor_scaling.bias_c;
-            return Some((vbus, tboard));
-        } else {
+        if !self.adc_a.check_eoc() {
             return None;
         }
+        if !self.adc_b.check_eoc() {
+            // Consume the stale sample so the EOC interrupt quenches, drop this tick
+            let _ = self.adc_a.read();
+            return None;
+        }
+        let vbus = self.adc_a.read() as f32 * VBUS_READING_SCLAER;
+        let tboard = self.adc_b.read() as f32 * TBOARD_READING_SCLAER + BOARD.thermistor_scaling.bias_c;
+        Some((vbus, tboard))
     }
 }
 
@@ -417,24 +427,23 @@ impl PwmOutput {
 
         #[cfg(feature = "overcurrent-comparators")]
         {
-            let voltage_threshold = 0.9375 * BOARD.shunt_resistance_mohm / 1000.0 * comparator_current_limit_a + BOARD.opamp_ref_v / 32.0;
-            mappings.comparators.dac_single.set_voltage(voltage_threshold);
+            let voltage_threshold = comparator_threshold_v(comparator_current_limit_a);
             mappings.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
             tmp = tmp
                 .with_break1_comp(
                     &mappings.comparators.comp_u,
                     Bkp::ACTIVE_HIGH,
-                    FilterValue::FCK_INT_N4,
+                    FilterValue::FCK_INT_N8,
                 )
                 .with_break1_comp(
                     &mappings.comparators.comp_v,
                     Bkp::ACTIVE_HIGH,
-                    FilterValue::FCK_INT_N4,
+                    FilterValue::FCK_INT_N8,
                 )
                 .with_break1_comp(
                     &mappings.comparators.comp_w,
                     Bkp::ACTIVE_HIGH,
-                    FilterValue::FCK_INT_N4,
+                    FilterValue::FCK_INT_N8,
                 );
         }
 
@@ -479,8 +488,7 @@ impl PwmOutput {
     }
 
     pub fn set_comparator_current_limit(&self, comparator_current_limit_a: f32) {
-        let voltage_threshold = 0.9375 * BOARD.shunt_resistance_mohm / 1000.0 * comparator_current_limit_a + BOARD.opamp_ref_v / 32.0;
-        self.comparators.dac_single.set_voltage(voltage_threshold);
+        let voltage_threshold = comparator_threshold_v(comparator_current_limit_a);
         self.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
     }
 
@@ -568,14 +576,11 @@ const CAN_TX_BUF_SIZE: usize = 8;
 const CAN_RX_BUF_SIZE: usize = 16;
 
 pub struct CanBus {
-    buffered: BufferedCan<'static, CAN_TX_BUF_SIZE, CAN_RX_BUF_SIZE>,
+    can: IsrDrivenCan<CAN_TX_BUF_SIZE, CAN_RX_BUF_SIZE>,
 }
 
 impl CanBus {
     pub fn new(mappings: CanMappings, bitrate: u32) -> Self {
-        static TX_BUF: StaticCell<TxBuf<CAN_TX_BUF_SIZE>> = StaticCell::new();
-        static RX_BUF: StaticCell<RxBuf<CAN_RX_BUF_SIZE>> = StaticCell::new();
-
         let mut configurator = mappings.configurator;
         configurator.set_bitrate(bitrate);
         let config = configurator.config().set_global_filter(GlobalFilter::reject_all());
@@ -585,9 +590,8 @@ impl CanBus {
             Self::command_filter(),
         );
         let can = configurator.start(OperatingMode::NormalOperationMode);
-        let buffered = can.buffered(TX_BUF.init(TxBuf::new()), RX_BUF.init(RxBuf::new()));
 
-        Self { buffered }
+        Self { can: can.isr_driven() }
     }
 
     /// Accept host command frames
@@ -601,12 +605,16 @@ impl CanBus {
         }
     }
 
-    pub fn writer(&self) -> BufferedCanSender {
-        self.buffered.writer()
+    pub fn on_interrupt(&mut self) {
+        self.can.on_interrupt();
     }
 
-    pub fn reader(&self) -> BufferedCanReceiver {
-        self.buffered.reader()
+    pub fn receive(&mut self) -> Option<Envelope> {
+        self.can.receive()
+    }
+
+    pub fn send(&mut self, frame: Frame) {
+        let _ = self.can.send(frame);
     }
 }
 
@@ -866,7 +874,7 @@ impl HardwareWatchdog {
 
     pub fn feed(&mut self) {
         if !self.started {
-            // self.iwdg.unleash();
+            self.iwdg.unleash();
             self.started = true;
         }
         self.iwdg.pet();

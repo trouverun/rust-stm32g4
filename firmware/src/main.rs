@@ -20,16 +20,12 @@ mod app {
     use defmt::info;
     use defmt_rtt as _;
     use embassy_stm32::time::Hertz;
-    use embassy_stm32::can::{
-        BufferedCanReceiver, BufferedCanSender, IT0InterruptHandler,
-    };
-    use embassy_stm32::interrupt::typelevel::Handler;
     use embassy_stm32::{peripherals::TIM2, rcc};
     use rtic_monotonics::stm32::Tim2 as Mono;
 
     use crate::boards::*;
     use crate::bsp::{
-        self, Acceleration, AdcFeedback, AmtEncoder, HallFeedback, Memory,
+        self, Acceleration, AdcFeedback, AmtEncoder, CanBus, HallFeedback, Memory,
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
     };
     use firmware_core::{
@@ -38,8 +34,9 @@ mod app {
     };
     use crate::types::*;
     use field_oriented::{
-        ConstantMotorParameters, ControllerParameters, FOC, FocConfig, HasRotorFeedback,
-        MotorParamsEstimate, PhaseCurrentFilter, FeedbackArbitrator
+        ConstantMotorParameters, ControllerParameters, FOC, FeedbackArbitrator, FocConfig, 
+        HasRotorFeedback, MotorParamsEstimate, OrtegaPralyEstimator, PhaseCurrentFilter,
+        AlphaBeta, PhaseValues
     };
     use crate::tasks::*;
 
@@ -60,16 +57,15 @@ mod app {
         feedback_arbitrator: FeedbackArbitrator,
         current_filter: PhaseCurrentFilter,
         software_watchdog: SoftwareWatchdog,
+        can: CanBus,
     }
 
     #[local]
     struct Local {
         adc_feedback: AdcFeedback,
-        acceleration: Acceleration,
-        can_periodic_tx: BufferedCanSender,
-        can_response_tx: BufferedCanSender,
-        can_rx: BufferedCanReceiver,
-        // hardware_watchdog: HardwareWatchdog,
+        acceleration: Acceleration,        
+        sensorless_estimator: OrtegaPralyEstimator,
+        hardware_watchdog: HardwareWatchdog,
     }
 
     #[init]
@@ -124,7 +120,7 @@ mod app {
             mosfet_deadtime_ns: BOARD.mosfet_deadtime_ns as f32, 
             mosfet_on_delay_ns: BOARD.mosfet_on_delay_ns as f32,
             mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
-            mosfet_output_capacitance_nf: BOARD.mosfet_output_capacitance_nf,
+            deadtime_compensation_band_a: BOARD.deadtime_compensation_band_a,
             saturation_d_ratio: 0.1
         };
         let mut foc = FOC::new(foc_cfg);
@@ -150,14 +146,10 @@ mod app {
         }
 
         // Start CAN interface:
-        let can_bus = bsp::CanBus::new(can_mappings, 1_000_000);
-        let can_periodic_tx = can_bus.writer();
-        let can_response_tx = can_bus.writer();
-        let can_rx = can_bus.reader();
+        let can = bsp::CanBus::new(can_mappings, 1_000_000);
         let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
         Mono::start(rcc::frequency::<TIM2>().0, token);
-        // can_tx_task::spawn().unwrap();
-        // can_rx_task::spawn().unwrap();
+        can_tx_task::spawn().unwrap();
 
         (Shared {
             mode,
@@ -178,23 +170,23 @@ mod app {
             feedback_arbitrator: FeedbackArbitrator::new(),
             current_filter,
             software_watchdog: SoftwareWatchdog::new(
-                watchdog_mappings.timer, 
+                watchdog_mappings.timer,
                 Hertz((0.95*PWM_FREQ.0 as f32) as u32)
-            )
+            ),
+            can,
         },
         Local {
             adc_feedback,
             acceleration,
-            can_periodic_tx,
-            can_response_tx,
-            can_rx,
-            // hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
+            sensorless_estimator: OrtegaPralyEstimator::new(1000.0, 1500.0),
+            hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
         })
     }
 
-    /// Watchdog for tracking FOC ISR loop cycle time
-    #[task(priority = 6, binds = TIM7_DAC, shared = [software_watchdog])]
+    /// Watchdog for tracking FOC ISR loop cycle time. Latches la_d for scope triggering.
+    #[task(priority = 6, binds = TIM7_DAC, shared = [software_watchdog, debug_mappings])]
     fn watchdog_isr(mut cx: watchdog_isr::Context) {
+        cx.shared.debug_mappings.lock(|dm| dm.la_d.set_high());
         cx.shared.software_watchdog.lock(|wd| wd.register_fault());
     }
 
@@ -256,10 +248,12 @@ mod app {
         #[task(
             priority = 6, binds = ADC3,
             local = [
-                adc_feedback, acceleration, // hardware_watchdog,
+                adc_feedback, acceleration, hardware_watchdog,
                 board_overtemp: Debounced = Debounced::new(false),
                 dc_undervolt: Debounced = Debounced::new(false),
-                dc_overvolt: Debounced = Debounced::new(false)
+                dc_overvolt: Debounced = Debounced::new(false),
+                sensorless_estimator,
+                prev_voltages: AlphaBeta = AlphaBeta {alpha: 0.0, beta: 0.0},
             ],
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator,
@@ -281,31 +275,31 @@ mod app {
         #[task(priority = 1, shared = [motor_parameters, mode, memory])]
         async fn update_motor_params(_: update_motor_params::Context, parameters: MotorParamsEstimate);
 
-        #[task(priority = 1, local = [can_periodic_tx], shared = [current_loop_snapshot, feedback_arbitrator, mode, board_status])]
+        #[task(priority = 1, shared = [can, current_loop_snapshot, feedback_arbitrator, mode, board_status])]
         async fn can_tx_task(_: can_tx_task::Context);
 
         #[task(
             priority = 1,
             shared = [
-                mode, runtime_values, config, current_filter,
-                foc, motor_parameters
+                can, mode, runtime_values, config, current_filter,
+                foc, motor_parameters, pwm_output
             ],
             local = [
-                can_rx, can_response_tx,
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
                 mode_request_integrity: FrameIntegrity = FrameIntegrity::new(),
                 setpoint_fault: LeakyBucket = LeakyBucket::new(2, 1, 3)
             ]
         )]
-        async fn can_rx_task(_: can_rx_task::Context);
+        async fn can_process(_: can_process::Context);
 
         #[task(priority = 1, shared = [mode, config, motor_parameters, memory])]
         async fn persist_config(_: persist_config::Context);
     }
 
-    #[task(priority = 2, binds = FDCAN1_IT0)]
-    fn fdcan1_it0(_: fdcan1_it0::Context) {
-        unsafe { <IT0InterruptHandler<CanPeriph> as Handler<_>>::on_interrupt(); }
+    #[task(priority = 2, binds = FDCAN1_IT0, shared = [can])]
+    fn fdcan1_it0(mut cx: fdcan1_it0::Context) {
+        cx.shared.can.lock(|can| can.on_interrupt());
+        let _ = can_process::spawn();
     }
 
     #[idle(shared=[debug_mappings])]

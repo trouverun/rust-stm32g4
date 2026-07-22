@@ -17,6 +17,7 @@ pub enum Command {
     StartCalibration { num_pole_pairs: u8, dt_s: f32 },
     ResumeCalibration,
     FinishCalibration,
+    CancelCalibration,
     EnableTorqueControl,
     AssertFault { cause: FaultCause },
     ClearFault, 
@@ -83,8 +84,13 @@ impl OperatingMode {
                 return;
             }
             (OperatingMode::Calibration { .. }, Command::FinishCalibration) => {
-                OperatingMode::Idle { 
-                    safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) } 
+                OperatingMode::Idle {
+                    safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) }
+                }
+            },
+            (OperatingMode::Calibration { .. }, Command::CancelCalibration) => {
+                OperatingMode::Idle {
+                    safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) }
                 }
             },
             (OperatingMode::TorqueControl, Command::Idle { safe_strategy } ) => OperatingMode::Idle { safe_strategy },
@@ -97,7 +103,7 @@ impl OperatingMode {
         match self {
             OperatingMode::Idle { .. } => FocGate { 
                 active: false, 
-                feedback_optional: false, 
+                feedback_optional: true, 
             },
             OperatingMode::Calibration { calibrator } => FocGate {
                 // Wait phases must not step the calibration state machine:
@@ -117,7 +123,7 @@ impl OperatingMode {
             },
             OperatingMode::Fault { safe_strategy, .. } => FocGate { 
                 active: matches!(safe_strategy, SafeControlStrategy::SS1t { .. }), 
-                feedback_optional: false, 
+                feedback_optional: true, 
             },
         }
     }

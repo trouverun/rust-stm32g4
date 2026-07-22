@@ -22,7 +22,8 @@ pub use crate::estimation::{
     ConstantMotorParameters, HallCalibrator, HallCalibrationFault, OfflineMotorEstimator, OfflineEstimatorInput,
     OfflineEstimatorCommand, OfflineEstimatorOutput, OfflineEstimatorConfig,
     MotorParams, MotorParamsEstimate, MotorParamEstimator, EstimationStepFault,
-    HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator
+    HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator,
+    OrtegaPralyEstimator, OrtegaPralyEstimatorInput
 };
 pub use crate::filtering::{LowPassFilter, PhaseCurrentFilter};
 pub use crate::braking::{BangBangBrake, BangBangBrakeStepInput};
@@ -47,6 +48,7 @@ pub struct FOC {
     q_pi: PIController,
     u_dq_saturation: ClarkParkValue,
     deadtime_ratio: f32,
+    deadtime_band_reciprocal: f32
 }
 
 impl FOC {
@@ -68,13 +70,15 @@ impl FOC {
         } else {
             0.0
         };
+        let deadtime_band_reciprocal = 1.0 / (config.deadtime_compensation_band_a.abs() + 1e-5);
 
         Self {
             config,
             calibration_d_pi, calibration_q_pi,
             d_pi, q_pi,
             u_dq_saturation: ClarkParkValue { d: 0.0, q: 0.0 },
-            deadtime_ratio
+            deadtime_ratio,
+            deadtime_band_reciprocal
         }
     }
 
@@ -157,15 +161,10 @@ impl FOC {
             w: 0.5 + bus_reciprocal*(v_tgt.w + v0_tgt)
         };
         
-        // Dead time compensation (simplified):
-        // Zhang, Z., & Xu, L. (2013). 
-        // Dead-time compensation of inverters considering snubber and parasitic capacitance. 
-        // IEEE Transactions on Power Electronics, 29(6), 3179-3187
-        let pwm_deadtime_compensation_band_a = 2.0*input.dc_bus_voltage*self.config.mosfet_output_capacitance_nf / self.config.mosfet_deadtime_ns;
-        let deadtime_band_reciprocal = 1.0 / (pwm_deadtime_compensation_band_a.abs() + 1e-5);
-        duty_cycles.u += self.deadtime_ratio * (input.phase_currents.u * deadtime_band_reciprocal).clamp(-1.0, 1.0);
-        duty_cycles.v += self.deadtime_ratio * (input.phase_currents.v * deadtime_band_reciprocal).clamp(-1.0, 1.0);
-        duty_cycles.w += self.deadtime_ratio * (input.phase_currents.w * deadtime_band_reciprocal).clamp(-1.0, 1.0);
+        // Dead time compensation (scaled by current magnitude to guard against noise):
+        duty_cycles.u += self.deadtime_ratio * (input.phase_currents.u * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
+        duty_cycles.v += self.deadtime_ratio * (input.phase_currents.v * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
+        duty_cycles.w += self.deadtime_ratio * (input.phase_currents.w * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
         duty_cycles.u = duty_cycles.u.clamp(0.0, 1.0);
         duty_cycles.v = duty_cycles.v.clamp(0.0, 1.0);
         duty_cycles.w = duty_cycles.w.clamp(0.0, 1.0);
@@ -241,8 +240,10 @@ mod tests {
 
         let foc_cfg = FocConfig {
             pwm_frequency_hz: pwm_freq_hz,
-            pwm_deadtime_ns: 0.0,
-            mosfet_output_capacitance_nf: 1.0,
+            mosfet_deadtime_ns: 0.0,
+            mosfet_on_delay_ns: 0.0,
+            mosfet_off_delay_ns: 0.0,
+            deadtime_compensation_band_a: 1.0,
             saturation_d_ratio: 0.0
         };
         let mut foc = FOC::new(foc_cfg);
@@ -258,7 +259,7 @@ mod tests {
         );
 
         if let Ok(gains) = compute_current_pi_controller_gains::<50>(
-            motor_params, pwm_freq_hz
+            motor_params, pwm_freq_hz, 5.0, 0.01
         ) {
             foc.set_pi_gains(Some(gains));
         } else {
@@ -325,8 +326,10 @@ mod tests {
 
         let foc_cfg = FocConfig {
             pwm_frequency_hz: pwm_freq_hz,
-            pwm_deadtime_ns: 0.0,
-            mosfet_output_capacitance_nf: 1.0,
+            mosfet_deadtime_ns: 0.0,
+            mosfet_on_delay_ns: 0.0,
+            mosfet_off_delay_ns: 0.0,
+            deadtime_compensation_band_a: 1.0,
             saturation_d_ratio: 0.0
         };
         let mut foc = FOC::new(foc_cfg);
@@ -368,7 +371,7 @@ mod tests {
         estimator.set_calibration(calibrator.hall_pattern_to_theta);
 
         // Spin the motor up under torque control, then coast at constant speed:
-        let gains = compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz).unwrap();
+        let gains = compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap();
         foc.set_pi_gains(Some(gains));
         foc.clear_windup();
 

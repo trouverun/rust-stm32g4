@@ -66,7 +66,7 @@ pub struct FocConfig {
     pub mosfet_deadtime_ns: f32,
     pub mosfet_on_delay_ns: f32,
     pub mosfet_off_delay_ns: f32,
-    pub mosfet_output_capacitance_nf: f32,
+    pub deadtime_compensation_band_a: f32,
     pub saturation_d_ratio: f32,
 
 }

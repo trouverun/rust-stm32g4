@@ -21,6 +21,14 @@ enum StepResult {
 }
 
 const MIN_SOLVE_SAMPLES: u32 = 1000;
+/// Ticks to hold each polarity of the EstL square wave
+const EST_L_HOLD_TICKS: u32 = 2;
+
+/// Polarity of the EstL excitation square wave at the given tick
+fn est_l_sign(tick: u32) -> f32 {
+    let completed_holds = tick / EST_L_HOLD_TICKS;
+    if completed_holds % 2 == 0 { 1.0 } else { -1.0 }
+}
 
 #[derive(Clone, Copy)]
 pub struct OfflineEstimatorConfig {
@@ -48,7 +56,7 @@ enum OfflineEstimatorState {
     EstL {
         ran_s: f32,
         resistance: f32,
-        voltage_sign: f32,
+        tick: u32,
         prev_i_d: f32,
         /// Solves L from the LSE problem:
         /// |v| = L * |di/dt|
@@ -114,7 +122,7 @@ impl OfflineEstimatorState {
                         next: Self::EstL {
                             ran_s: 0.0,
                             resistance,
-                            voltage_sign: 1.0,
+                            tick: 0,
                             prev_i_d: data.measured_i_dq.d,
                             lse: Lse::new(),
                         }
@@ -125,17 +133,21 @@ impl OfflineEstimatorState {
                 }
             }
             Self::EstL {
-                ran_s, resistance, voltage_sign, prev_i_d, lse,
+                ran_s, resistance, tick, prev_i_d, lse,
             } => {
                 // |v| = L * |di/dt|
-                // use sign(v)*di/dt instead of abs(di/dt) to cancel out noise around low values
-                // (and invert sign(v) since there is a one cycle delay from command to measurement = "wrong" sign)
-                let x = -*voltage_sign * (data.measured_i_dq.d - *prev_i_d) / dt_s;
-                let y = data.u_dq.d.abs();
+                let di_dt = (data.measured_i_dq.d - *prev_i_d) / dt_s;
                 *prev_i_d = data.measured_i_dq.d;
-                lse.accumulate(x, y);
+                if *tick >= 2 {
+                    // Midpoint sampling with compare preload means we can't simply alternate every cycle:
+                    let early_half = est_l_sign(*tick - 2);
+                    let late_half = est_l_sign(*tick - 1);
+                    if early_half == late_half {
+                        lse.accumulate(late_half * di_dt, data.u_dq.d.abs());
+                    }
+                }
 
-                *voltage_sign *= -1.0;
+                *tick += 1;
                 *ran_s += dt_s;
                 if *ran_s >= config.test_time_s {
                     let d_inductance = lse.solve(MIN_SOLVE_SAMPLES)?;
@@ -268,8 +280,8 @@ impl OfflineMotorEstimator {
                 output: OfflineEstimatorOutput::CalibrationCurrent(ClarkParkValue { d: input.target_current, q: 0.0 }),
                 theta: 0.0,
             },
-            OfflineEstimatorState::EstL { voltage_sign, .. } => OfflineEstimatorCommand {
-                output: OfflineEstimatorOutput::CalibrationVoltage(ClarkParkValue { d: *voltage_sign * input.target_voltage, q: 0.0 }),
+            OfflineEstimatorState::EstL { tick, .. } => OfflineEstimatorCommand {
+                output: OfflineEstimatorOutput::CalibrationVoltage(ClarkParkValue { d: est_l_sign(*tick) * input.target_voltage, q: 0.0 }),
                 theta: 0.0,
             },
             OfflineEstimatorState::EstF { ran_s, latched_i_q,  .. } => {
@@ -402,7 +414,7 @@ mod test {
         let sim_cfg = PMSMConfig::default();
         let mut sim = PMSMSim::new(dt_s, sim_cfg);
 
-        let foc_cfg = FocConfig { pwm_frequency_hz: pwm_freq_hz, pwm_deadtime_ns: 0.0, pwm_deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 };
+        let foc_cfg = FocConfig { pwm_frequency_hz: pwm_freq_hz, mosfet_deadtime_ns: 0.0, mosfet_on_delay_ns: 0.0, mosfet_off_delay_ns: 0.0, deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 };
         let mut foc = FOC::new(foc_cfg);
         let mut accelerator = DummyAccelerator;
 
@@ -456,7 +468,7 @@ mod test {
                 estimator.acknowledge_unwind_request();
             } else if estimator.should_tune_controller() {
                 let pi_gains = compute_current_pi_controller_gains::<50>(
-                    estimator.get_estimate(), pwm_freq_hz
+                    estimator.get_estimate(), pwm_freq_hz, 5.0, 0.01
                 ).expect("Failed to tune PI controller");
                 foc.set_pi_gains(Some(pi_gains));
                 estimator.acknowledge_tuning_request();

@@ -10,12 +10,9 @@ use crate::types::ConfigError;
 use firmware_core::{Command, Debounced, FaultCause, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
-pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
-    loop {
-        let frame = match cx.local.can_rx.receive().await {
-            Ok(envelope) => envelope.frame,
-            Err(_) => continue,
-        };
+pub async fn can_process(mut cx: app::can_process::Context<'_>) {
+    while let Some(envelope) = cx.shared.can.lock(|c| c.receive()) {
+        let frame = envelope.frame;
         let id = match frame.id() {
             Id::Standard(s) => s.as_raw(),
             Id::Extended(_) => continue,
@@ -37,6 +34,7 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                         }
                     }
                     OperatingModeRequestRequestedMode::TorqueControl => Command::EnableTorqueControl,
+                    OperatingModeRequestRequestedMode::CancelCalibration => Command::CancelCalibration,
                     OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
                     OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
                 };
@@ -70,8 +68,20 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
                     candidate.set_dc_bus_limits(msg.dc_bus_v_min(), msg.dc_bus_v_max())?;
-                    candidate.set_setpoint_timeout_ms(msg.setpoint_timeout())?;
+                    candidate.set_braking_current_limit_a(msg.braking_current_limit())?;
                     candidate.set_temp_max_c(msg.temp_max())?;
+                    *cfg = candidate;
+                    Ok::<(), ConfigError>(())
+                });
+                match applied {
+                    Ok(()) => { let _ = app::persist_config::spawn(); }
+                    Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                }
+            }
+            Ok(Messages::ProtectionLimits2(msg)) => {
+                let applied = cx.shared.config.lock(|cfg| {
+                    let mut candidate = *cfg;
+                    candidate.set_setpoint_timeout_ms(msg.setpoint_timeout())?;
                     *cfg = candidate;
                     Ok::<(), ConfigError>(())
                 });
@@ -91,6 +101,7 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                 match applied {
                     Ok((rated, limit)) => {
                         cx.shared.current_filter.lock(|cf| cf.set_limits(rated, limit));
+                        cx.shared.pwm_output.lock(|pwm| pwm.set_comparator_current_limit(limit));
                         cx.shared.motor_parameters.lock(|mp| {
                             mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
                         });
@@ -118,7 +129,6 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                     let mut candidate = *cfg;
                     candidate.set_ss1t_duration_ms(msg.ss1t_duration_ms())?;
                     candidate.set_ss1t_velocity_threshold(msg.ss1t_velocity_thresh())?;
-                    candidate.set_braking_current_limit_a(msg.braking_current_limit())?;
                     *cfg = candidate;
                     Ok::<(), ConfigError>(())
                 });
@@ -130,6 +140,48 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
             Ok(Messages::ConfigQuery(msg)) => {
                 let block = msg.block_id();
                 let all = matches!(block, ConfigQueryBlockId::All);
+                if all || matches!(block, ConfigQueryBlockId::ProtectionLimits) {
+                    let cfg = cx.shared.config.lock(|c| *c);
+                    let f = ProtectionLimitsReport::try_from(ProtectionLimitsReportInit {
+                        dc_bus_v_min: cfg.dc_bus_min_voltage_v(),
+                        dc_bus_v_max: cfg.dc_bus_max_voltage_v(),
+                        braking_current_limit: cfg.braking_current_limit_a(),
+                        temp_max: cfg.temp_max_c(),
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
+                    }
+
+                    let f = ProtectionLimits2Report::try_from(ProtectionLimits2ReportInit {
+                        setpoint_timeout: cfg.setpoint_timeout_ms(),
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
+                    }
+                }
+                if all || matches!(block, ConfigQueryBlockId::MotorConfig) {
+                    let cfg = cx.shared.config.lock(|c| *c);
+                    let num_pole_pairs = cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs);
+                    let f = MotorConfigReport::try_from(MotorConfigReportInit {
+                        num_pole_pairs: num_pole_pairs.unwrap_or(0),
+                        phase_current_limit: cfg.current_limit_a(),
+                        rated_current_limit: cfg.rated_current_limit_a(),
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
+                    }
+                }
+                if all || matches!(block, ConfigQueryBlockId::CalibrationTargets) {
+                    let cfg = cx.shared.config.lock(|c| *c);
+                    let f = CalibrationTargetsReport::try_from(CalibrationTargetsReportInit {
+                        target_voltage: cfg.calibration_voltage_v(),
+                        target_current: cfg.calibration_current_a(),
+                        target_velocity: cfg.calibration_omega(),
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
+                    }
+                }
                 if all || matches!(block, ConfigQueryBlockId::MotorParameters) {
                     let est = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
                     let f = MotorParameterReport1::try_from(MotorParameterReport1Init {
@@ -139,7 +191,7 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                         flux_valid: est.pm_flux_linkage.is_some(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
-                        cx.local.can_response_tx.write(f).await;
+                        cx.shared.can.lock(|c| c.send(f));
                     }
 
                     let f = MotorParameterReport2::try_from(MotorParameterReport2Init {
@@ -149,7 +201,7 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                         lq_valid: est.q_inductance.is_some(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
-                        cx.local.can_response_tx.write(f).await;
+                        cx.shared.can.lock(|c| c.send(f));
                     }
                 }
                 if all || matches!(block, ConfigQueryBlockId::CurrentGainsD | ConfigQueryBlockId::CurrentGainsQ) {
@@ -160,7 +212,7 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                                 kr: d_pi.kr, kp: d_pi.kp, ki: d_pi.ki, kt: d_pi.kt,
                             }).ok().map(|m| m.into_frame());
                             if let Some(f) = f {
-                                cx.local.can_response_tx.write(f).await;
+                                cx.shared.can.lock(|c| c.send(f));
                             }
                         }
 
@@ -169,7 +221,7 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                                 kr: q_pi.kr, kp: q_pi.kp, ki: q_pi.ki, kt: q_pi.kt,
                             }).ok().map(|m| m.into_frame());
                             if let Some(f) = f {
-                                cx.local.can_response_tx.write(f).await;
+                                cx.shared.can.lock(|c| c.send(f));
                             }
                         }
                     }
@@ -179,10 +231,9 @@ pub async fn can_rx_task(mut cx: app::can_rx_task::Context<'_>) {
                     let f = SafeStopConfigReport::try_from(SafeStopConfigReportInit {
                         ss1t_duration_ms: cfg.ss1t_duration_ms(),
                         ss1t_velocity_thresh: cfg.ss1t_velocity_threshold(),
-                        braking_current_limit: cfg.braking_current_limit_a(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
-                        cx.local.can_response_tx.write(f).await;
+                        cx.shared.can.lock(|c| c.send(f));
                     }
                 }
             }
