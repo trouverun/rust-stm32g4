@@ -170,13 +170,13 @@ mod test {
         );
         let mut calibrator = HallCalibrator::new(5.0, dt);
 
-        let mut state = sim.state();
+        let mut out = sim.state();
         let mut t = 0.0;
         let record_interval = (0.1 / dt).round() as u64;
         let mut step: u64 = 0;
         let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
         while !calibrator.check_calibration_done() {
-            let pattern = state.hall_pattern.unwrap();
+            let pattern = out.measurement.hall_pattern.unwrap();
             let theta = calibrator.calibration_step(pattern, 0.43).unwrap();
 
             let foc_input = FocInput {
@@ -187,16 +187,16 @@ mod test {
                 theta,
                 angle_type: AngleType::Electrical,
                 omega: 0.0,
-                phase_currents: state.currents
+                phase_currents: out.measurement.currents
             };
 
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator);
-            state = sim.step(foc_result.unwrap());
+            out = sim.step(foc_result.unwrap());
             if step % record_interval == 0 {
                 records.push(SimRecord {
                     input: foc_input,
                     result: foc_result.unwrap(),
-                    sim: state,
+                    sim: out,
                     estimates: std::vec::Vec::new(),
                 });
             }

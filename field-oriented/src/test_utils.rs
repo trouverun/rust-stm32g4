@@ -95,8 +95,8 @@ pub struct SimRecord {
 }
 
 /// One estimator's output at a record point, for overlaying on the plot.
-/// Values must be in the same frame and units as `SimOutput::theta` /
-/// `SimOutput::omega` (mechanical).
+/// Values must be in the same frame and units as `SimSnapshot::theta` /
+/// `SimSnapshot::omega` (mechanical).
 #[derive(Clone, Copy)]
 pub struct EstimatorRecord {
     pub name: &'static str,
@@ -133,8 +133,8 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
     };
 
     // Collect series
-    let theta: Vec<f32> = records.iter().map(|r| r.sim.theta).collect();
-    let omega: Vec<f32> = records.iter().map(|r| r.sim.omega).collect();
+    let theta: Vec<f32> = records.iter().map(|r| r.sim.state.theta).collect();
+    let omega: Vec<f32> = records.iter().map(|r| r.sim.state.omega).collect();
     let d_u: Vec<f32> = records.iter().map(|r| r.result.duty_cycles.u).collect();
     let d_v: Vec<f32> = records.iter().map(|r| r.result.duty_cycles.v).collect();
     let d_w: Vec<f32> = records.iter().map(|r| r.result.duty_cycles.w).collect();
@@ -146,7 +146,7 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
         }
     }).collect();
     let has_torque_target = target_torque.iter().any(|t| !t.is_nan());
-    let has_hall = records.iter().any(|r| r.sim.hall_pattern.is_some());
+    let has_hall = records.iter().any(|r| r.sim.measurement.hall_pattern.is_some());
 
     let mut row = 1u32;
     if has_hall {
@@ -157,7 +157,7 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
             let offset = (2 - i) as f64; // A=2, B=1, C=0
             let base: Vec<f64> = std::vec![offset; n];
             let signal: Vec<f64> = records.iter().map(|r| {
-                let p = r.sim.hall_pattern.unwrap_or(0);
+                let p = r.sim.measurement.hall_pattern.unwrap_or(0);
                 if (p >> bit) & 1 == 1 { offset + 0.8 } else { offset }
             }).collect();
             // Baseline trace (invisible, anchor for fill)
@@ -232,7 +232,7 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
     plot.add_trace(line_trace(&time, &tgt_iq, "I_q target", row));
     row += 1;
     // Torque
-    let torque: Vec<f32> = records.iter().map(|r| r.sim.torque).collect();
+    let torque: Vec<f32> = records.iter().map(|r| r.sim.state.torque).collect();
     plot.add_trace(line_trace(&time, &torque, "torque", row));
     if has_torque_target {
         plot.add_trace(line_trace(&time, &target_torque, "Target torque", row));
