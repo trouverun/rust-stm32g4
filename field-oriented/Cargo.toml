@@ -12,3 +12,5 @@ num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 plotly = "0.10"
+rand = "0.9"
+rand_distr = "0.5"

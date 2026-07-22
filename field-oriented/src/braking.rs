@@ -74,32 +74,32 @@ mod tests {
         ));
 
         // One torque-controlled FOC + sim iteration, recorded for plotting:
-        let mut state = sim.state();
+        let mut out = sim.state();
         let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
-        let mut drive = |state: SimOutput, target_torque: f32| {
+        let mut drive = |out: SimOutput, target_torque: f32| {
             let foc_input = FocInput {
                 dc_bus_voltage: sim_cfg.dc_bus_voltage,
                 command: FocInputType::TargetTorque(target_torque),
-                theta: state.theta,
+                theta: out.measurement.theta,
                 angle_type: AngleType::Mechanical,
-                omega: state.omega,
-                phase_currents: state.currents,
+                omega: out.measurement.omega,
+                phase_currents: out.measurement.currents,
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
-            let state = sim.step(foc_result);
+            let out = sim.step(foc_result);
             records.push(SimRecord {
                 input: foc_input,
                 result: foc_result,
-                sim: state,
+                sim: out,
                 estimates: std::vec::Vec::new(),
             });
-            state
+            out
         };
 
         // Spin up before braking:
         let mut t = 0.0;
-        while state.omega < 150.0 {
-            state = drive(state, 0.05);
+        while out.measurement.omega < 150.0 {
+            out = drive(out, 0.05);
             t += dt;
             assert!(t < 1.0, "motor never reached brake entry speed");
         }
@@ -114,7 +114,7 @@ mod tests {
         let mut peak_demand = 0.0;
         loop {
             let done = brake.tick(BangBangBrakeStepInput {
-                omega: state.omega,
+                omega: out.measurement.omega,
                 max_duration_ms,
                 omega_cutoff,
                 max_braking_torque,
@@ -125,7 +125,7 @@ mod tests {
             assert!(demand <= max_braking_torque, "brake demand exceeded max torque");
             if first_demand.is_nan() { first_demand = demand; }
             peak_demand = demand.max(peak_demand);
-            state = drive(state, brake.torque_demand());
+            out = drive(out, brake.torque_demand());
             brake_ms += dt * 1000.0;
             if done { break; }
             assert!(brake_ms < max_duration_ms + 100.0, "brake failed to terminate");
@@ -135,7 +135,7 @@ mod tests {
 
         // Terminated on the velocity cutoff, not the timeout:
         assert!(brake_ms < max_duration_ms, "brake ran to timeout instead of stopping");
-        assert!(state.omega.abs() < omega_cutoff, "rotor not brought below cutoff");
+        assert!(out.state.omega.abs() < omega_cutoff, "rotor not brought below cutoff");
         // Demand ramped up from near zero to full braking authority:
         assert!(first_demand < 0.5 * max_braking_torque, "brake demand did not ramp from low");
         assert!(peak_demand > 0.99 * max_braking_torque, "brake demand never reached full authority");
@@ -163,32 +163,32 @@ mod tests {
             compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap(),
         ));
 
-        let mut state = sim.state();
+        let mut out = sim.state();
         let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
-        let mut drive = |state: SimOutput, target_torque: f32| {
+        let mut drive = |out: SimOutput, target_torque: f32| {
             let foc_input = FocInput {
                 dc_bus_voltage: sim_cfg.dc_bus_voltage,
                 command: FocInputType::TargetTorque(target_torque),
-                theta: state.theta,
+                theta: out.measurement.theta,
                 angle_type: AngleType::Mechanical,
-                omega: state.omega,
-                phase_currents: state.currents,
+                omega: out.measurement.omega,
+                phase_currents: out.measurement.currents,
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
-            let state = sim.step(foc_result);
+            let out = sim.step(foc_result);
             records.push(SimRecord {
                 input: foc_input,
                 result: foc_result,
-                sim: state,
+                sim: out,
                 estimates: std::vec::Vec::new(),
             });
-            state
+            out
         };
 
         // Spin up before braking:
         let mut t = 0.0;
-        while state.omega < 150.0 {
-            state = drive(state, 0.05);
+        while out.measurement.omega < 150.0 {
+            out = drive(out, 0.05);
             t += dt;
             assert!(t < 1.0, "motor never reached brake entry speed");
         }
@@ -201,7 +201,7 @@ mod tests {
         let mut brake_ms = 0.0;
         loop {
             let done = brake.tick(BangBangBrakeStepInput {
-                omega: state.omega,
+                omega: out.measurement.omega,
                 max_duration_ms,
                 omega_cutoff,
                 max_braking_torque,
@@ -209,7 +209,7 @@ mod tests {
                 dt_ms: dt * 1000.0,
             });
             assert!(brake.torque_demand().abs() <= max_braking_torque, "brake demand exceeded max torque");
-            state = drive(state, brake.torque_demand());
+            out = drive(out, brake.torque_demand());
             brake_ms += dt * 1000.0;
             if done { break; }
             assert!(brake_ms < max_duration_ms + 100.0, "brake failed to terminate");
@@ -219,6 +219,6 @@ mod tests {
 
         // Terminated on the timeout with the rotor still turning:
         assert!(brake_ms >= max_duration_ms, "brake stopped before the timeout");
-        assert!(state.omega.abs() > omega_cutoff, "rotor decelerated below cutoff");
+        assert!(out.state.omega.abs() > omega_cutoff, "rotor decelerated below cutoff");
     }
 }

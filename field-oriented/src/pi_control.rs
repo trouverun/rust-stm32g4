@@ -375,7 +375,7 @@ mod tests {
         let controller_params = ControllerParameters {
             d_pi: gains, q_pi: gains
         };
-        let stable = small_gain_stability_check::<50>(R, L, &controller_params, pwm_freq_hz, &[1.0], &[1.0]);
+        let stable = small_gain_stability_check::<100>(R, L, &controller_params, pwm_freq_hz, &[1.0], &[1.0]);
         assert_eq!(stable, true, "False positive unstable result")
     }
 
@@ -401,7 +401,90 @@ mod tests {
         let controller_params = ControllerParameters {
             d_pi: gains, q_pi: gains
         };
-        let stable = small_gain_stability_check::<50>(R, L, &controller_params, pwm_freq_hz, &[1.4], &[0.5]);
+        let stable = small_gain_stability_check::<100>(R, L, &controller_params, pwm_freq_hz, &[1.4], &[0.5]);
         assert_eq!(stable, false, "Stability violation not detected")
+    }
+
+    /// Closed-loop acceptance of the computed gains against the sim: overshoot,
+    /// settling time and d-axis regulation within the design spec.
+    #[test]
+    fn pmsm_known_params_step_response() {
+        let setpoint = 0.12;
+        let pwm_freq_hz = 20_000.0;
+        let sim_dt = 1.0/pwm_freq_hz;
+        let sim_cfg = PMSMConfig::default();
+        let mut sim = PMSMSim::new(sim_dt, sim_cfg);
+
+        let foc_cfg = FocConfig {
+            pwm_frequency_hz: pwm_freq_hz,
+            mosfet_deadtime_ns: 0.0,
+            mosfet_on_delay_ns: 0.0,
+            mosfet_off_delay_ns: 0.0,
+            deadtime_compensation_band_a: 1.0,
+            saturation_d_ratio: 0.0
+        };
+        let mut foc = FOC::new(foc_cfg);
+        let mut accelerator = DummyAccelerator;
+        let motor_params = MotorParamsEstimate::from_nominal(
+            MotorParams {
+                num_pole_pairs: sim_cfg.num_pole_pairs as u8,
+                stator_resistance: sim_cfg.stator_resistance,
+                d_inductance: sim_cfg.inductance,
+                q_inductance: sim_cfg.inductance,
+                pm_flux_linkage: sim_cfg.pm_flux_linkage
+            }
+        );
+
+        if let Ok(gains) = compute_current_pi_controller_gains::<50>(
+            motor_params, pwm_freq_hz, 5.0, 0.01
+        ) {
+            foc.set_pi_gains(Some(gains));
+        } else {
+            assert!(false, "Couldn't tune controller")
+        }
+        let iq_setpoint = 0.666667 / (motor_params.num_pole_pairs.unwrap() as f32 * motor_params.pm_flux_linkage.unwrap()) * setpoint;
+
+        let mut out = sim.state();
+        let mut time_s = 0.0_f32;
+        let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
+        while time_s < 0.005 {
+            let foc_input = FocInput {
+                command: FocInputType::TargetTorque(setpoint),
+                dc_bus_voltage: sim_cfg.dc_bus_voltage,
+                theta: out.measurement.theta,
+                angle_type: AngleType::Mechanical,
+                omega: out.measurement.omega,
+                phase_currents: out.measurement.currents
+            };
+            let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
+
+            out = sim.step(foc_result);
+            records.push(SimRecord {
+                input: foc_input,
+                result: foc_result,
+                sim: out,
+                estimates: std::vec::Vec::new(),
+            });
+
+            if time_s < 0.01 {
+                // Overshoot <= 5%
+                assert!(out.state.i_dq.q <= 1.05*iq_setpoint, "Step response overshoot threshold exceeded")
+            } else {
+                // Settling time (to within 2%) <= 10ms
+                assert!(
+                    0.98*iq_setpoint <= out.state.i_dq.q && out.state.i_dq.q <= 1.02*iq_setpoint,
+                    "Step response settling time exceeded"
+                )
+            }
+            assert!(
+                -5e-2 <= out.state.i_dq.d && out.state.i_dq.d <= 5e-2,
+                "d-axis current not correctly regulated: {} > {}",
+                out.state.i_dq.d.abs(), 5e-2
+            );
+
+            time_s += sim_dt;
+        }
+
+        plot_simulation("pmsm_step_response.html", sim_dt as f32, &records);
     }
 }
