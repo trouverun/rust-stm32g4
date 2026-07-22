@@ -13,7 +13,7 @@ pub use spi_encoder::*;
 use embassy_stm32::adc::AnyAdcChannel;
 use embassy_stm32::can::CanConfigurator;
 use embassy_stm32::comp::Comp;
-use embassy_stm32::dac::{Dac, DacChannel};
+use embassy_stm32::dac::Dac;
 #[cfg(feature = "spi-encoder")]
 use embassy_stm32::gpio::Output;
 use embassy_stm32::mode::Blocking;
@@ -45,14 +45,14 @@ pub struct ThermistorLinearScale {
 pub struct BoardInfo {
     pub shunt_resistance_mohm: f32,
     pub opamp_gain: f32,
-    pub opamp_ref_v: f32,
+    pub opamp_bias_v: f32,
     pub vbus_divide_factor: f32,
     pub thermistor_scaling: ThermistorLinearScale,
     pub current_limit_a: f32,
     pub mosfet_deadtime_ns: u32,
     pub mosfet_on_delay_ns: u32,
     pub mosfet_off_delay_ns: u32,
-    pub mosfet_output_capacitance_nf: f32
+    pub deadtime_compensation_band_a: f32
 }
 
 #[cfg(feature = "mcu-opamps")]
@@ -100,7 +100,6 @@ pub struct SPIEncoderMappings<A: Instance, B: GeneralInstance4Channel> {
 
 #[cfg(feature = "overcurrent-comparators")]
 pub struct CurrentComparators {
-    pub dac_single: DacChannel<'static, ComparatorDacSingle, ComparatorDacChannel, Blocking>,
     pub dac_dual: Dac<'static, ComparatorDacDual, Blocking>,
     pub comp_u: Comp<'static, CompU>,
     pub comp_v: Comp<'static, CompV>,

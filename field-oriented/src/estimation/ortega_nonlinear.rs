@@ -13,15 +13,14 @@ pub struct OrtegaPralyEstimatorInput {
     pub dt_s: f32,
 }
 
-struct OrtegaPralyEstimator {
+pub struct OrtegaPralyEstimator {
     observer_gain: f32,
     pll_kp: f32,
     pll_ki: f32,
     x1: f32,
     x2: f32,
-    z1: f32,
-    z2: f32,
     prev_voltages: AlphaBeta,
+    theta_est: f32,
     theta_pll: f32,
     omega_pll: f32,
     fault: Option<RotorFeedbackFault>
@@ -35,9 +34,8 @@ impl OrtegaPralyEstimator {
             pll_ki: bandwidth*bandwidth,
             x1: 0.0,
             x2: 0.0,
-            z1: 0.0,
-            z2: 0.0,
             prev_voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
+            theta_est: 0.0,
             theta_pll: 0.0,
             omega_pll: 0.0,
             fault: None
@@ -73,9 +71,9 @@ impl OrtegaPralyEstimator {
 
             let flux_alpha = self.x1 - L*currents_ab.alpha;
             let flux_beta = self.x2 - L*currents_ab.beta;
-            let theta_est = accelerator.atan2(flux_beta, flux_alpha);
+            self.theta_est = accelerator.atan2(flux_beta, flux_alpha);
 
-            let angle_error = wrapped_diff(theta_est, self.theta_pll);
+            let angle_error = wrapped_diff(self.theta_est, self.theta_pll);
             self.omega_pll += input.dt_s * self.pll_ki * angle_error;
             self.theta_pll = wrap_to_pi(self.theta_pll + input.dt_s * (self.pll_kp*angle_error + self.omega_pll));
 
@@ -95,7 +93,7 @@ impl HasRotorFeedback for OrtegaPralyEstimator {
         } else {
             Ok(RotorFeedback {
                 angle_type: AngleType::Electrical,
-                theta: self.theta_pll,
+                theta: wrap_to_2pi(self.theta_pll),
                 omega: self.omega_pll
             })
         }
@@ -146,11 +144,11 @@ mod test {
         let sim_cfg = PMSMConfig::default();
         let mut sim = PMSMSim::new(dt, sim_cfg);
 
-        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, pwm_deadtime_ns: 0.0, pwm_deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
+        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, mosfet_deadtime_ns: 0.0, mosfet_on_delay_ns: 0.0, mosfet_off_delay_ns: 0.0, deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
         let mut accelerator = DummyAccelerator;
         let motor_params = nominal_params(sim_cfg);
         foc.set_pi_gains(Some(
-            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz).unwrap(),
+            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap(),
         ));
         let mut estimator = OrtegaPralyEstimator::new(OBSERVER_GAIN, PLL_BANDWIDTH);
 
