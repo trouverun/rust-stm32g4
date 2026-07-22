@@ -1,5 +1,6 @@
+use core::f32::consts::PI;
 use crate::{ControllerParameters, FocFault, MotorParamsEstimate};
-use libm::{cosf, expf, powf, sinf};
+use libm::{cosf, expf, logf, powf, sinf};
 use num_complex::{Complex32};
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
@@ -76,9 +77,9 @@ impl PIController {
     }
 }
 
-// PI autotuning based on step response requirements using pole-placement 
+// PI autotuning based on step response requirements using pole-placement
 pub fn compute_current_pi_controller_gains<const N: usize>(
-    params: MotorParamsEstimate, pwm_freq_hz: f32
+    params: MotorParamsEstimate, pwm_freq_hz: f32, overshoot_pct: f32, settling_time_s: f32
 ) -> Result<ControllerParameters, PITuningFault> {
     let R = params.stator_resistance.ok_or(PITuningFault::MissingMotorParameters)?;
     let L = params.q_inductance.ok_or(PITuningFault::MissingMotorParameters)?;
@@ -87,13 +88,21 @@ pub fn compute_current_pi_controller_gains<const N: usize>(
     if R <= 0.0 || L <= 0.0 || T <= 0.0 {
         return Err(PITuningFault::InfeasibleMotorParameters)
     }
+    if !(overshoot_pct > 0.0 && overshoot_pct < 100.0) || !(settling_time_s > 0.0) {
+        return Err(PITuningFault::InfeasibleMotorParameters)
+    }
 
-    // Symbolically computed form for poles that give 5% overshoot and 1ms settling time:
+    // Symbolically computed form for poles that give the requested overshoot and 2% settling time:
     // (for a first order, decoupled motor model controlled by PI controller)
     let C1 = expf((R*T)/L);
-    let C2 = expf(-800.0*T);
+    let C2 = expf(-8.0*T/settling_time_s);
+    let theta = 4.0*PI*T / (settling_time_s * logf(0.01*overshoot_pct));
     let kp = R*C1 * (expf(-(R*T)/L) - C2) / (C1 - 1.0);
-    let ki = R*C1 * (C2 - 2.0*expf(-400.0*T)*cosf(419.4757564*T) + 1.0) / (T*(C1 - 1.0));
+    let ki = R*C1 * (C2 - 2.0*expf(-4.0*T/settling_time_s)*cosf(theta) + 1.0) / (T*(C1 - 1.0));
+    // Settling time slower than ~8*L/R places the poles below the plant pole and flips kp negative:
+    if !(kp > 0.0) {
+        return Err(PITuningFault::InfeasibleMotorParameters)
+    }
     let z0 = kp/(kp+T*ki); // Zero cancellation setpoint filter
 
     let gains = ControllerParameters {
@@ -214,10 +223,11 @@ fn small_gain_stability_check<const N: usize>(
 mod tests {
     use crate::*;
     use super::*;
-
     struct TestParams {
         L: f32,
         R: f32,
+        po: f32,
+        ts: f32,
     }
     struct ExpectedPI {
         kp: f32,
@@ -228,8 +238,10 @@ mod tests {
     // Cross check symbolic pole placement formula against explicit values
     fn pole_placement_formula_matches() {
         let test_vals = [
-            (TestParams{L: 0.00184, R: 0.66}, ExpectedPI{kp: 0.7959, ki: 611.3735}),
-            (TestParams{L: 0.00084, R: 0.3}, ExpectedPI{kp: 0.3646, ki: 279.0945}),
+            (TestParams{L: 0.00184, R: 0.66, po: 5.0, ts: 0.01}, ExpectedPI{kp: 0.7959, ki: 611.3735}),
+            (TestParams{L: 0.00084, R: 0.3, po: 5.0, ts: 0.01}, ExpectedPI{kp: 0.3646, ki: 279.0945}),
+            (TestParams{L: 0.00184, R: 0.66, po: 2.5, ts: 0.005}, ExpectedPI{kp: 2.1948, ki: 1969.6648}),
+            (TestParams{L: 0.00084, R: 0.3, po: 2.5, ts: 0.005}, ExpectedPI{kp: 1.0032, ki: 899.1600}),
         ];
 
         for test_cfg in test_vals {
@@ -241,7 +253,7 @@ mod tests {
                 pm_flux_linkage: 0.0
             });
 
-            if let Ok(gains) = compute_current_pi_controller_gains::<50>(params, 20_000.0) {
+            if let Ok(gains) = compute_current_pi_controller_gains::<50>(params, 20_000.0, test_cfg.0.po, test_cfg.0.ts) {
                 assert!(
                     test_cfg.1.kp - 1e-3 < gains.d_pi.kp && gains.d_pi.kp < test_cfg.1.kp + 1e-3, 
                     "P gain mismatch {} < {} < {}", test_cfg.1.kp - 1e-3, gains.d_pi.kp, test_cfg.1.kp + 1e-3
@@ -254,6 +266,24 @@ mod tests {
                 assert!(false);
             }
         }
+    }
+
+    #[test]
+    // Reject step response requirements outside the feasible range
+    fn infeasible_spec_rejected() {
+        let params = MotorParamsEstimate::from_nominal(MotorParams {
+            num_pole_pairs: 0,
+            stator_resistance: 0.3,
+            d_inductance: 0.00084,
+            q_inductance: 0.00084,
+            pm_flux_linkage: 0.0
+        });
+
+        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 0.0, 0.005).is_err());
+        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 100.0, 0.005).is_err());
+        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 2.5, 0.0).is_err());
+        // Settling time slower than 8*L/R (22.4ms here) would need a negative kp:
+        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 2.5, 0.05).is_err());
     }
 
     struct ExpectedGain {

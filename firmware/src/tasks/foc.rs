@@ -6,7 +6,7 @@ use defmt::info;
 use crate::app;
 use crate::boards::{BOARD_SAMPLE_FREQ, PWM_FREQ};
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
-use field_oriented::{MotorParamsEstimate, HasRotorFeedback, compute_current_pi_controller_gains};
+use field_oriented::{AlphaBeta, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput, compute_current_pi_controller_gains};
 
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
@@ -29,9 +29,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             cf.check_overcurrent()
         });
         let dc_bus_reading_v = cx.shared.board_status.lock(|bs| bs.dc_bus_voltage_v);
-        let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
-            (fa.read(), fa.get_hall_pattern())
-        });
         let (
             calibration_voltage_v, calibration_current_a,
             calibration_omega, setpoint_timeout_ms,
@@ -41,12 +38,27 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_omega(), cfg.setpoint_timeout_ms(),
                 cfg.rated_current_limit_a(), cfg.dc_bus_max_voltage_v(),
-                cfg.ss1t_duration_ms(), cfg.ss1t_velocity_threshold(), cfg.braking_current_limit_a())
+                cfg.ss1t_duration_ms(), cfg.ss1t_velocity_threshold(), 
+                cfg.braking_current_limit_a())
             });
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
         });
-        const DT_MS: f32 = 1000.0 / PWM_FREQ.0 as f32;
+        const DT_S: f32 = 1.0 / PWM_FREQ.0 as f32;    
+        const DT_MS: f32 = 1000.0 / PWM_FREQ.0 as f32;    
+        
+        let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
+        let sensorless_input = OrtegaPralyEstimatorInput {
+            currents: phase_currents,
+            voltages: *cx.local.prev_voltages,
+            params,
+            dt_s: DT_S,
+        };
+        cx.local.sensorless_estimator.update(sensorless_input, cx.local.acceleration);
+        let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
+            fa.update_sensorless(cx.local.sensorless_estimator.read());
+            (fa.read(), fa.get_hall_pattern())
+        });
 
         // FOC compute:
         let inputs = FocStepInputs {
@@ -61,10 +73,9 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             calibration_omega,
             target_torque,
             active_current_limit_a,
-            back_emf_v: todo!(),
             safety_deceleration_duration_ms: ss1t_duration_ms as f32,
             safety_deceleration_cutoff_omega: ss1t_velocity_threshold,
-            safety_deceleration_ramp_pct_ms: todo!(),
+            safety_deceleration_ramp_pct_ms: 0.1,
             braking_current_limit_a,
             dc_bus_max_v,
             tick_dt_ms: DT_MS,
@@ -75,17 +86,19 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
 
         // Apply outputs:
         let sector = match outcome {
-            FocStepOutcome::Normal { duty_cycles, snapshot, sector } => {
+            FocStepOutcome::Normal { voltages, duty_cycles, snapshot, sector } => {
                 cx.shared.pwm_output.lock(|pwm| {
                     pwm.enable();
                     pwm.set_duty_cycles(duty_cycles);
                 });
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
+                *cx.local.prev_voltages = voltages;
                 sector
             }
             FocStepOutcome::NonConducting => {  
                 cx.shared.pwm_output.lock(|pwm| pwm.disable());
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
+                *cx.local.prev_voltages = AlphaBeta { alpha:0.0, beta: 0.0 };
                 0
             }
         };
@@ -178,7 +191,9 @@ pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angl
 }
 
 pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEstimate) {
-    let result = compute_current_pi_controller_gains::<50>(estimate, PWM_FREQ.0 as f32);
+    let result = compute_current_pi_controller_gains::<100>(
+        estimate, PWM_FREQ.0 as f32, 1.0, 0.001
+    );
     info!("PI gains {}", result);
     match result {
         Ok(pi_gains) => {

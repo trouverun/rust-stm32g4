@@ -96,7 +96,7 @@ pub async fn can_tx_task(mut cx: app::can_tx_task::Context<'_>) {
                 }
             };
             if let Some(f) = frame {
-                cx.local.can_periodic_tx.write(f).await;
+                cx.shared.can.lock(|c| c.send(f));
             }
             slot.next_due += slot.period;
         }

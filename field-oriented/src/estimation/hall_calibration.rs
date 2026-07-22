@@ -151,8 +151,10 @@ mod test {
 
         let foc_cfg = FocConfig {
             pwm_frequency_hz: pwm_freq_hz,
-            pwm_deadtime_ns: 0.0,
-            pwm_deadtime_compensation_band_a: 1.0,
+            mosfet_deadtime_ns: 0.0,
+            mosfet_on_delay_ns: 0.0,
+            mosfet_off_delay_ns: 0.0,
+            deadtime_compensation_band_a: 1.0,
             saturation_d_ratio: 0.0
         };
         let mut foc = FOC::new(foc_cfg);

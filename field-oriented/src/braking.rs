@@ -60,7 +60,7 @@ mod tests {
         let sim_cfg = PMSMConfig::default();
         let mut sim = PMSMSim::new(dt, sim_cfg);
 
-        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, pwm_deadtime_ns: 0.0, pwm_deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
+        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, mosfet_deadtime_ns: 0.0, mosfet_on_delay_ns: 0.0, mosfet_off_delay_ns: 0.0, deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
         let mut accelerator = DummyAccelerator;
         let motor_params = MotorParamsEstimate::from_nominal(MotorParams {
             num_pole_pairs: sim_cfg.num_pole_pairs as u8,
@@ -70,7 +70,7 @@ mod tests {
             pm_flux_linkage: sim_cfg.pm_flux_linkage,
         });
         foc.set_pi_gains(Some(
-            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz).unwrap(),
+            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap(),
         ));
 
         // One torque-controlled FOC + sim iteration, recorded for plotting:
@@ -150,7 +150,7 @@ mod tests {
         let sim_cfg = PMSMConfig::default();
         let mut sim = PMSMSim::new(dt, sim_cfg);
 
-        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, pwm_deadtime_ns: 0.0, pwm_deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
+        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, mosfet_deadtime_ns: 0.0, mosfet_on_delay_ns: 0.0, mosfet_off_delay_ns: 0.0, deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
         let mut accelerator = DummyAccelerator;
         let motor_params = MotorParamsEstimate::from_nominal(MotorParams {
             num_pole_pairs: sim_cfg.num_pole_pairs as u8,
@@ -160,7 +160,7 @@ mod tests {
             pm_flux_linkage: sim_cfg.pm_flux_linkage,
         });
         foc.set_pi_gains(Some(
-            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz).unwrap(),
+            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap(),
         ));
 
         let mut state = sim.state();

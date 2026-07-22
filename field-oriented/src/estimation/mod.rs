@@ -12,6 +12,7 @@ pub use motor_estimation::{
     OfflineEstimatorConfig, OfflineEstimatorInput, EstimationStepFault
 };
 pub use arbitration::FeedbackArbitrator;
+pub use ortega_nonlinear::{OrtegaPralyEstimator, OrtegaPralyEstimatorInput};
 use crate::types::{FocResult};
 
 #[derive(Clone, Copy)]
