@@ -1,4 +1,4 @@
-use crate::RotorFeedbackFault;
+use crate::{HallCalibration, RotorFeedbackFault};
 
 enum HallInterpolationState {
     Stationary,
@@ -42,7 +42,7 @@ pub struct HallEstimatorOutput {
 }
 
 pub struct HallEstimator {
-    hall_pattern_to_theta: Option<[f32; 6]>,
+    hall_pattern_to_theta: Option<HallCalibration>,
     /// Unsigned angular span of each hall sector, indexed by pattern - 1.
     /// Computed from the calibration table: distance from this edge to the next edge in the forward direction.
     sector_span: Option<[f32; 6]>,
@@ -66,7 +66,7 @@ impl HallEstimator {
         }
     }
 
-    pub fn set_calibration(&mut self, calibrations: [f32; 6]) {
+    pub fn set_calibration(&mut self, calibrations: HallCalibration) {
         self.hall_pattern_to_theta = Some(calibrations);
 
         // Build (angle, pattern) pairs and sort by angle.

@@ -6,7 +6,7 @@ use defmt::info;
 use crate::app;
 use crate::boards::{BOARD_SAMPLE_FREQ, PWM_FREQ};
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
-use field_oriented::{AlphaBeta, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput, compute_current_pi_controller_gains};
+use field_oriented::{AlphaBeta, HallCalibration, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput, compute_current_pi_controller_gains};
 
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
@@ -98,7 +98,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             FocStepOutcome::NonConducting => {  
                 cx.shared.pwm_output.lock(|pwm| pwm.disable());
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
-                *cx.local.prev_voltages = AlphaBeta { alpha:0.0, beta: 0.0 };
+                *cx.local.prev_voltages = AlphaBeta { alpha: 0.0, beta: 0.0 };
                 0
             }
         };
@@ -176,7 +176,7 @@ pub async fn zero_encoder(mut cx: app::zero_encoder::Context<'_>) {
     });
 }
 
-pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angle_table: [f32; 6]) {
+pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angle_table: HallCalibration) {
     info!("Angle table {}", angle_table);
     cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
     let command = cx.shared.memory.lock(|memory| {

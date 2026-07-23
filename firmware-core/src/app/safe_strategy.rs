@@ -20,6 +20,8 @@ pub struct SafeControlStrategyInput {
 
 #[derive(Clone, Copy, defmt::Format)]
 pub enum SafeControlStrategy {
+    /// Controlled rampdown to zero torque demand
+    RampDown { waited_ms: f32 },
     /// terminal STO which does not allow switch to ASC
     STOf,
     /// STO which can switch to ASC
@@ -35,6 +37,16 @@ impl SafeControlStrategy {
     pub fn foc_tick(&mut self, input: SafeControlStrategyInput) -> SafeCommand {
         // Evolve strategy
         match self {
+            SafeControlStrategy::RampDown { waited_ms } => {
+                *waited_ms += input.tick_dt_ms;
+                if *waited_ms >= 50.0 {
+                    if input.dc_bus_max_v > 1.025*input.dc_bus_max_v {
+                        *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
+                    } else {
+                        *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) };
+                    }
+                }
+            }
             SafeControlStrategy::STO { should_switch } => {
                 should_switch.update(input.dc_bus_v > 1.025*input.dc_bus_max_v, 10);
                 if should_switch.state() {
@@ -71,6 +83,9 @@ impl SafeControlStrategy {
 
         // Compute output
         match self {
+            SafeControlStrategy::RampDown { waited_ms } => {
+                SafeCommand::FOC(FocInputType::TargetTorque(0.0))
+            }
             SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf => SafeCommand::NonConducting,
             SafeControlStrategy::ASC { .. } => SafeCommand::ActiveShort,
             SafeControlStrategy::SS1t { brake , .. } => {
