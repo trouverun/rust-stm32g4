@@ -6,19 +6,60 @@ BS_:
 
 BU_: Hyperdrive Host
 
-BO_ 256 MotorCurrents: 8 Hyperdrive
- SG_ iQ_meas : 0|16@1- (0.001,0) [-32.768|32.767] "A" Host
- SG_ iD_meas : 16|16@1- (0.001,0) [-32.768|32.767] "A" Host
- SG_ iQ_target : 32|16@1- (0.001,0) [-32.768|32.767] "A" Host
- SG_ iD_target : 48|16@1- (0.001,0) [-32.768|32.767] "A" Host
+BO_ 576 CalibrationTargets: 6 Host
+ SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
+ SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+ SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Hyperdrive
 
-BO_ 272 RotorEstimates: 8 Hyperdrive
- SG_ hall_pos : 0|12@1+ (0.0015339808,0) [0|6.2817] "rad" Host
- SG_ sensl_pos : 12|14@1+ (0.00038349519,0) [0|6.2829] "rad" Host
- SG_ hall_vel : 26|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
- SG_ sensl_vel : 42|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
- SG_ hall_valid : 58|1@1+ (1,0) [0|1] "" Host
- SG_ sensl_valid : 59|1@1+ (1,0) [0|1] "" Host
+BO_ 624 ConfigQuery: 1 Host
+ SG_ block_id : 0|8@1+ (1,0) [0|255] "" Hyperdrive
+
+BO_ 560 MotorConfig: 7 Host
+ SG_ num_pole_pairs : 0|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ momentary_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+ SG_ rated_current_limit : 24|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+ SG_ overcurrent_limit : 40|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+
+BO_ 528 OperatingModeRequest: 8 Host
+ SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
+ SG_ checksum : 56|8@1+ (1,0) [0|255] "" Hyperdrive
+
+BO_ 544 ProtectionLimits: 8 Host
+ SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
+ SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
+ SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+ SG_ braking_current_fault : 48|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+
+BO_ 608 ProtectionLimits2: 4 Host
+ SG_ setpoint_timeout : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
+ SG_ temp_max : 16|16@1- (0.1,0) [-3276.8|3276.7] "degC" Hyperdrive
+
+BO_ 592 SafeStopConfig: 4 Host
+ SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
+ SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Hyperdrive
+
+BO_ 512 Setpoint: 8 Host
+ SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
+ SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
+ SG_ checksum : 56|8@1+ (1,0) [0|255] "" Hyperdrive
+
+BO_ 368 CalibrationTargetsReport: 6 Hyperdrive
+ SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Host
+ SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Host
+ SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Host
+
+BO_ 384 CurrentGainsDReport: 8 Hyperdrive
+ SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
+ SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
+ SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
+ SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
+
+BO_ 400 CurrentGainsQReport: 8 Hyperdrive
+ SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
+ SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
+ SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
+ SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
 
 BO_ 288 EncoderReading: 4 Hyperdrive
  SG_ enc_pos : 0|12@1+ (0.0015339808,0) [0|6.2817] "rad" Host
@@ -42,34 +83,17 @@ BO_ 320 Heartbeat: 6 Hyperdrive
  SG_ dc_bus_valid : 40|1@1+ (1,0) [0|1] "" Host
  SG_ temp_valid : 41|1@1+ (1,0) [0|1] "" Host
 
-BO_ 336 ProtectionLimitsReport: 8 Hyperdrive
- SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Host
- SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Host
- SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Host
- SG_ temp_max : 48|16@1- (0.1,0) [-3276.8|3276.7] "degC" Host
-
 BO_ 352 MotorConfigReport: 7 Hyperdrive
  SG_ num_pole_pairs : 0|8@1+ (1,0) [0|255] "" Host
  SG_ momentary_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ rated_current_limit : 24|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ overcurrent_limit : 40|16@1+ (0.001,0) [0|65.535] "A" Host
 
-BO_ 368 CalibrationTargetsReport: 6 Hyperdrive
- SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Host
- SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Host
- SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Host
-
-BO_ 384 CurrentGainsDReport: 8 Hyperdrive
- SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
- SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
- SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
- SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
-
-BO_ 400 CurrentGainsQReport: 8 Hyperdrive
- SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
- SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
- SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
- SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
+BO_ 256 MotorCurrents: 8 Hyperdrive
+ SG_ iQ_meas : 0|16@1- (0.001,0) [-32.768|32.767] "A" Host
+ SG_ iD_meas : 16|16@1- (0.001,0) [-32.768|32.767] "A" Host
+ SG_ iQ_target : 32|16@1- (0.001,0) [-32.768|32.767] "A" Host
+ SG_ iD_target : 48|16@1- (0.001,0) [-32.768|32.767] "A" Host
 
 BO_ 416 MotorParameterReport1: 7 Hyperdrive
  SG_ stator_resistance : 0|24@1+ (1e-05,0) [0|167.77215] "ohm" Host
@@ -83,51 +107,29 @@ BO_ 432 MotorParameterReport2: 7 Hyperdrive
  SG_ ld_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ lq_valid : 49|1@1+ (1,0) [0|1] "" Host
 
+BO_ 464 ProtectionLimits2Report: 4 Hyperdrive
+ SG_ setpoint_timeout : 0|16@1+ (1,0) [0|65535] "ms" Host
+ SG_ temp_max : 16|16@1- (0.1,0) [-3276.8|3276.7] "degC" Host
+
+BO_ 336 ProtectionLimitsReport: 8 Hyperdrive
+ SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Host
+ SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Host
+ SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Host
+ SG_ braking_current_fault : 48|16@1+ (0.001,0) [0|65.535] "A" Host
+
+BO_ 272 RotorEstimates: 8 Hyperdrive
+ SG_ hall_pos : 0|12@1+ (0.0015339808,0) [0|6.2817] "rad" Host
+ SG_ sensl_pos : 12|14@1+ (0.00038349519,0) [0|6.2829] "rad" Host
+ SG_ hall_vel : 26|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
+ SG_ sensl_vel : 42|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
+ SG_ hall_valid : 58|1@1+ (1,0) [0|1] "" Host
+ SG_ sensl_valid : 59|1@1+ (1,0) [0|1] "" Host
+
 BO_ 448 SafeStopConfigReport: 4 Hyperdrive
  SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Host
  SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Host
 
-BO_ 464 ProtectionLimits2Report: 2 Hyperdrive
- SG_ setpoint_timeout : 0|16@1+ (1,0) [0|65535] "ms" Host
-
-BO_ 512 Setpoint: 8 Host
- SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
- SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
- SG_ checksum : 56|8@1+ (1,0) [0|255] "" Hyperdrive
-
-BO_ 528 OperatingModeRequest: 8 Host
- SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Hyperdrive
- SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
- SG_ checksum : 56|8@1+ (1,0) [0|255] "" Hyperdrive
-
-BO_ 544 ProtectionLimits: 8 Host
- SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
- SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
- SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
- SG_ temp_max : 48|16@1- (0.1,0) [-3276.8|3276.7] "degC" Hyperdrive
-
-BO_ 560 MotorConfig: 7 Host
- SG_ num_pole_pairs : 0|8@1+ (1,0) [0|255] "" Hyperdrive
- SG_ momentary_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
- SG_ rated_current_limit : 24|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
- SG_ overcurrent_limit : 40|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
-
-BO_ 576 CalibrationTargets: 6 Host
- SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
- SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
- SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Hyperdrive
-
-BO_ 592 SafeStopConfig: 4 Host
- SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
- SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Hyperdrive
-
-BO_ 608 ProtectionLimits2: 2 Host
- SG_ setpoint_timeout : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
-
-BO_ 624 ConfigQuery: 1 Host
- SG_ block_id : 0|8@1+ (1,0) [0|255] "" Hyperdrive
-
-CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands.";
+CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands. Messages are listed Host-transmitted first, then Hyperdrive-transmitted, alphabetical within each group.";
 CM_ SG_ 320 mode "0=Idle 1=Calibration 2=TorqueControl 4=Fault";
 CM_ BO_ 512 "Torque setpoint. checksum = CRC-8 (SAE J1850) over data bytes 0-6.";
 CM_ BO_ 528 "checksum = CRC-8 (SAE J1850) over data bytes 0-6.";

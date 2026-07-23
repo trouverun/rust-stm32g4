@@ -5,7 +5,9 @@ use super::calibration::{CalibrationInputs, StageResult};
 use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
 use field_oriented::{
-    AlphaBeta, AngleType, ConstantMotorParameters, DoesFocMath, FOC, FocInput, FocInputType, MotorParamEstimator, PhaseValues, RotorFeedback, RotorFeedbackFault
+    AlphaBeta, AngleType, ClarkParkValue, ConstantMotorParameters, DoesFocMath, FOC, 
+    FocInput, MotorParamEstimator, PhaseValues, RotorFeedback, RotorFeedbackFault, 
+    FocInputType
 };
 
 #[derive(Clone, Copy, Default)]
@@ -20,9 +22,11 @@ pub struct FocStepInputs {
     pub phase_currents: PhaseValues,
     pub watchdog_fault: bool,
     pub overcurrent: bool,
+    pub braking_limit_exceeded: bool,
     pub dc_bus_reading_v: Option<f32>,
     pub rotor_feedback: Result<RotorFeedback, RotorFeedbackFault>,
     pub hall_pattern: u8,
+    pub stationary_omega_threshold: f32,
 
     pub calibration_voltage_v: f32,
     pub calibration_current_a: f32,
@@ -35,13 +39,15 @@ pub struct FocStepInputs {
     pub safety_deceleration_cutoff_omega: f32,
     pub safety_deceleration_ramp_pct_ms: f32,
     pub braking_current_limit_a: f32,
+    pub dc_bus_min_v: f32,
     pub dc_bus_max_v: f32,
     pub tick_dt_ms: f32
 }
 
 pub enum FocStepOutcome {
     Normal {
-        voltages: AlphaBeta,
+        u_ab: AlphaBeta,
+        u_dq: ClarkParkValue,
         duty_cycles: PhaseValues,
         snapshot: CurrentLoopSnapshot,
         sector: u8,
@@ -65,6 +71,9 @@ pub fn foc_step<A>(
     if inputs.overcurrent {
         mode.on_command(Command::AssertFault { cause: FaultCause::Overcurrent });
     }
+    if inputs.braking_limit_exceeded {
+        mode.on_command(Command::AssertFault { cause: FaultCause::RegenLimitExceeded });
+    }
     if matches!(mode, OperatingMode::TorqueControl) && inputs.target_torque.is_none() {
         mode.on_command(Command::AssertFault { cause: FaultCause::SetpointTimeout });
     }
@@ -83,6 +92,9 @@ pub fn foc_step<A>(
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
+    let torque_constant: f32 = params.get_estimate().torque_constant().unwrap_or(0.0);
+    let max_braking_torque = torque_constant * inputs.braking_current_limit_a;
+
     // Safe outputs for idle / fault:
     gate = mode.foc_gate();
     let safety_foc_command = if !gate.active {
@@ -95,7 +107,7 @@ pub fn foc_step<A>(
             omega, 
             dc_bus_v: dc_bus_voltage_v,
             dc_bus_max_v: inputs.dc_bus_max_v,
-            max_braking_torque: params.get_estimate().torque_constant().unwrap_or(0.0) * inputs.braking_current_limit_a,
+            max_braking_torque,
             deceleration_duration_ms: inputs.safety_deceleration_duration_ms,
             deceleration_cutoff_omega: inputs.safety_deceleration_cutoff_omega,
             deceleration_ramp_pct_ms: inputs.safety_deceleration_ramp_pct_ms,
@@ -106,7 +118,8 @@ pub fn foc_step<A>(
             SafeCommand::NonConducting => return (FocStepOutcome::NonConducting, None),
             SafeCommand::ActiveShort => {
                 let outcome = FocStepOutcome::Normal { 
-                    voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
+                    u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
+                    u_dq: ClarkParkValue { d: 0.0, q: 0.0 },
                     duty_cycles: PhaseValues::zero(), 
                     snapshot: CurrentLoopSnapshot::default(), 
                     sector: 0 
@@ -142,10 +155,17 @@ pub fn foc_step<A>(
         // Normal torque control:
         } else {
             let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
-            let max_torque = estimator.get_estimate().torque_constant().unwrap_or(0.0) * inputs.active_current_limit_a;
-            if torque_demand > max_torque {
-                torque_demand = max_torque;
+            let max_torque = torque_constant * inputs.active_current_limit_a;
+            if torque_demand.abs() > max_torque {
+                torque_demand = torque_demand.signum() * max_torque;
             }
+
+            if omega > inputs.stationary_omega_threshold && torque_demand < -max_braking_torque {
+                torque_demand = -max_braking_torque;
+            } else if omega < -inputs.stationary_omega_threshold && torque_demand > max_braking_torque {
+                torque_demand = max_braking_torque;
+            }
+
             (angle_type, theta, FocInputType::TargetTorque(torque_demand))
         }
     };
@@ -172,7 +192,8 @@ pub fn foc_step<A>(
                 estimator.after_foc_iteration(foc_result);
             }
             FocStepOutcome::Normal {
-                voltages: foc_result.u_ab,
+                u_ab: foc_result.u_ab,
+                u_dq: foc_result.u_dq,
                 duty_cycles: foc_result.duty_cycles,
                 snapshot: CurrentLoopSnapshot {
                     id_meas_a: foc_result.measured_i_dq.d,
@@ -190,7 +211,8 @@ pub fn foc_step<A>(
                     SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf | SafeControlStrategy::SS1t { .. } | SafeControlStrategy::RampDown { .. } => NonConducting,
                     SafeControlStrategy::ASC { .. } => {
                         FocStepOutcome::Normal { 
-                            voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
+                            u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
+                            u_dq: ClarkParkValue { d: 0.0, q: 0.0 },
                             duty_cycles: PhaseValues::zero(), 
                             snapshot: CurrentLoopSnapshot::default(), 
                             sector: 0 
