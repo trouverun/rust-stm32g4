@@ -25,7 +25,7 @@ pub use crate::estimation::{
     HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator,
     OrtegaPralyEstimator, OrtegaPralyEstimatorInput
 };
-pub use crate::filtering::{LowPassFilter, PhaseCurrentFilter};
+pub use crate::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
 pub use crate::braking::{BangBangBrake, BangBangBrakeStepInput};
 
 #[cfg(test)]

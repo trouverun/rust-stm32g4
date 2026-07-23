@@ -34,9 +34,9 @@ mod app {
     };
     use crate::types::*;
     use field_oriented::{
-        ConstantMotorParameters, ControllerParameters, FOC, FeedbackArbitrator, FocConfig, 
-        HasRotorFeedback, MotorParamsEstimate, OrtegaPralyEstimator, PhaseCurrentFilter,
-        AlphaBeta, HallCalibration
+        AlphaBeta, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, 
+        FeedbackArbitrator, FocConfig, HallCalibration, HasRotorFeedback, MotorParamsEstimate, 
+        OrtegaPralyEstimator, PhaseCurrentFilter
     };
     use crate::tasks::*;
 
@@ -55,7 +55,8 @@ mod app {
         debug_mappings: DebugMappings,
         current_loop_snapshot: CurrentLoopSnapshot,
         feedback_arbitrator: FeedbackArbitrator,
-        current_filter: PhaseCurrentFilter,
+        phase_current_filter: PhaseCurrentFilter,
+        braking_current_filter: CurrentFilter,
         software_watchdog: SoftwareWatchdog,
         can: CanBus,
     }
@@ -111,9 +112,13 @@ mod app {
         };
         pwm_output.set_comparator_current_limit(config.overcurrent_limit_a());
 
-        let current_filter = PhaseCurrentFilter::new(
+        let phase_current_filter = PhaseCurrentFilter::new(
             PWM_FREQ.0 as f32, 2500.0,
             config.overcurrent_limit_a()
+        );
+        let braking_current_filter = CurrentFilter::new(
+            PWM_FREQ.0 as f32, 50.0,
+            config.braking_current_fault_a()
         );
         let foc_cfg = FocConfig {
             pwm_frequency_hz: PWM_FREQ.0 as f32, 
@@ -168,7 +173,8 @@ mod app {
             debug_mappings,
             current_loop_snapshot: CurrentLoopSnapshot::default(),
             feedback_arbitrator: FeedbackArbitrator::new(),
-            current_filter,
+            phase_current_filter,
+            braking_current_filter,
             software_watchdog: SoftwareWatchdog::new(
                 watchdog_mappings.timer,
                 Hertz((0.95*PWM_FREQ.0 as f32) as u32)
@@ -258,7 +264,8 @@ mod app {
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator,
                 mode, board_status, config, runtime_values, debug_mappings,
-                current_loop_snapshot, current_filter, software_watchdog
+                current_loop_snapshot, phase_current_filter, software_watchdog,
+                braking_current_filter
             ]
         )]
         fn shared_adc_isr(_: shared_adc_isr::Context);
@@ -281,8 +288,8 @@ mod app {
         #[task(
             priority = 1,
             shared = [
-                can, mode, runtime_values, config, current_filter,
-                foc, motor_parameters, pwm_output
+                can, mode, runtime_values, config, phase_current_filter,
+                braking_current_filter, foc, motor_parameters, pwm_output
             ],
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
