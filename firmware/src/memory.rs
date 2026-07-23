@@ -1,6 +1,6 @@
 use crate::types::FirmwareConfig;
 use embassy_stm32::flash::{FLASH_SIZE, MAX_ERASE_SIZE, WRITE_SIZE};
-use field_oriented::{ControllerParameters, MotorParamsEstimate};
+use field_oriented::{ControllerParameters, HallCalibration, MotorParamsEstimate};
 use firmware_core::MAX_RECORD_BYTES;
 
 /// An entry persisted in its own flash sector.
@@ -13,8 +13,8 @@ pub trait Stored: serde::Serialize + serde::de::DeserializeOwned {
     const VERSION: u16;
 }
 
-impl Stored for FirmwareConfig       { const SECTOR: usize = 3; const VERSION: u16 = 6; }
-impl Stored for [f32; 6]             { const SECTOR: usize = 2; const VERSION: u16 = 1; } // hall sensor calibrations
+impl Stored for FirmwareConfig       { const SECTOR: usize = 3; const VERSION: u16 = 7; }
+impl Stored for HallCalibration      { const SECTOR: usize = 2; const VERSION: u16 = 1; } // hall sensor calibrations
 impl Stored for MotorParamsEstimate  { const SECTOR: usize = 1; const VERSION: u16 = 1; }
 impl Stored for ControllerParameters { const SECTOR: usize = 0; const VERSION: u16 = 1; }
 
@@ -29,7 +29,7 @@ pub(crate) const fn sector_offset(index: usize) -> u32 {
 
 const _: () = {
     assert!(FirmwareConfig::SECTOR < TOTAL_FLASH_SECTORS);
-    assert!(<[f32; 6]>::SECTOR < TOTAL_FLASH_SECTORS);
+    assert!(HallCalibration::SECTOR < TOTAL_FLASH_SECTORS);
     assert!(MotorParamsEstimate::SECTOR < TOTAL_FLASH_SECTORS);
     assert!(ControllerParameters::SECTOR < TOTAL_FLASH_SECTORS);
     assert!(MAX_RECORD_BYTES % WRITE_SIZE == 0);

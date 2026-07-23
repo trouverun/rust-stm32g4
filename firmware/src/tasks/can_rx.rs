@@ -7,7 +7,7 @@ use crate::boards::PWM_FREQ;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
-use firmware_core::{Command, Debounced, FaultCause, SafeControlStrategy};
+use firmware_core::{Command, Debounced, FaultCause, OperatingMode, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
 pub async fn can_process(mut cx: app::can_process::Context<'_>) {
@@ -25,7 +25,9 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     continue;
                 }
                 let command = match msg.requested_mode() {
-                    OperatingModeRequestRequestedMode::Idle => Command::Idle { safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) } },
+                    OperatingModeRequestRequestedMode::Idle => {
+                        Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }
+                    },
                     OperatingModeRequestRequestedMode::Calibration => {
                         const DT_S: f32 = 1.0 / PWM_FREQ.0 as f32;
                         match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
@@ -38,11 +40,11 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
                     OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
                 };
-                if matches!(command, Command::EnableTorqueControl) {
-                    let now = Mono::now();
-                    cx.shared.runtime_values.lock(|rtv| rtv.target_torque.set(0.0, now));
-                }
                 cx.shared.mode.lock(|mode| {
+                    if matches!(command, Command::EnableTorqueControl) && !matches!(mode, OperatingMode::TorqueControl) {
+                        let now = Mono::now();
+                        cx.shared.runtime_values.lock(|rtv| rtv.target_torque.set(0.0, now));
+                    }
                     mode.on_command(command);
                 });
             }
@@ -94,14 +96,15 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
                     candidate.set_rated_current_limit_a(msg.rated_current_limit())?;
-                    candidate.set_current_limit_a(msg.phase_current_limit())?;
+                    candidate.set_momentary_current_limit_a(msg.momentary_current_limit())?;
+                    candidate.set_overcurrent_limit_a(msg.overcurrent_limit())?;
                     *cfg = candidate;
-                    Ok::<(f32, f32), ConfigError>((candidate.rated_current_limit_a(), candidate.current_limit_a()))
+                    Ok::<f32, ConfigError>(candidate.overcurrent_limit_a())
                 });
                 match applied {
-                    Ok((rated, limit)) => {
-                        cx.shared.current_filter.lock(|cf| cf.set_limits(rated, limit));
-                        cx.shared.pwm_output.lock(|pwm| pwm.set_comparator_current_limit(limit));
+                    Ok(overcurrent) => {
+                        cx.shared.current_filter.lock(|cf| cf.set_limits(overcurrent));
+                        cx.shared.pwm_output.lock(|pwm| pwm.set_comparator_current_limit(overcurrent));
                         cx.shared.motor_parameters.lock(|mp| {
                             mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
                         });
@@ -164,8 +167,9 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     let num_pole_pairs = cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs);
                     let f = MotorConfigReport::try_from(MotorConfigReportInit {
                         num_pole_pairs: num_pole_pairs.unwrap_or(0),
-                        phase_current_limit: cfg.current_limit_a(),
+                        momentary_current_limit: cfg.momentary_current_limit_a(),
                         rated_current_limit: cfg.rated_current_limit_a(),
+                        overcurrent_limit: cfg.overcurrent_limit_a(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));

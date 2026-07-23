@@ -45,13 +45,11 @@ pub struct FilteredPhases {
 
 pub struct PhaseCurrentFilter {
     filters: FilteredPhases,
-    rated_current_limit_a: f32,
-    current_limit_a: f32,
     active_limit_a: f32
 }
 
 impl PhaseCurrentFilter {
-    pub fn new(sample_rate_hz: f32, lowpass_cutoff_hz: f32, rated_current_limit_a: f32, current_limit_a: f32) -> Self {
+    pub fn new(sample_rate_hz: f32, lowpass_cutoff_hz: f32, overcurrent_limit_a: f32) -> Self {
         let filters = FilteredPhases {
             u: LowPassFilter::new(sample_rate_hz, lowpass_cutoff_hz),
             v: LowPassFilter::new(sample_rate_hz, lowpass_cutoff_hz),
@@ -59,9 +57,7 @@ impl PhaseCurrentFilter {
         };
         Self {
             filters,
-            rated_current_limit_a,
-            current_limit_a,
-            active_limit_a: rated_current_limit_a
+            active_limit_a: overcurrent_limit_a
         }
     }
 
@@ -78,10 +74,8 @@ impl PhaseCurrentFilter {
             || self.filters.w.filtered().abs() > self.active_limit_a
     }
 
-    pub fn set_limits(&mut self, rated_current_limit_a: f32, current_limit_a: f32) {
-        self.rated_current_limit_a = rated_current_limit_a;
-        self.current_limit_a = current_limit_a;
-        self.active_limit_a = rated_current_limit_a;
+    pub fn set_limits(&mut self, overcurrent_limit_a: f32) {
+        self.active_limit_a = overcurrent_limit_a;
     }
 
     pub fn filtered(&self) -> PhaseValues {
@@ -125,7 +119,7 @@ mod tests {
 
     #[test]
     fn overcurrent_ignores_spikes_and_trips_on_sustained_current() {
-        let mut pf = PhaseCurrentFilter::new(FS, FC, 1.0, 2.0);
+        let mut pf = PhaseCurrentFilter::new(FS, FC, 1.0);
         // A single-sample spike is attenuated to (1-alpha) of its height,
         // so even 10x the limit must not trip the filtered check
         pf.update(PhaseValues { u: 10.0, v: 0.0, w: 0.0 });
@@ -137,7 +131,7 @@ mod tests {
         }
         assert!(pf.check_overcurrent());
         // Raising the limits clears the trip condition
-        pf.set_limits(2.0, 4.0);
+        pf.set_limits(2.0);
         assert!(!pf.check_overcurrent());
     }
 }

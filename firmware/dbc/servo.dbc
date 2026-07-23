@@ -48,10 +48,11 @@ BO_ 336 ProtectionLimitsReport: 8 Hyperdrive
  SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ temp_max : 48|16@1- (0.1,0) [-3276.8|3276.7] "degC" Host
 
-BO_ 352 MotorConfigReport: 5 Hyperdrive
+BO_ 352 MotorConfigReport: 7 Hyperdrive
  SG_ num_pole_pairs : 0|8@1+ (1,0) [0|255] "" Host
- SG_ phase_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Host
+ SG_ momentary_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ rated_current_limit : 24|16@1+ (0.001,0) [0|65.535] "A" Host
+ SG_ overcurrent_limit : 40|16@1+ (0.001,0) [0|65.535] "A" Host
 
 BO_ 368 CalibrationTargetsReport: 6 Hyperdrive
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Host
@@ -105,10 +106,11 @@ BO_ 544 ProtectionLimits: 8 Host
  SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
  SG_ temp_max : 48|16@1- (0.1,0) [-3276.8|3276.7] "degC" Hyperdrive
 
-BO_ 560 MotorConfig: 5 Host
+BO_ 560 MotorConfig: 7 Host
  SG_ num_pole_pairs : 0|8@1+ (1,0) [0|255] "" Hyperdrive
- SG_ phase_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+ SG_ momentary_current_limit : 8|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
  SG_ rated_current_limit : 24|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+ SG_ overcurrent_limit : 40|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
 
 BO_ 576 CalibrationTargets: 6 Host
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive

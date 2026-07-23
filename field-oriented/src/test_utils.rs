@@ -58,7 +58,7 @@ pub fn angle_error(a: f32, b: f32) -> f32 {
 }
 
 /// Calibration table for the ideal encoder, indexed by pattern - 1.
-pub fn ideal_hall_table() -> [f32; 6] {
+pub fn ideal_hall_table() -> HallCalibration {
     let encoder = HallEncoder::ideal();
     let mut table = [0.0; 6];
     for i in 0..6 {

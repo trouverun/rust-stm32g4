@@ -101,8 +101,8 @@ impl OperatingMode {
 
     pub fn foc_gate(&self) -> FocGate {
         match self {
-            OperatingMode::Idle { .. } => FocGate { 
-                active: false, 
+            OperatingMode::Idle { safe_strategy } => FocGate { 
+                active: matches!(safe_strategy, SafeControlStrategy::RampDown { .. }), 
                 feedback_optional: true, 
             },
             OperatingMode::Calibration { calibrator } => FocGate {

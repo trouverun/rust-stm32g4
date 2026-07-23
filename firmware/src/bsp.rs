@@ -35,7 +35,7 @@ use crate::can::transport::{COMMAND_FILTER_ID, COMMAND_FILTER_MASK};
 use field_oriented::{
     AngleType, DoesFocMath, HasRotorFeedback,
     PhaseValues, RotorFeedback, RotorFeedbackFault, SinCosResult,
-    HallEstimator, HallEstimatorInput, LowPassFilter, wrap_to_pi
+    HallCalibration, HallEstimator, HallEstimatorInput, LowPassFilter, wrap_to_pi
 };
 
 const ADC_VOLTAGE: f32 = 3.3;
@@ -376,7 +376,7 @@ impl HallFeedback {
         self.sensor.read_hall_pattern()
     }
 
-    pub fn set_calibration(&mut self, calibrations: [f32; 6]) {
+    pub fn set_calibration(&mut self, calibrations: HallCalibration) {
         self.estimator.set_calibration(calibrations);
     }
 
