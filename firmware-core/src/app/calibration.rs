@@ -1,6 +1,6 @@
 use field_oriented::{
-    AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibrationFault, 
-    HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig, 
+    AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibration, HallCalibrationFault,
+    HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig,
     OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
 };
 
@@ -32,7 +32,7 @@ pub enum CalibrationFailureCause {
 /// Stage specific outputs / results
 pub enum StageResult {
     ZeroEncoderRequest,
-    HallCalibration { angle_table: [f32; 6] },
+    HallCalibration { angle_table: HallCalibration },
     UnwindRequest,
     TuningRequest { params_estimate: MotorParamsEstimate },
     MotorParameters { motor_params: MotorParamsEstimate },

@@ -36,7 +36,7 @@ mod app {
     use field_oriented::{
         ConstantMotorParameters, ControllerParameters, FOC, FeedbackArbitrator, FocConfig, 
         HasRotorFeedback, MotorParamsEstimate, OrtegaPralyEstimator, PhaseCurrentFilter,
-        AlphaBeta, PhaseValues
+        AlphaBeta, HallCalibration
     };
     use crate::tasks::*;
 
@@ -109,11 +109,11 @@ mod app {
                 FirmwareConfig::default() 
             }
         };
-        pwm_output.set_comparator_current_limit(config.current_limit_a());
+        pwm_output.set_comparator_current_limit(config.overcurrent_limit_a());
 
         let current_filter = PhaseCurrentFilter::new(
-            PWM_FREQ.0 as f32, 2500.0, 
-            config.rated_current_limit_a(), config.current_limit_a()
+            PWM_FREQ.0 as f32, 2500.0,
+            config.overcurrent_limit_a()
         );
         let foc_cfg = FocConfig {
             pwm_frequency_hz: PWM_FREQ.0 as f32, 
@@ -134,7 +134,7 @@ mod app {
                 ConstantMotorParameters { params: MotorParamsEstimate::new_empty() } 
             }
         };
-        match memory.load::<[f32; 6]>() {
+        match memory.load::<HallCalibration>() {
             Ok(Some(cal)) => {info!("Halcal {}", cal); hall_feedback.set_calibration(cal)},
             Ok(None) => {}
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
@@ -267,7 +267,7 @@ mod app {
         async fn zero_encoder(_: zero_encoder::Context);
 
         #[task(priority = 1, shared = [mode, hall_feedback, memory])]
-        async fn update_hall_table(_: update_hall_table::Context, angle_table: [f32; 6]);
+        async fn update_hall_table(_: update_hall_table::Context, angle_table: HallCalibration);
 
         #[task(priority = 1, shared = [mode, foc, memory])]
         async fn tune_pi(_: tune_pi::Context, estimate: MotorParamsEstimate);

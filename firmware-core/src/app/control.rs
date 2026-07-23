@@ -187,7 +187,7 @@ pub fn foc_step<A>(
             mode.on_command(Command::AssertFault { cause: fault.into() });
             if let OperatingMode::Fault { safe_strategy, .. } = mode {
                 match safe_strategy {
-                    SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf | SafeControlStrategy::SS1t { .. } => NonConducting,
+                    SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf | SafeControlStrategy::SS1t { .. } | SafeControlStrategy::RampDown { .. } => NonConducting,
                     SafeControlStrategy::ASC { .. } => {
                         FocStepOutcome::Normal { 
                             voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },

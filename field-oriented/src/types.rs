@@ -24,6 +24,8 @@ pub trait HasRotorFeedback {
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault>;
 }
 
+pub type HallCalibration = [f32; 6];
+
 #[derive(Clone, Copy)]
 pub struct SinCosResult {
     pub sin: f32,

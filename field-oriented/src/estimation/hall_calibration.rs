@@ -1,4 +1,5 @@
 use core::f32::consts::PI;
+use crate::HallCalibration;
 use crate::math::{wrap_to_2pi, wrapped_diff};
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
@@ -28,7 +29,7 @@ pub struct HallCalibrator {
     state: CalibrationState,
     initial_settle_time_s: f32,
     dt: f32,
-    pub hall_pattern_to_theta: [f32; 6],
+    pub hall_pattern_to_theta: HallCalibration,
 }
 
 impl HallCalibrator {

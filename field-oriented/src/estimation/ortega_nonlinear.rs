@@ -277,9 +277,9 @@ mod test {
     fn parameter_mismatch_degrades_gracefully() {
         let sim_cfg = PMSMConfig::default();
         let mut params = nominal_params(sim_cfg);
-        params.stator_resistance = Some(1.3 * sim_cfg.stator_resistance);
+        params.stator_resistance = Some(1.5 * sim_cfg.stator_resistance);
         params.pm_flux_linkage = Some(0.9 * sim_cfg.pm_flux_linkage);
-        params.d_inductance = Some(1.2 * sim_cfg.inductance);
+        params.d_inductance = Some(0.8 * sim_cfg.inductance);
 
         let worst = run_observer(params, "ortega_estimation_mismatch.html");
         // A wrong flux magnitude biases the angle, the rotation still tracks:

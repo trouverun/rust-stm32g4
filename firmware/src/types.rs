@@ -34,7 +34,8 @@ pub struct FirmwareConfig {
     calibration_current_a: f32,
     calibration_omega: f32,
     rated_current_limit_a: f32,
-    current_limit_a: f32,
+    momentary_current_limit_a: f32,
+    overcurrent_limit_a: f32,
     setpoint_timeout_ms: u16,
     temp_max_c: f32,
     ss1t_duration_ms: u16,
@@ -51,7 +52,8 @@ impl Default for FirmwareConfig {
             calibration_current_a: 1.5,
             calibration_omega: 1.0,
             rated_current_limit_a: 0.5,
-            current_limit_a: 0.5,
+            momentary_current_limit_a: 0.5,
+            overcurrent_limit_a: BOARD.current_limit_a,
             setpoint_timeout_ms: 50,
             temp_max_c: 80.0,
             ss1t_duration_ms: 500,
@@ -78,7 +80,8 @@ impl FirmwareConfig {
         calibration_current_a,
         calibration_omega,
         rated_current_limit_a,
-        current_limit_a,
+        momentary_current_limit_a,
+        overcurrent_limit_a,
         temp_max_c,
         ss1t_velocity_threshold,
         braking_current_limit_a,
@@ -92,11 +95,11 @@ impl FirmwareConfig {
 
     /// Enforce calibration_current <= current_limit <= rated_current.
     fn clamp_current_hierarchy(&mut self) {
-        if self.current_limit_a > self.rated_current_limit_a {
-            self.current_limit_a = self.rated_current_limit_a;
+        if self.momentary_current_limit_a > self.rated_current_limit_a {
+            self.momentary_current_limit_a = self.rated_current_limit_a;
         }
-        if self.calibration_current_a > self.current_limit_a {
-            self.calibration_current_a = self.current_limit_a;
+        if self.calibration_current_a > self.momentary_current_limit_a {
+            self.calibration_current_a = self.momentary_current_limit_a;
         }
     }
 
@@ -119,7 +122,7 @@ impl FirmwareConfig {
 
     pub fn set_calibration_current_a(&mut self, v: f32) -> Result<(), ConfigError> {
         let v = in_range(v, (0.0, BOARD.current_limit_a))?;
-        self.calibration_current_a = v.min(self.current_limit_a);
+        self.calibration_current_a = v.min(self.momentary_current_limit_a);
         Ok(())
     }
 
@@ -134,10 +137,15 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_current_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
+    pub fn set_momentary_current_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
         let v = in_range(v, (0.0, BOARD.current_limit_a))?;
-        self.current_limit_a = v.min(self.rated_current_limit_a);
+        self.momentary_current_limit_a = v.min(self.rated_current_limit_a);
         self.clamp_current_hierarchy();
+        Ok(())
+    }
+
+    pub fn set_overcurrent_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
+        self.overcurrent_limit_a = in_range(v, (0.0, BOARD.current_limit_a))?;
         Ok(())
     }
 
