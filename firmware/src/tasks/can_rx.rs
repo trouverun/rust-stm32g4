@@ -7,7 +7,7 @@ use crate::boards::PWM_FREQ;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
-use firmware_core::{Command, Debounced, FaultCause, OperatingMode, SafeControlStrategy};
+use firmware_core::{Command, FaultCause, OperatingMode, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
 pub async fn can_process(mut cx: app::can_process::Context<'_>) {
@@ -70,13 +70,15 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
                     candidate.set_dc_bus_limits(msg.dc_bus_v_min(), msg.dc_bus_v_max())?;
-                    candidate.set_braking_current_limit_a(msg.braking_current_limit())?;
-                    candidate.set_temp_max_c(msg.temp_max())?;
+                    candidate.set_braking_current_limits(msg.braking_current_limit(), msg.braking_current_fault())?;
                     *cfg = candidate;
-                    Ok::<(), ConfigError>(())
+                    Ok::<f32, ConfigError>(candidate.braking_current_fault_a())
                 });
                 match applied {
-                    Ok(()) => { let _ = app::persist_config::spawn(); }
+                    Ok(braking_fault) => {
+                        cx.shared.braking_current_filter.lock(|cf| cf.set_limit(braking_fault));
+                        let _ = app::persist_config::spawn();
+                    }
                     Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
                 }
             }
@@ -84,6 +86,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
                     candidate.set_setpoint_timeout_ms(msg.setpoint_timeout())?;
+                    candidate.set_temp_max_c(msg.temp_max())?;
                     *cfg = candidate;
                     Ok::<(), ConfigError>(())
                 });
@@ -103,7 +106,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 });
                 match applied {
                     Ok(overcurrent) => {
-                        cx.shared.current_filter.lock(|cf| cf.set_limits(overcurrent));
+                        cx.shared.phase_current_filter.lock(|cf| cf.set_limits(overcurrent));
                         cx.shared.pwm_output.lock(|pwm| pwm.set_comparator_current_limit(overcurrent));
                         cx.shared.motor_parameters.lock(|mp| {
                             mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
@@ -149,7 +152,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         dc_bus_v_min: cfg.dc_bus_min_voltage_v(),
                         dc_bus_v_max: cfg.dc_bus_max_voltage_v(),
                         braking_current_limit: cfg.braking_current_limit_a(),
-                        temp_max: cfg.temp_max_c(),
+                        braking_current_fault: cfg.braking_current_fault_a(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));
@@ -157,6 +160,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
 
                     let f = ProtectionLimits2Report::try_from(ProtectionLimits2ReportInit {
                         setpoint_timeout: cfg.setpoint_timeout_ms(),
+                        temp_max: cfg.temp_max_c(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));

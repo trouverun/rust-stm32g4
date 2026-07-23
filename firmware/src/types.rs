@@ -41,13 +41,14 @@ pub struct FirmwareConfig {
     ss1t_duration_ms: u16,
     ss1t_velocity_threshold: f32,
     braking_current_limit_a: f32,
+    braking_current_fault_a: f32,
 }
 
 impl Default for FirmwareConfig {
     fn default() -> Self {
         Self {
             dc_bus_min_voltage_v: 0.0,
-            dc_bus_max_voltage_v: 24.0,
+            dc_bus_max_voltage_v: 25.0,
             calibration_voltage_v: 12.0,
             calibration_current_a: 1.5,
             calibration_omega: 1.0,
@@ -59,6 +60,7 @@ impl Default for FirmwareConfig {
             ss1t_duration_ms: 500,
             ss1t_velocity_threshold: 1.0,
             braking_current_limit_a: 0.0,
+            braking_current_fault_a: 0.1,
         }
     }
 }
@@ -85,6 +87,7 @@ impl FirmwareConfig {
         temp_max_c,
         ss1t_velocity_threshold,
         braking_current_limit_a,
+        braking_current_fault_a,
     }
 
     #[inline]
@@ -178,8 +181,15 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_braking_current_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
-        self.braking_current_limit_a = in_range(v, (0.0, BOARD.current_limit_a))?;
+    /// Set as a pair so neither is validated against the other's stale value.
+    pub fn set_braking_current_limits(&mut self, limit_a: f32, fault_a: f32) -> Result<(), ConfigError> {
+        let limit_a = in_range(limit_a, (0.0, BOARD.current_limit_a))?;
+        let fault_a = in_range(fault_a, (0.0, BOARD.current_limit_a))?;
+        if fault_a < limit_a {
+            return Err(ConfigError::RangeInverted);
+        }
+        self.braking_current_limit_a = limit_a;
+        self.braking_current_fault_a = fault_a;
         Ok(())
     }
 }

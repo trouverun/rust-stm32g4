@@ -24,22 +24,22 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 false
             }
         });
-        let overcurrent = cx.shared.current_filter.lock(|cf| {
+        let overcurrent = cx.shared.phase_current_filter.lock(|cf| {
             cf.update(phase_currents);
             cf.check_overcurrent()
         });
+        let braking_limit_exceeded = cx.shared.braking_current_filter.lock(|cf| cf.exceeds_limit());
         let dc_bus_reading_v = cx.shared.board_status.lock(|bs| bs.dc_bus_voltage_v);
         let (
             calibration_voltage_v, calibration_current_a,
             calibration_omega, setpoint_timeout_ms,
-            active_current_limit_a, dc_bus_max_v,
+            active_current_limit_a, dc_bus_min_v, dc_bus_max_v,
             ss1t_duration_ms, ss1t_velocity_threshold, braking_current_limit_a,
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_omega(), cfg.setpoint_timeout_ms(),
-                cfg.rated_current_limit_a(), cfg.dc_bus_max_voltage_v(),
-                cfg.ss1t_duration_ms(), cfg.ss1t_velocity_threshold(), 
-                cfg.braking_current_limit_a())
+                cfg.rated_current_limit_a(), cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
+                cfg.ss1t_duration_ms(), cfg.ss1t_velocity_threshold(), cfg.braking_current_limit_a())
             });
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
@@ -65,9 +65,11 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             phase_currents,
             watchdog_fault,
             overcurrent,
+            braking_limit_exceeded,
             dc_bus_reading_v,
             rotor_feedback,
             hall_pattern,
+            stationary_omega_threshold: 0.1,
             calibration_voltage_v,
             calibration_current_a,
             calibration_omega,
@@ -77,6 +79,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             safety_deceleration_cutoff_omega: ss1t_velocity_threshold,
             safety_deceleration_ramp_pct_ms: 0.1,
             braking_current_limit_a,
+            dc_bus_min_v,
             dc_bus_max_v,
             tick_dt_ms: DT_MS,
         };
@@ -85,23 +88,34 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         );
 
         // Apply outputs:
-        let sector = match outcome {
-            FocStepOutcome::Normal { voltages, duty_cycles, snapshot, sector } => {
+        let (sector, braking_current) = match outcome {
+            FocStepOutcome::Normal { u_ab, u_dq, duty_cycles, snapshot, sector } => {
                 cx.shared.pwm_output.lock(|pwm| {
                     pwm.enable();
                     pwm.set_duty_cycles(duty_cycles);
                 });
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
-                *cx.local.prev_voltages = voltages;
-                sector
+                *cx.local.prev_voltages = u_ab;
+                let braking_current = if let Some(dc_v) = dc_bus_reading_v {
+                    if dc_v > dc_bus_min_v {
+                        -1.5 * (u_dq.d * snapshot.id_meas_a + u_dq.q * snapshot.iq_meas_a) / dc_v
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                (sector, braking_current)
             }
             FocStepOutcome::NonConducting => {  
                 cx.shared.pwm_output.lock(|pwm| pwm.disable());
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
                 *cx.local.prev_voltages = AlphaBeta { alpha: 0.0, beta: 0.0 };
-                0
+                (0, 0.0)
             }
         };
+
+        cx.shared.braking_current_filter.lock(|cf| cf.update(braking_current));
 
         // Do flash writes and tuning outside this ISR:
         match stage_result {
