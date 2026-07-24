@@ -102,7 +102,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     candidate.set_rated_current_limit_a(msg.rated_current_limit())?;
                     candidate.set_momentary_current_limit_a(msg.momentary_current_limit())?;
                     candidate.set_overcurrent_limit_a(msg.overcurrent_limit())?;
-                    candidate.set_rotor_speed_limit_mech_rpm(msg.rotor_speed_limit_mech());
+                    candidate.set_rotor_speed_limit_mech_rpm(msg.rotor_speed_limit_mech())?;
                     *cfg = candidate;
                     Ok::<f32, ConfigError>(candidate.overcurrent_limit_a())
                 });
