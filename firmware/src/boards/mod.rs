@@ -49,6 +49,7 @@ pub struct BoardInfo {
     pub vbus_divide_factor: f32,
     pub thermistor_scaling: ThermistorLinearScale,
     pub current_limit_a: f32,
+    pub dc_voltage_limit_v: f32,
     pub mosfet_deadtime_ns: u32,
     pub mosfet_on_delay_ns: u32,
     pub mosfet_off_delay_ns: u32,

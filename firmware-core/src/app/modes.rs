@@ -14,7 +14,7 @@ pub struct FocGate {
 #[derive(Clone, Copy, defmt::Format)]
 pub enum Command {
     Idle { safe_strategy: SafeControlStrategy },
-    StartCalibration { num_pole_pairs: u8, dt_s: f32 },
+    StartCalibration { num_pole_pairs: u8, max_rotor_rpm_mech: f32, dt_s: f32 },
     ResumeCalibration,
     FinishCalibration,
     CancelCalibration,
@@ -75,8 +75,8 @@ impl OperatingMode {
                 trace[0] = cause;
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
-            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, dt_s}) => {
-                OperatingMode::Calibration { calibrator: CalibrationRunner::new(num_pole_pairs, dt_s) }
+            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, dt_s }) => {
+                OperatingMode::Calibration { calibrator: CalibrationRunner::new(num_pole_pairs, max_rotor_rpm_mech, dt_s) }
             }
             (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {

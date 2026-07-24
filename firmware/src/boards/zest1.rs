@@ -28,6 +28,7 @@ use embassy_stm32::timer::{
 use embassy_stm32::can::CanConfigurator;
 
 use crate::boards::encoder_mappings;
+use crate::constants::DAC_REF_V;
 
 // Adc feedback:
 pub type OpAmpU = OPAMP3;
@@ -69,6 +70,7 @@ pub const BOARD: super::BoardInfo = super::BoardInfo {
         bias_c: 23.6,
     },
     current_limit_a: 5.0,
+    dc_voltage_limit_v: 25.5,
     mosfet_deadtime_ns: 300,
     mosfet_on_delay_ns: 15,
     mosfet_off_delay_ns: 24,
@@ -146,7 +148,7 @@ pub fn map_peripherals() -> (
 
     let pwm = super::PwmOutputMappings {
         comparators: super::CurrentComparators {
-            dac_dual: Dac::new_internal_blocking(p.DAC4, 3.3),
+            dac_dual: Dac::new_internal_blocking(p.DAC4, DAC_REF_V),
             comp_u: Comp::new(
                 p.COMP6,
                 Comp6InpSel::PD11,

@@ -1,7 +1,13 @@
+use core::f32::consts::PI;
+
 use field_oriented::{
     AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibration, HallCalibrationFault,
     HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig,
     OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
+};
+use crate::{
+    HALL_ALIGN_DURATION_S, HALL_CALIBRATION_TIMEOUT_S, MOTOR_ESTIMATOR_SETTLING_DURATION_S,
+    MOTOR_ESTIMATION_SINGLE_TEST_DURATION_S, MOTOR_ESTIMATION_SPINUP_DURATION_S
 };
 
 pub struct CalibrationInputs {
@@ -53,25 +59,26 @@ pub struct CalibrationConfig {
     pub dt_s: f32,
     pub encoder_zero_request_s: f32,
     pub encoder_zero_timeout_s: f32,
-    pub hall_settle_s: f32,
+    pub hall_align_s: f32,
     pub hall_timeout_s: f32,
     pub estimator: OfflineEstimatorConfig,
 }
 
 impl CalibrationConfig {
-    pub fn new(dt_s: f32) -> Self {
+    pub fn new(max_rotor_mech_rpm: f32, dt_s: f32) -> Self {
         Self {
             dt_s,
             encoder_zero_request_s: 3.0,
             encoder_zero_timeout_s: 5.0,
-            hall_settle_s: 3.0,
-            hall_timeout_s: 30.0,
+            hall_align_s: HALL_ALIGN_DURATION_S,
+            hall_timeout_s: HALL_CALIBRATION_TIMEOUT_S,
             estimator: OfflineEstimatorConfig {
                 dt_s,
-                settle_time_s: 3.0,
-                test_time_s: 5.0,
-                max_spin_time_s: 15.0,
-                min_spin_omega: 250.0,
+                settle_time_s: MOTOR_ESTIMATOR_SETTLING_DURATION_S,
+                test_time_s: MOTOR_ESTIMATION_SINGLE_TEST_DURATION_S,
+                max_spin_time_s: MOTOR_ESTIMATION_SPINUP_DURATION_S,
+                // 75% of the max mechanical rotor RPM to ensure good back-EMF
+                min_spin_omega_mech: 0.75 * (PI / 30.0 * max_rotor_mech_rpm),
             },
         }
     }
@@ -98,9 +105,9 @@ impl StageResult {
 }
 
 impl CalibrationRunner {
-    pub fn new(num_pole_pairs: u8, dt_s: f32) -> Self {
-        let config = CalibrationConfig::new(dt_s);
-        let hall_calibrator = HallCalibrator::new(config.hall_settle_s, dt_s);
+    pub fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, dt_s: f32) -> Self {
+        let config = CalibrationConfig::new(max_rotor_mech_rpm, dt_s);
+        let hall_calibrator = HallCalibrator::new(config.hall_align_s, dt_s);
         let motor_estimator = OfflineMotorEstimator::new(config.estimator, num_pole_pairs);
         Self {
             num_pole_pairs,

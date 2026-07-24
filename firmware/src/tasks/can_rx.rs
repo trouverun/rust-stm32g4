@@ -30,8 +30,9 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     },
                     OperatingModeRequestRequestedMode::Calibration => {
                         const DT_S: f32 = 1.0 / PWM_FREQ.0 as f32;
+                        let max_rotor_rpm_mech = cx.shared.config.lock(|cfg| cfg.rotor_speed_limit_mech_rpm()) as f32;
                         match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
-                            Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs, dt_s: DT_S },
+                            Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, dt_s: DT_S },
                             None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
                         }
                     }
@@ -79,7 +80,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         cx.shared.braking_current_filter.lock(|cf| cf.set_limit(braking_fault));
                         let _ = app::persist_config::spawn();
                     }
-                    Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    Err(_) => {},
                 }
             }
             Ok(Messages::ProtectionLimits2(msg)) => {
@@ -92,7 +93,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 });
                 match applied {
                     Ok(()) => { let _ = app::persist_config::spawn(); }
-                    Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    Err(_) => {},
                 }
             }
             Ok(Messages::MotorConfig(msg)) => {
@@ -101,6 +102,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     candidate.set_rated_current_limit_a(msg.rated_current_limit())?;
                     candidate.set_momentary_current_limit_a(msg.momentary_current_limit())?;
                     candidate.set_overcurrent_limit_a(msg.overcurrent_limit())?;
+                    candidate.set_rotor_speed_limit_mech_rpm(msg.rotor_speed_limit_mech());
                     *cfg = candidate;
                     Ok::<f32, ConfigError>(candidate.overcurrent_limit_a())
                 });
@@ -113,7 +115,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         });
                         let _ = app::persist_config::spawn();
                     }
-                    Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    Err(_) => {},
                 }
             }
             Ok(Messages::CalibrationTargets(msg)) => {
@@ -127,7 +129,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 });
                 match applied {
                     Ok(()) => { let _ = app::persist_config::spawn(); }
-                    Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    Err(_) => {},
                 }
             }
             Ok(Messages::SafeStopConfig(msg)) => {
@@ -140,7 +142,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 });
                 match applied {
                     Ok(()) => { let _ = app::persist_config::spawn(); }
-                    Err(_) => cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::ConfigOutOfRange })),
+                    Err(_) => {},
                 }
             }
             Ok(Messages::ConfigQuery(msg)) => {
@@ -171,6 +173,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     let num_pole_pairs = cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs);
                     let f = MotorConfigReport::try_from(MotorConfigReportInit {
                         num_pole_pairs: num_pole_pairs.unwrap_or(0),
+                        rotor_speed_limit_mech: cfg.rotor_speed_limit_mech_rpm(),
                         momentary_current_limit: cfg.momentary_current_limit_a(),
                         rated_current_limit: cfg.rated_current_limit_a(),
                         overcurrent_limit: cfg.overcurrent_limit_a(),

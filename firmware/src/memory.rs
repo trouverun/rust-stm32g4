@@ -13,7 +13,7 @@ pub trait Stored: serde::Serialize + serde::de::DeserializeOwned {
     const VERSION: u16;
 }
 
-impl Stored for FirmwareConfig       { const SECTOR: usize = 3; const VERSION: u16 = 8; }
+impl Stored for FirmwareConfig       { const SECTOR: usize = 3; const VERSION: u16 = 9; }
 impl Stored for HallCalibration      { const SECTOR: usize = 2; const VERSION: u16 = 1; } // hall sensor calibrations
 impl Stored for MotorParamsEstimate  { const SECTOR: usize = 1; const VERSION: u16 = 1; }
 impl Stored for ControllerParameters { const SECTOR: usize = 0; const VERSION: u16 = 1; }
