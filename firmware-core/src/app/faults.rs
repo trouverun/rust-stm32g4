@@ -19,8 +19,6 @@ pub enum FaultCause {
     MemoryTooLarge,
     ConfigOutOfRange,
 
-    MissingMotorParams,
-    MissingControllerGains,
     CalibrationTimeout,    
     HallEdgeDisagreement,
 
@@ -33,9 +31,12 @@ pub enum FaultCause {
     TuningInfeasibleParameters,
     TuningMissingMotorParams,
 
+    MissingMotorParams,
+    MissingControllerGains,
     InvalidRotorFeedback,
-    RealtimeViolated,
     ControllerNumericalError,
+    RealtimeViolated,
+    
     CANMessageIntegrity,
     SetpointTimeout,
 }
