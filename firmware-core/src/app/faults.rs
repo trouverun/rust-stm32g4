@@ -10,6 +10,7 @@ pub enum FaultCause {
     DcUnderVoltage,
     DcOverVoltage,
     RegenLimitExceeded,
+    Overspeed,
     Break1,
     Break2,
     WatchdogReboot,
