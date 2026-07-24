@@ -4,9 +4,14 @@ use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
 use defmt::info;
 
 use crate::app;
-use crate::boards::{BOARD_SAMPLE_FREQ, PWM_FREQ};
+use crate::boards::{PWM_FREQ};
+use crate::constants::{
+    PI_STABILITY_GRID_CHECKS, BOARD_MEASUREMENT_DEBOUNCE_TICKS, 
+    SAFETY_DECEL_RAMP_PER_MS, PI_OVERSHOOT_PCT, PI_SETTLING_TIME_S,
+    BRAKE_LIMIT_STATIONARY_THRESHOLD_MECH_OMEGA
+};
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
-use field_oriented::{AlphaBeta, HallCalibration, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput, compute_current_pi_controller_gains};
+use field_oriented::{AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput, compute_current_pi_controller_gains};
 
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
@@ -33,13 +38,15 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let (
             calibration_voltage_v, calibration_current_a,
             calibration_omega, setpoint_timeout_ms,
-            active_current_limit_a, dc_bus_min_v, dc_bus_max_v,
-            ss1t_duration_ms, ss1t_velocity_threshold, braking_current_limit_a,
+            active_current_limit_a, dc_bus_min_v, 
+            dc_bus_max_v, ss1t_duration_ms, 
+            ss1t_velocity_threshold, braking_current_limit_a,
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_omega(), cfg.setpoint_timeout_ms(),
-                cfg.rated_current_limit_a(), cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
-                cfg.ss1t_duration_ms(), cfg.ss1t_velocity_threshold(), cfg.braking_current_limit_a())
+                cfg.rated_current_limit_a(), cfg.dc_bus_min_voltage_v(), 
+                cfg.dc_bus_max_voltage_v(), cfg.ss1t_duration_ms(), 
+                cfg.ss1t_velocity_threshold(), cfg.braking_current_limit_a())
             });
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
@@ -50,7 +57,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
         let sensorless_input = OrtegaPralyEstimatorInput {
             currents: phase_currents,
-            voltages: *cx.local.prev_voltages,
+            voltages: *cx.local.prev_u_ab,
             params,
             dt_s: DT_S,
         };
@@ -69,7 +76,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             dc_bus_reading_v,
             rotor_feedback,
             hall_pattern,
-            stationary_omega_threshold: 0.1,
+            stationary_omega_threshold: BRAKE_LIMIT_STATIONARY_THRESHOLD_MECH_OMEGA,
             calibration_voltage_v,
             calibration_current_a,
             calibration_omega,
@@ -77,7 +84,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             active_current_limit_a,
             safety_deceleration_duration_ms: ss1t_duration_ms as f32,
             safety_deceleration_cutoff_omega: ss1t_velocity_threshold,
-            safety_deceleration_ramp_pct_ms: 0.1,
+            safety_deceleration_ramp_per_ms: SAFETY_DECEL_RAMP_PER_MS,
             braking_current_limit_a,
             dc_bus_min_v,
             dc_bus_max_v,
@@ -95,22 +102,24 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                     pwm.set_duty_cycles(duty_cycles);
                 });
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
-                *cx.local.prev_voltages = u_ab;
+                *cx.local.prev_u_ab = u_ab;
                 let braking_current = if let Some(dc_v) = dc_bus_reading_v {
                     if dc_v > dc_bus_min_v {
-                        -1.5 * (u_dq.d * snapshot.id_meas_a + u_dq.q * snapshot.iq_meas_a) / dc_v
+                        -1.5 * (cx.local.prev_u_dq.d * snapshot.id_meas_a + cx.local.prev_u_dq.q * snapshot.iq_meas_a) / dc_v
                     } else {
                         0.0
                     }
                 } else {
                     0.0
                 };
+                *cx.local.prev_u_dq = u_dq;
                 (sector, braking_current)
             }
             FocStepOutcome::NonConducting => {  
                 cx.shared.pwm_output.lock(|pwm| pwm.disable());
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
-                *cx.local.prev_voltages = AlphaBeta { alpha: 0.0, beta: 0.0 };
+                *cx.local.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
+                *cx.local.prev_u_dq = ClarkParkValue { d: 0.0, q: 0.0 };
                 (0, 0.0)
             }
         };
@@ -148,17 +157,15 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let (min_dc, max_dc, max_temp) = cx.shared.config.lock(|cfg| {
             (cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(), cfg.temp_max_c())
         });
-        // 500 ms of board samples
-        const DEBOUNCE_TICKS: u32 = BOARD_SAMPLE_FREQ.0 / 2;
         cx.shared.mode.lock(|mode| {
-            cx.local.dc_undervolt.update(vbus < min_dc, DEBOUNCE_TICKS);
-            cx.local.dc_overvolt.update(vbus > max_dc, DEBOUNCE_TICKS);
+            cx.local.dc_undervolt.update(vbus < min_dc, BOARD_MEASUREMENT_DEBOUNCE_TICKS);
+            cx.local.dc_overvolt.update(vbus > max_dc, BOARD_MEASUREMENT_DEBOUNCE_TICKS);
             if cx.local.dc_undervolt.state() {
                 mode.on_command(Command::AssertFault { cause: FaultCause::DcUnderVoltage });
             } else if cx.local.dc_overvolt.state() {
                 mode.on_command(Command::AssertFault { cause: FaultCause::DcOverVoltage });
             }
-            cx.local.board_overtemp.update(tboard > max_temp, DEBOUNCE_TICKS);
+            cx.local.board_overtemp.update(tboard > max_temp, BOARD_MEASUREMENT_DEBOUNCE_TICKS);
             if cx.local.board_overtemp.state() {
                 mode.on_command(Command::AssertFault { cause: FaultCause::Overtemperature });
             }
@@ -205,8 +212,8 @@ pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angl
 }
 
 pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEstimate) {
-    let result = compute_current_pi_controller_gains::<100>(
-        estimate, PWM_FREQ.0 as f32, 1.0, 0.001
+    let result = compute_current_pi_controller_gains::<PI_STABILITY_GRID_CHECKS>(
+        estimate, PWM_FREQ.0 as f32, PI_OVERSHOOT_PCT, PI_SETTLING_TIME_S
     );
     info!("PI gains {}", result);
     match result {

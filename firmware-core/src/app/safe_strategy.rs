@@ -1,5 +1,6 @@
 use field_oriented::{FocInputType, BangBangBrake, BangBangBrakeStepInput};
 use crate::{FaultCause, Debounced};
+use crate::constants::{STO_ASC_DEBOUNCE_TICKS, STO_DC_BUS_RATIO, ASC_DC_BUS_RATIO, RAMPDOWN_DURATION_MS};
 
 pub enum SafeCommand {
     NonConducting,
@@ -14,7 +15,7 @@ pub struct SafeControlStrategyInput {
     pub max_braking_torque: f32,
     pub deceleration_duration_ms: f32,
     pub deceleration_cutoff_omega: f32,
-    pub deceleration_ramp_pct_ms: f32,
+    pub deceleration_ramp_per_ms: f32,
     pub tick_dt_ms: f32,
 }
 
@@ -39,8 +40,8 @@ impl SafeControlStrategy {
         match self {
             SafeControlStrategy::RampDown { waited_ms } => {
                 *waited_ms += input.tick_dt_ms;
-                if *waited_ms >= 50.0 {
-                    if input.dc_bus_max_v > 1.025*input.dc_bus_max_v {
+                if *waited_ms >= RAMPDOWN_DURATION_MS {
+                    if input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v {
                         *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
                     } else {
                         *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) };
@@ -48,13 +49,13 @@ impl SafeControlStrategy {
                 }
             }
             SafeControlStrategy::STO { should_switch } => {
-                should_switch.update(input.dc_bus_v > 1.025*input.dc_bus_max_v, 10);
+                should_switch.update(input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v, STO_ASC_DEBOUNCE_TICKS);
                 if should_switch.state() {
                     *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
                 }
             }
             SafeControlStrategy::ASC { should_switch } => {
-                should_switch.update(input.dc_bus_v <= input.dc_bus_max_v, 10);
+                should_switch.update(input.dc_bus_v < STO_DC_BUS_RATIO*input.dc_bus_max_v, STO_ASC_DEBOUNCE_TICKS);
                 if should_switch.state() {
                     *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) } ;
                 }
@@ -65,13 +66,13 @@ impl SafeControlStrategy {
                     max_duration_ms: input.deceleration_duration_ms,
                     omega_cutoff: input.deceleration_cutoff_omega,
                     max_braking_torque: input.max_braking_torque,
-                    torque_ramp_pct_ms: input.deceleration_ramp_pct_ms,
+                    torque_ramp_per_ms: input.deceleration_ramp_per_ms,
                     dt_ms: input.tick_dt_ms,
                 };
                 let brake_done = brake.tick(braking_input);
-                done.update(brake_done, 10);
+                done.update(brake_done, STO_ASC_DEBOUNCE_TICKS);
                 if done.state() {
-                    if input.dc_bus_max_v > 1.025*input.dc_bus_max_v {
+                    if input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v {
                         *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
                     } else {
                         *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) };
@@ -83,7 +84,7 @@ impl SafeControlStrategy {
 
         // Compute output
         match self {
-            SafeControlStrategy::RampDown { waited_ms } => {
+            SafeControlStrategy::RampDown { .. } => {
                 SafeCommand::FOC(FocInputType::TargetTorque(0.0))
             }
             SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf => SafeCommand::NonConducting,
@@ -110,7 +111,9 @@ impl SafeControlStrategy {
 impl From<FaultCause> for SafeControlStrategy {
     fn from(value: FaultCause) -> Self {
         match value {
-            FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent => SafeControlStrategy::STO { should_switch: Debounced::new(false) },
+            FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent | FaultCause::RegenLimitExceeded => SafeControlStrategy::STO { should_switch: Debounced::new(false) },
+            FaultCause::DcOverVoltage => SafeControlStrategy::ASC { should_switch: Debounced::new(false) },
+            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout => SafeControlStrategy::RampDown { waited_ms: 0.0 },
             _ => SafeControlStrategy::STO { should_switch: Debounced::new(false) }
         }
     }

@@ -3,6 +3,8 @@ use crate::app::MemoryFault;
 /// Scratch-buffer size, in **bytes**, for one record (4-byte header + postcard payload + 4-byte CRC).
 /// The flash side must ensure this is a multiple of the write granularity and fits within a sector.
 pub const MAX_RECORD_BYTES: usize = 64;
+const HEADER_BYTES: usize = 4;
+const CRC_BYTES: usize = 4;
 
 const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 
@@ -13,14 +15,15 @@ const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 pub fn encode_record<T: serde::Serialize>(
     value: &T, version: u16, buf: &mut [u8; MAX_RECORD_BYTES]
 ) -> Result<usize, MemoryFault> {
-    let used = postcard::to_slice(value, &mut buf[4..MAX_RECORD_BYTES - 4])
+    let used = postcard::to_slice(value, &mut buf[HEADER_BYTES..MAX_RECORD_BYTES - CRC_BYTES])
         .map_err(|_| MemoryFault::TooLarge)?
         .len();
     buf[0..2].copy_from_slice(&version.to_le_bytes());
     buf[2..4].copy_from_slice(&(used as u16).to_le_bytes());
-    let crc = CRC32.checksum(&buf[..4 + used]);
-    buf[4 + used..4 + used + 4].copy_from_slice(&crc.to_le_bytes());
-    Ok(4 + used + 4)
+    let crc_at = HEADER_BYTES + used;
+    let crc = CRC32.checksum(&buf[..crc_at]);
+    buf[crc_at..crc_at + CRC_BYTES].copy_from_slice(&crc.to_le_bytes());
+    Ok(crc_at + CRC_BYTES)
 }
 
 /// Decodes one record from `buf`.
@@ -35,15 +38,16 @@ pub fn decode_record<T: serde::de::DeserializeOwned>(
     }
     let stored_version = u16::from_le_bytes(buf[0..2].try_into().unwrap());
     let len = u16::from_le_bytes(buf[2..4].try_into().unwrap()) as usize;
-    let crc_bytes = buf.get(4 + len..4 + len + 4).ok_or(MemoryFault::CorruptedData)?;
+    let crc_at = HEADER_BYTES + len;
+    let crc_bytes = buf.get(crc_at..crc_at + CRC_BYTES).ok_or(MemoryFault::CorruptedData)?;
     let stored_crc = u32::from_le_bytes(crc_bytes.try_into().unwrap());
-    if CRC32.checksum(&buf[..4 + len]) != stored_crc {
+    if CRC32.checksum(&buf[..crc_at]) != stored_crc {
         return Err(MemoryFault::CorruptedData);
     }
     if stored_version != version {
         return Ok(None); // valid record from another layout version
     }
-    let (value, rest) = postcard::take_from_bytes::<T>(&buf[4..4 + len])
+    let (value, rest) = postcard::take_from_bytes::<T>(&buf[HEADER_BYTES..crc_at])
         .map_err(|_| MemoryFault::CorruptedData)?;
     if !rest.is_empty() {
         return Err(MemoryFault::CorruptedData);

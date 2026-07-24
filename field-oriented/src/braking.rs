@@ -9,7 +9,7 @@ pub struct BangBangBrakeStepInput {
     pub max_duration_ms: f32,
     pub omega_cutoff: f32,
     pub max_braking_torque: f32,
-    pub torque_ramp_pct_ms: f32,
+    pub torque_ramp_per_ms: f32,
     pub dt_ms: f32,
 }
 
@@ -27,7 +27,7 @@ impl BangBangBrake {
         let torque_pct = if input.omega.abs() < input.omega_cutoff {
             0.0
         } else {
-            (self.time_passed_ms * input.torque_ramp_pct_ms).clamp(0.0, 1.0)
+            (self.time_passed_ms * input.torque_ramp_per_ms).clamp(0.0, 1.0)
         };
         self.braking_torque = -input.omega.signum() * torque_pct * input.max_braking_torque;
 
@@ -118,7 +118,7 @@ mod tests {
                 max_duration_ms,
                 omega_cutoff,
                 max_braking_torque,
-                torque_ramp_pct_ms: 0.2,
+                torque_ramp_per_ms: 0.2,
                 dt_ms: dt * 1000.0,
             });
             let demand = brake.torque_demand().abs();
@@ -205,7 +205,7 @@ mod tests {
                 max_duration_ms,
                 omega_cutoff,
                 max_braking_torque,
-                torque_ramp_pct_ms: 0.2,
+                torque_ramp_per_ms: 0.2,
                 dt_ms: dt * 1000.0,
             });
             assert!(brake.torque_demand().abs() <= max_braking_torque, "brake demand exceeded max torque");

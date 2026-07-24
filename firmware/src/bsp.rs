@@ -19,6 +19,7 @@ use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
 use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin, Sqrt, SqrtScale};
 
 use crate::boards::*;
+use crate::constants::{ADC_REF_V, OPAMP_CALIBRATION_SAMPLE_COUNT};
 use crate::memory::{sector_offset, Stored, SECTOR_SIZE};
 use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES};
 use embassy_stm32::adc::{
@@ -38,10 +39,9 @@ use field_oriented::{
     HallCalibration, HallEstimator, HallEstimatorInput, LowPassFilter, wrap_to_pi
 };
 
-const ADC_VOLTAGE: f32 = 3.3;
 const OPAMP_GAIN_RECIPROCAL: f32 = 1.0 / BOARD.opamp_gain;
 const SHUNT_CONDUCTANCE_SIEMENS: f32 = 1000.0 / BOARD.shunt_resistance_mohm;
-const ADC_SCALER: f32 = ADC_VOLTAGE / ((1 << 12) - 1) as f32;
+const ADC_SCALER: f32 = ADC_REF_V / ((1 << 12) - 1) as f32;
 const CURRENT_READING_SCALER: f32 = -ADC_SCALER * OPAMP_GAIN_RECIPROCAL * SHUNT_CONDUCTANCE_SIEMENS;
 const VBUS_READING_SCLAER: f32 = ADC_SCALER * BOARD.vbus_divide_factor;
 const TBOARD_READING_SCLAER: f32 = ADC_SCALER * BOARD.thermistor_scaling.slope_c_per_v;
@@ -158,8 +158,8 @@ impl AdcFeedback {
             FEEDBACK_TRIGGER_B,
             Exten::RISING_EDGE,
         );
-        for i in 0..200 {
-            if i < 100 {
+        for i in 0..2*OPAMP_CALIBRATION_SAMPLE_COUNT {
+            if i < OPAMP_CALIBRATION_SAMPLE_COUNT {
                 val_u += self.adc_a.read_injected::<1>()[0] as i32;
                 val_vb += self.adc_b.read_injected::<1>()[0] as i32;
                 self.adc_a.insert_injected_context(
@@ -187,10 +187,10 @@ impl AdcFeedback {
                 );
             }
         }
-        let offset_u = -(val_u / 100) as i16;
-        let offset_va = -(val_va / 100) as i16;
-        let offset_vb = -(val_vb / 100) as i16;
-        let offset_w = -(val_w / 100) as i16;
+        let offset_u = -(val_u / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
+        let offset_va = -(val_va / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
+        let offset_vb = -(val_vb / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
+        let offset_w = -(val_w / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
         let tmp_a = self.adc_a
             .stop()
             .using_offsets(&[

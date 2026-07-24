@@ -7,6 +7,7 @@ use servo_firmware as _;
 mod boards;
 mod bsp;
 mod can;
+mod constants;
 mod memory;
 mod tasks;
 mod types;
@@ -23,6 +24,12 @@ mod app {
     use embassy_stm32::{peripherals::TIM2, rcc};
     use rtic_monotonics::stm32::Tim2 as Mono;
 
+    use crate::constants::{
+        CAN_BIT_RATE, HALL_ASYNC_SAMPLE_RATE_HZ, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ, FOC_ISR_WATCHDOG_SLACK_FACTOR,
+        PHASE_CURRENT_FILTER_LOWPASS_CUTOFF_HZ, BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ,
+        SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA, ORTEGA_PRALY_GAIN, ORTEGA_PRALY_BANDWIDTH,
+        TORQUE_SETPOINT_FAULT_FILL_RATE, TORQUE_SETPOINT_FAULT_DRAIN_RATE, TORQUE_SETPOINT_FAULT_CAPACITY
+    };
     use crate::boards::*;
     use crate::bsp::{
         self, Acceleration, AdcFeedback, AmtEncoder, CanBus, HallFeedback, Memory,
@@ -34,9 +41,8 @@ mod app {
     };
     use crate::types::*;
     use field_oriented::{
-        AlphaBeta, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, 
-        FeedbackArbitrator, FocConfig, HallCalibration, HasRotorFeedback, MotorParamsEstimate, 
-        OrtegaPralyEstimator, PhaseCurrentFilter
+        AlphaBeta, ClarkParkValue, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator, 
+        FocConfig, HallCalibration, HasRotorFeedback, MotorParamsEstimate, OrtegaPralyEstimator, PhaseCurrentFilter
     };
     use crate::tasks::*;
 
@@ -71,8 +77,6 @@ mod app {
 
     #[init]
     fn init(_cx: init::Context) -> (Shared, Local) {
-        info!("init");
-
         let (
             adc_mappings,
             hall_mappings,
@@ -91,7 +95,9 @@ mod app {
         pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
         let mut adc_feedback = bsp::AdcFeedback::new(adc_mappings);
         adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
-        let mut hall_feedback = bsp::HallFeedback::new(hall_mappings, 10_000, 1000.0);
+        let mut hall_feedback = bsp::HallFeedback::new(
+            hall_mappings, HALL_ASYNC_SAMPLE_RATE_HZ, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
+        );
         let amt_encoder = bsp::AmtEncoder::new(encoder_mappings, 1000.0);
         let acceleration = bsp::Acceleration::new(accel_mappings);
         let mut memory = bsp::Memory::new(memory_mappings);
@@ -113,11 +119,11 @@ mod app {
         pwm_output.set_comparator_current_limit(config.overcurrent_limit_a());
 
         let phase_current_filter = PhaseCurrentFilter::new(
-            PWM_FREQ.0 as f32, 2500.0,
+            PWM_FREQ.0 as f32, PHASE_CURRENT_FILTER_LOWPASS_CUTOFF_HZ,
             config.overcurrent_limit_a()
         );
         let braking_current_filter = CurrentFilter::new(
-            PWM_FREQ.0 as f32, 50.0,
+            PWM_FREQ.0 as f32, BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ,
             config.braking_current_fault_a()
         );
         let foc_cfg = FocConfig {
@@ -151,7 +157,7 @@ mod app {
         }
 
         // Start CAN interface:
-        let can = bsp::CanBus::new(can_mappings, 1_000_000);
+        let can = bsp::CanBus::new(can_mappings, CAN_BIT_RATE);
         let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
         Mono::start(rcc::frequency::<TIM2>().0, token);
         can_tx_task::spawn().unwrap();
@@ -172,19 +178,19 @@ mod app {
             motor_parameters,
             debug_mappings,
             current_loop_snapshot: CurrentLoopSnapshot::default(),
-            feedback_arbitrator: FeedbackArbitrator::new(),
+            feedback_arbitrator: FeedbackArbitrator::new(SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA),
             phase_current_filter,
             braking_current_filter,
             software_watchdog: SoftwareWatchdog::new(
                 watchdog_mappings.timer,
-                Hertz((0.95*PWM_FREQ.0 as f32) as u32)
+                Hertz((FOC_ISR_WATCHDOG_SLACK_FACTOR*PWM_FREQ.0 as f32) as u32)
             ),
             can,
         },
         Local {
             adc_feedback,
             acceleration,
-            sensorless_estimator: OrtegaPralyEstimator::new(1000.0, 1500.0),
+            sensorless_estimator: OrtegaPralyEstimator::new(ORTEGA_PRALY_GAIN, ORTEGA_PRALY_BANDWIDTH),
             hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
         })
     }
@@ -255,11 +261,12 @@ mod app {
             priority = 6, binds = ADC3,
             local = [
                 adc_feedback, acceleration, hardware_watchdog,
+                prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
+                prev_u_dq: ClarkParkValue = ClarkParkValue { d: 0.0, q: 0.0 },
                 board_overtemp: Debounced = Debounced::new(false),
                 dc_undervolt: Debounced = Debounced::new(false),
                 dc_overvolt: Debounced = Debounced::new(false),
                 sensorless_estimator,
-                prev_voltages: AlphaBeta = AlphaBeta {alpha: 0.0, beta: 0.0},
             ],
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator,
@@ -294,7 +301,11 @@ mod app {
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
                 mode_request_integrity: FrameIntegrity = FrameIntegrity::new(),
-                setpoint_fault: LeakyBucket = LeakyBucket::new(2, 1, 3)
+                setpoint_fault: LeakyBucket = LeakyBucket::new(
+                    TORQUE_SETPOINT_FAULT_FILL_RATE, 
+                    TORQUE_SETPOINT_FAULT_DRAIN_RATE, 
+                    TORQUE_SETPOINT_FAULT_CAPACITY
+                )
             ]
         )]
         async fn can_process(_: can_process::Context);

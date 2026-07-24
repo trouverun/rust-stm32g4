@@ -4,16 +4,18 @@ pub struct FeedbackArbitrator {
     hall_feedback: Option<Result<RotorFeedback, RotorFeedbackFault>>,
     encoder_feedback: Option<Result<RotorFeedback, RotorFeedbackFault>>,
     sensorless_feedback: Option<Result<RotorFeedback, RotorFeedbackFault>>,
-    hall_pattern: u8
+    hall_pattern: u8,
+    min_sensorless_omega: f32
 }
 
 impl FeedbackArbitrator {
-    pub fn new() -> Self {
+    pub fn new(min_sensorless_omega: f32) -> Self {
         Self {
             hall_feedback: None,
             encoder_feedback: None,
             sensorless_feedback: None,
-            hall_pattern: 0
+            hall_pattern: 0,
+            min_sensorless_omega
         }
     }
     pub fn update_hall(&mut self, result: Result<RotorFeedback, RotorFeedbackFault>, pattern: u8) {
@@ -57,7 +59,7 @@ impl HasRotorFeedback for FeedbackArbitrator {
         }*/
         if let Some(hall_feedback) = self.hall_feedback {
             if let Ok(values) = hall_feedback {
-                if values.omega.abs() > 150.0 {
+                if values.omega.abs() > self.min_sensorless_omega {
                     if let Some(sensorless_feedback) = self.sensorless_feedback {
                         if sensorless_feedback.is_ok() {
                             return sensorless_feedback

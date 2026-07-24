@@ -37,7 +37,7 @@ pub struct FocStepInputs {
 
     pub safety_deceleration_duration_ms: f32,
     pub safety_deceleration_cutoff_omega: f32,
-    pub safety_deceleration_ramp_pct_ms: f32,
+    pub safety_deceleration_ramp_per_ms: f32,
     pub braking_current_limit_a: f32,
     pub dc_bus_min_v: f32,
     pub dc_bus_max_v: f32,
@@ -110,7 +110,7 @@ pub fn foc_step<A>(
             max_braking_torque,
             deceleration_duration_ms: inputs.safety_deceleration_duration_ms,
             deceleration_cutoff_omega: inputs.safety_deceleration_cutoff_omega,
-            deceleration_ramp_pct_ms: inputs.safety_deceleration_ramp_pct_ms,
+            deceleration_ramp_per_ms: inputs.safety_deceleration_ramp_per_ms,
             tick_dt_ms: inputs.tick_dt_ms,
         };
         let safe_command = safe_strategy.foc_tick(safety_input);
