@@ -103,11 +103,11 @@ impl FirmwareConfig {
 
     /// Enforce calibration_current <= current_limit <= rated_current.
     fn clamp_current_hierarchy(&mut self) {
-        if self.momentary_current_limit_a > self.rated_current_limit_a {
-            self.momentary_current_limit_a = self.rated_current_limit_a;
+        if self.rated_current_limit_a > self.momentary_current_limit_a {
+            self.rated_current_limit_a = self.momentary_current_limit_a;
         }
-        if self.calibration_current_a > self.momentary_current_limit_a {
-            self.calibration_current_a = self.momentary_current_limit_a;
+        if self.calibration_current_a > self.rated_current_limit_a {
+            self.calibration_current_a = self.rated_current_limit_a;
         }
     }
 
@@ -157,8 +157,12 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_rotor_speed_limit_mech_rpm(&mut self, v: u16) {
+    pub fn set_rotor_speed_limit_mech_rpm(&mut self, v: u16) -> Result<(), ConfigError> {
+        if v <= 0 {
+            return Err(ConfigError::OutOfRange);
+        }
         self.rotor_speed_limit_mech_rpm = v;
+        Ok(())
     }
 
     pub fn set_setpoint_timeout_ms(&mut self, v: u16) -> Result<(), ConfigError> {

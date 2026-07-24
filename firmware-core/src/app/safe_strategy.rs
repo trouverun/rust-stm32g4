@@ -113,7 +113,7 @@ impl From<FaultCause> for SafeControlStrategy {
         match value {
             FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent | FaultCause::RegenLimitExceeded => SafeControlStrategy::STO { should_switch: Debounced::new(false) },
             FaultCause::DcOverVoltage => SafeControlStrategy::ASC { should_switch: Debounced::new(false) },
-            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout => SafeControlStrategy::RampDown { waited_ms: 0.0 },
+            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0 },
             _ => SafeControlStrategy::STO { should_switch: Debounced::new(false) }
         }
     }

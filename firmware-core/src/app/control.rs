@@ -1,3 +1,5 @@
+use core::f32::consts::PI;
+
 use crate::FocStepOutcome::NonConducting;
 use crate::SafeControlStrategy;
 use crate::app::safe_strategy::{SafeCommand, SafeControlStrategyInput};
@@ -34,6 +36,7 @@ pub struct FocStepInputs {
 
     pub target_torque: Option<f32>,
     pub active_current_limit_a: f32,
+    pub max_rotor_speed_mech_rpm: u16,
 
     pub safety_deceleration_duration_ms: f32,
     pub safety_deceleration_cutoff_omega: f32,
@@ -92,7 +95,14 @@ pub fn foc_step<A>(
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
-    let torque_constant: f32 = params.get_estimate().torque_constant().unwrap_or(0.0);
+    let num_poles = params.get_estimate().num_pole_pairs;
+    const RPM_TO_RADS: f32 = PI / 30.0;
+    let max_omega = (inputs.max_rotor_speed_mech_rpm * num_poles.unwrap_or(0) as u16) as f32 * RPM_TO_RADS;
+    if omega.abs() > max_omega {
+        mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
+    }
+
+    let torque_constant = params.get_estimate().torque_constant().unwrap_or(0.0);
     let max_braking_torque = torque_constant * inputs.braking_current_limit_a;
 
     // Safe outputs for idle / fault:
