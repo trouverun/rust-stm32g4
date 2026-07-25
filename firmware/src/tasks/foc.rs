@@ -8,9 +8,9 @@ use crate::boards::{PWM_FREQ};
 use crate::constants::*;
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
 use field_oriented::{
-    AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback, 
-    MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput, 
-    compute_current_pi_controller_gains
+    AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback,
+    MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput,
+    PhaseValues, compute_current_pi_controller_gains
 };
 
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
@@ -116,7 +116,17 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 *cx.local.prev_u_dq = u_dq;
                 (sector, braking_current)
             }
-            FocStepOutcome::NonConducting => {  
+            FocStepOutcome::ActiveShort => {
+                cx.shared.pwm_output.lock(|pwm| {
+                    pwm.enable();
+                    pwm.set_duty_cycles(PhaseValues::zero());
+                });
+                cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
+                *cx.local.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
+                *cx.local.prev_u_dq = ClarkParkValue { d: 0.0, q: 0.0 };
+                (0, 0.0)
+            }
+            FocStepOutcome::NonConducting => {
                 cx.shared.pwm_output.lock(|pwm| pwm.disable());
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
                 *cx.local.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };

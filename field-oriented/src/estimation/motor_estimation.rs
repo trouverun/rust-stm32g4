@@ -475,12 +475,13 @@ mod test {
                 OfflineEstimatorOutput::Current(i_dq) => FocInputType::TargetCurrents(i_dq)
             };
             let foc_input = FocInput {
-                dc_bus_voltage: sim_cfg.dc_bus_voltage,
+                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
                 command,
                 theta: cmd.theta,
                 angle_type: AngleType::Electrical,
                 omega: hall.omega,
                 phase_currents: out.measurement.currents,
+                current_limit_a: 5.0
             };
 
             let foc_result = foc.compute(foc_input, estimator.get_estimate(), &mut accelerator);

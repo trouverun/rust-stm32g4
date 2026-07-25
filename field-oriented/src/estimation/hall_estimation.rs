@@ -339,14 +339,15 @@ mod test {
             let pattern = out.measurement.hall_pattern.unwrap();
             let theta = calibrator.calibration_step(pattern, 0.43).unwrap();
             let foc_input = FocInput {
-                dc_bus_voltage: 24.0,
+                dc_bus_voltage_v: 24.0,
                 command: FocInputType::CalibrationCurrents(ClarkParkValue {
                     d: 1.5, q: 0.0
                 }),
                 theta,
                 angle_type: AngleType::Electrical,
                 omega: 0.0,
-                phase_currents: out.measurement.currents
+                phase_currents: out.measurement.currents,
+                current_limit_a: 5.0
             };
             out = sim.step(foc.compute(foc_input, motor_params, &mut accelerator).unwrap());
             t += dt;
@@ -370,12 +371,13 @@ mod test {
         // One torque-controlled FOC + sim + hall estimation iteration:
         let mut drive = |out: SimOutput, target_torque: f32| {
             let foc_input = FocInput {
-                dc_bus_voltage: 24.0,
+                dc_bus_voltage_v: 24.0,
                 command: FocInputType::TargetTorque(target_torque),
                 theta: out.measurement.theta,
                 angle_type: AngleType::Mechanical,
                 omega: out.measurement.omega,
-                phase_currents: out.measurement.currents
+                phase_currents: out.measurement.currents,
+                current_limit_a: 5.0
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
             let out = sim.step(foc_result);

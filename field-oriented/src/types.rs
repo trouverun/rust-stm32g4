@@ -89,11 +89,12 @@ pub enum FocInputType {
 #[derive(Clone, Copy)]
 pub struct FocInput {
     pub command: FocInputType,
-    pub dc_bus_voltage: f32,
+    pub dc_bus_voltage_v: f32,
     pub angle_type: AngleType,
     pub theta: f32,
     pub omega: f32,
     pub phase_currents: PhaseValues,
+    pub current_limit_a: f32,
 }
 
 #[derive(Clone, Copy, defmt::Format, Debug)]

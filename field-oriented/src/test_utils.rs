@@ -76,6 +76,9 @@ impl DoesFocMath for DummyAccelerator {
     }
 
     fn sqrt(&mut self, val: f32) -> f32 {
+        if val <= 0.0 {
+            return 0.0
+        }
         val.sqrt()
     }
 

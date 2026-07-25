@@ -259,11 +259,12 @@ mod tests {
         while time_s < 1.5*settling_time_s {
             let foc_input = FocInput {
                 command: FocInputType::TargetTorque(setpoint),
-                dc_bus_voltage: sim_cfg.dc_bus_voltage,
+                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
                 theta: out.measurement.theta,
                 angle_type: AngleType::Mechanical,
                 omega: out.measurement.omega,
-                phase_currents: out.measurement.currents
+                phase_currents: out.measurement.currents,
+                current_limit_a: 5.0
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
 
