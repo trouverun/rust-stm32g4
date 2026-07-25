@@ -13,6 +13,7 @@ mod pi_control;
 mod estimation;
 mod filtering;
 mod braking;
+mod field_weakening;
 
 pub use crate::types::*;
 use crate::{math::*};
@@ -27,6 +28,7 @@ pub use crate::estimation::{
 };
 pub use crate::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
 pub use crate::braking::{BangBangBrake, BangBangBrakeStepInput};
+use crate::field_weakening::{IntegralFieldWeakening};
 
 #[cfg(test)]
 pub use crate::sim::*;
@@ -46,6 +48,9 @@ pub struct FOC {
     calibration_q_pi: PIController,
     d_pi: PIController,
     q_pi: PIController,
+    field_weakening: IntegralFieldWeakening,
+    u_mag_sq: f32,
+    u_max: f32,
     u_dq_saturation: ClarkParkValue,
     deadtime_ratio: f32,
     deadtime_band_reciprocal: f32
@@ -63,6 +68,7 @@ impl FOC {
         // Normal use:
         let d_pi = PIController::new(None, sampling_time_s);
         let q_pi = PIController::new(None, sampling_time_s);
+        let field_weakening = IntegralFieldWeakening::new(sampling_time_s, 1e1);
 
         let deadtime_ratio = if config.pwm_frequency_hz != 0.0 {
             let pwm_period_ns = 1e9 / config.pwm_frequency_hz;
@@ -76,6 +82,9 @@ impl FOC {
             config,
             calibration_d_pi, calibration_q_pi,
             d_pi, q_pi,
+            field_weakening,
+            u_mag_sq: 0.0,
+            u_max: 0.0,
             u_dq_saturation: ClarkParkValue { d: 0.0, q: 0.0 },
             deadtime_ratio,
             deadtime_band_reciprocal
@@ -113,11 +122,21 @@ impl FOC {
                 self.compute_voltages(target_i_dq, measured_i_dq, omega_e, 0.0, motor_params)?
             }
             FocInputType::TargetTorque(target_torque) => {
-                // Derive target q,d-axis currents from torque command:
+                // Compute target d-axis current based on field weakening need:
+                let overmodulation = self.u_max - accelerator.sqrt(self.u_mag_sq);
+                let target_i_d = self.field_weakening.compute(overmodulation, input.current_limit_a);
+                let current_budget = accelerator.sqrt(input.current_limit_a*input.current_limit_a - target_i_d*target_i_d);
+
+                // Derive target q-axis current from torque command:
                 let pm_flux_linkage = motor_params.pm_flux_linkage.ok_or(FocFault::MissingMotorParams)?;
                 let torque_constant = motor_params.torque_constant().ok_or(FocFault::MissingMotorParams)?;
                 let k_tau = if torque_constant != 0.0 { 1.0 / torque_constant } else { 0.0 };
-                let target_i_dq = ClarkParkValue { d: 0.0, q: k_tau * target_torque };              
+                let mut target_i_q = k_tau * target_torque;
+                if target_i_q.abs() > current_budget {
+                    target_i_q = target_i_q.signum() * current_budget;
+                 }
+
+                let target_i_dq = ClarkParkValue { d: target_i_d, q:  target_i_q};              
                 self.compute_voltages(target_i_dq, measured_i_dq, omega_e, pm_flux_linkage, motor_params)?
             }
         };
@@ -126,12 +145,13 @@ impl FOC {
         // prioritizes direct axis getting at least a desired fraction of max voltage
         // (which can then be used for field weakening)
         const SQRT3_RECIPROCAL: f32 = 1.0/1.73205080757;
-        let u_max = input.dc_bus_voltage * SQRT3_RECIPROCAL;
-        let u_mag_sq = u_dq.d*u_dq.d + u_dq.q*u_dq.q;
-        let (u_d_sat, u_q_sat) = if u_mag_sq > u_max*u_max {
-            let u_d_limit = self.config.saturation_d_ratio * u_max;
+        self.u_max = input.dc_bus_voltage_v * SQRT3_RECIPROCAL;
+        self.u_mag_sq = u_dq.d*u_dq.d + u_dq.q*u_dq.q;
+        let u_max_sq = self.u_max*self.u_max;
+        let (u_d_sat, u_q_sat) = if self.u_mag_sq > u_max_sq {
+            let u_d_limit = self.config.saturation_d_ratio * self.u_max;
             let u_d_clamped = u_dq.d.clamp(-u_d_limit, u_d_limit);
-            let u_q_limit = accelerator.sqrt(u_max*u_max - u_d_clamped*u_d_clamped);
+            let u_q_limit = accelerator.sqrt(u_max_sq - u_d_clamped*u_d_clamped);
             (u_d_clamped, u_dq.q.clamp(-u_q_limit, u_q_limit))
         } else {
             (u_dq.d, u_dq.q)
@@ -150,8 +170,8 @@ impl FOC {
         // Space vector modulation:
         let v_tgt = inverse_clarke(u_ab);
         let v0_tgt = -0.5*(min3(v_tgt.u, v_tgt.v, v_tgt.w) + max3(v_tgt.u, v_tgt.v, v_tgt.w));
-        let bus_reciprocal = if input.dc_bus_voltage != 0.0 {
-            1.0 / input.dc_bus_voltage
+        let bus_reciprocal = if input.dc_bus_voltage_v != 0.0 {
+            1.0 / input.dc_bus_voltage_v
         } else {
             0.0
         };

@@ -78,12 +78,13 @@ mod tests {
         let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
         let mut drive = |out: SimOutput, target_torque: f32| {
             let foc_input = FocInput {
-                dc_bus_voltage: sim_cfg.dc_bus_voltage,
+                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
                 command: FocInputType::TargetTorque(target_torque),
                 theta: out.measurement.theta,
                 angle_type: AngleType::Mechanical,
                 omega: out.measurement.omega,
                 phase_currents: out.measurement.currents,
+                current_limit_a: 5.0
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
             let out = sim.step(foc_result);
@@ -167,12 +168,13 @@ mod tests {
         let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
         let mut drive = |out: SimOutput, target_torque: f32| {
             let foc_input = FocInput {
-                dc_bus_voltage: sim_cfg.dc_bus_voltage,
+                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
                 command: FocInputType::TargetTorque(target_torque),
                 theta: out.measurement.theta,
                 angle_type: AngleType::Mechanical,
                 omega: out.measurement.omega,
                 phase_currents: out.measurement.currents,
+                current_limit_a: 5.0
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
             let out = sim.step(foc_result);
