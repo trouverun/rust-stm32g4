@@ -181,12 +181,13 @@ mod test {
             let target_torque = sim_cfg.rotor_inertia * (omega_ref_rate + 500.0 * (omega_ref - out.measurement.omega));
 
             let foc_input = FocInput {
-                dc_bus_voltage: sim_cfg.dc_bus_voltage,
+                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
                 command: FocInputType::TargetTorque(target_torque),
                 theta: out.measurement.theta,
                 angle_type: AngleType::Mechanical,
                 omega: out.measurement.omega,
                 phase_currents: out.measurement.currents,
+                current_limit_a: 5.0
             };
             let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
 
