@@ -25,6 +25,8 @@ enum CalibrationState {
 }
 
 
+/// Calibration routine which commands the rotor to move a full (electrical) revolution to both directions,
+/// producing a mapping of Hall edge to rotor angle based on the recorded Hall patterns. 
 pub struct HallCalibrator {
     state: CalibrationState,
     initial_settle_time_s: f32,
@@ -53,6 +55,7 @@ impl HallCalibrator {
     ) -> Result<f32, HallCalibrationFault> {
         let dt = self.dt;
         match &mut self.state {
+            // Align the rotor to a known start angle
             CalibrationState::InitialSettle { waited_s } => {
                 *waited_s += dt;
                 if *waited_s >= self.initial_settle_time_s {
@@ -65,6 +68,7 @@ impl HallCalibrator {
                 }
                 Ok(0.0)
             }
+            // Rotate the rotor a full revolution to the forwards direction
             CalibrationState::SweepingForward { target_theta, first_edge, prev_pattern, num_edges} => {
                 if *prev_pattern != hall_pattern {
                     if let Some(first_pattern) = first_edge {
@@ -91,6 +95,7 @@ impl HallCalibrator {
 
                 Ok(*target_theta)
             }
+            // Rotate the rotor a full revolution to the backwards direction, the symmetry should cancel any angle errors due to cogging
             CalibrationState::SweepingReverse { target_theta, first_edge, prev_pattern, num_edges} => {
                 if *prev_pattern != hall_pattern {
                     if let Some(first_pattern) = first_edge {
@@ -142,8 +147,10 @@ mod test {
         PMSMConfig, PMSMSim, HallEncoder, FocInputType, AngleType, DummyAccelerator, plot_simulation, SimRecord
     };
 
+    /// Run the calibrator against a simulator with an ideal Hall encoder and no cogging torque, 
+    /// and check that the calibrated Hall edges match those configured to the simulator 
     #[test]
-    fn hall_calibration_works() {
+    fn hall_calibration_works_vs_ideal() {
         let pwm_freq_hz = 20_000.0;
         let dt = 1.0 / pwm_freq_hz;
         let mut sim_cfg = PMSMConfig::default();

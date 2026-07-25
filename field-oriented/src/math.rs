@@ -1,6 +1,6 @@
 use super::types::*;
 use num_traits::Float;
-use core::f32::consts::{PI, TAU};
+use core::f32::consts::{TAU};
 
 /// = sqrt(3)/2
 const SQRT3_2: f32 = 0.86602540378;
