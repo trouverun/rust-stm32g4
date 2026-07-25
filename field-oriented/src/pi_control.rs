@@ -1,13 +1,15 @@
 use core::f32::consts::PI;
 use crate::{ControllerParameters, FocFault, MotorParamsEstimate};
-use libm::{cosf, expf, logf, powf, sinf};
+use libm::{cosf, expf, logf, sinf, sqrtf};
 use num_complex::{Complex32};
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
 pub enum PITuningFault {
-    Unstable,
+    MissingMotorParameters,
     InfeasibleMotorParameters,
-    MissingMotorParameters
+    InvalidTuningGoals,
+    Unstable,
+    NotRobust
 }
 
 #[derive(Clone, Copy, defmt::Format, serde::Serialize, serde::Deserialize)]
@@ -49,9 +51,7 @@ impl PIController {
         let e = r_f - measurement;
         self.prev_reference = reference;
         self.prev_rf = r_f;
-        // P:
         let proportional = gains.kp * e;
-        // I:
         let anti_windup_term = gains.kt * saturation_error;
         let integral_accum = self.sampling_time_s * gains.ki * (e + anti_windup_term);
         if !integral_accum.is_finite() {
@@ -77,7 +77,7 @@ impl PIController {
     }
 }
 
-// PI autotuning based on step response requirements using pole-placement
+// PI autotuning based on step response requirements using discrete-time pole-placement
 pub fn compute_current_pi_controller_gains<const N: usize>(
     params: MotorParamsEstimate, pwm_freq_hz: f32, overshoot_pct: f32, settling_time_s: f32
 ) -> Result<ControllerParameters, PITuningFault> {
@@ -89,129 +89,117 @@ pub fn compute_current_pi_controller_gains<const N: usize>(
         return Err(PITuningFault::InfeasibleMotorParameters)
     }
     if !(overshoot_pct > 0.0 && overshoot_pct < 100.0) || !(settling_time_s > 0.0) {
-        return Err(PITuningFault::InfeasibleMotorParameters)
+        return Err(PITuningFault::InvalidTuningGoals)
     }
 
-    // Symbolically computed form for poles that give the requested overshoot and 2% settling time:
-    // (for a first order, decoupled motor model controlled by PI controller)
-    let C1 = expf((R*T)/L);
-    let C2 = expf(-8.0*T/settling_time_s);
-    let theta = 4.0*PI*T / (settling_time_s * logf(0.01*overshoot_pct));
-    let kp = R*C1 * (expf(-(R*T)/L) - C2) / (C1 - 1.0);
-    let ki = R*C1 * (C2 - 2.0*expf(-4.0*T/settling_time_s)*cosf(theta) + 1.0) / (T*(C1 - 1.0));
-    // Settling time slower than ~8*L/R places the poles below the plant pole and flips kp negative:
+    // The phase currents are sampled at the midpoint of a PWM period, 
+    // and control voltages are applied at the start of the next PWM period
+    // = input delay of half a PWM period
+    let m = 0.5; // Delay as a factor of sampling time, standard modified Z transform convention
+
+    // Tuning goals converted to ideal 2nd order system charasteristics:
+    // - damping ratio:
+    let zeta = -logf(overshoot_pct/100.0)/sqrtf(PI*PI + logf(overshoot_pct/100.0)*logf(overshoot_pct/100.0));
+    // - natural frequency:
+    let omega_n = 4.0 / (settling_time_s*zeta); 
+
+    // Polar form of the complex pole pair which creates the desired 2nd order system:
+    // - placed complex pole pair magnitude:
+    let r = expf(-zeta * omega_n * T); 
+    // - placed complex pole pair angle:
+    let theta = omega_n * sqrtf(1.0 - zeta*zeta) * T; 
+    // Placed poles need to lie inside the unit circle to be stable:
+    if !(theta > 0.0 && theta < PI) || !(r < 1.0) {
+        return Err(PITuningFault::Unstable)
+    }
+    let placed_pole = Complex32::new(r*cosf(theta), r*sinf(theta));
+
+    // P(s) = 1 / (L*s + R)
+    // P_zoh(s) = (1-exp(-T*s))/s * P(s)
+    //          = (1-exp(-T*s)) * (P(s)/s)
+    //          = (1-exp(-T*s)) * (1/(R*s) - (1/R) / (R/L + s))
+    // P(z) = z{P_zoh(s)}
+    //      = (1-z^-1) * z{(1/(R*s) - (1/R) / (R/L + s)), m}
+    //      = (z-1)/z * ((1/R)*z{1/s, m} - (1/R)*z{1 / (R/L + s), m})
+    //      = (z-1)/z * ((1/R)*(1/(z-1)) - (1/R)*((exp(-(R/L)*m*T) / (z-exp(-(R/L)*T)))))
+    let Pz_at_placed_pole = (placed_pole-1.0)/placed_pole * ((1.0/R)*(1.0/(placed_pole-1.0)) - (1.0/R)*((expf(-(R/L)*m*T) / (placed_pole-expf(-(R/L)*T)))));
+    // Closed loop pole implies: 1 + Pz*Cz = 0 -> Cz = -1/Pz
+    let Cz_at_placed_pole = -1.0 / Pz_at_placed_pole;
+    // C(z) = kp + (T*ki*z/(z - 1))
+    // -> kp + (T*ki*z/(z - 1)) = Cz_at_placed_pole
+    // -> im{C(z)} = im{T*ki*z/(z - 1)} (kp by itself produces no imaginary part)
+    // -> ki = im{C(z)} / im{T*z/(z - 1)}
+    // -> kp = re{(Cz)} - re{T*ki*z/(z - 1)} (kp has to produce the residual of the real part)
+    let integrator_at_placed_pole = T*placed_pole / (placed_pole-1.0);
+    let ki = Cz_at_placed_pole.im / integrator_at_placed_pole.im;
+    let kp = Cz_at_placed_pole.re - ki*integrator_at_placed_pole.re;
+
     if !(kp > 0.0) {
-        return Err(PITuningFault::InfeasibleMotorParameters)
+        return Err(PITuningFault::InvalidTuningGoals)
     }
-    let z0 = kp/(kp+T*ki); // Zero cancellation setpoint filter
+    // Residual unplaced (real) pole (originating from the delay term) with Vietas formula:
+    let p = kp*(expf(-(R/L)*m*T)-expf(-(R/L)*T))/(R*r*r);
+    // Needs to be much faster (3x) than the placed poles, so it does not affect response:
+    if !(p < r*r*r) { // r is constrained < 1 above, so this is also a stability check
+        return Err(PITuningFault::InvalidTuningGoals)
+    }
 
+    let z0 = kp/(kp+T*ki); // Controller zero cancellation setpoint filter
     let gains = ControllerParameters {
-        d_pi: PIGains { kr: z0, kp: kp, ki: ki, kt: 1.0/kp },
-        q_pi: PIGains { kr: z0, kp: kp, ki: ki, kt: 1.0/kp }
+        d_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp },
+        q_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp }
     };
 
     // 20c to 120c temperature change causes roughly 40% resistive gain in copper
     // (assume additional 10% in estimation error)
-    let R_perturb = [0.9, 1.0, 1.166, 1.333, 1.5];
-    // Assume 10% inductance drop due to saturation at max current
+    // (assume system identification happens with windings at ambient temperature)
+    let R_perturb = [0.9, 1.0, 1.25, 1.5];
+    // Assume 25% inductance drop due to saturation at max current
     // (assume additional 10% in estimation error)
-    let L_perturb = [0.8, 0.9, 1.0, 1.1];
-    
-    if small_gain_stability_check::<N>(
-        R, L, &gains, pwm_freq_hz, &R_perturb, &L_perturb
+    // (assume system identification routine which does not saturate)
+    let L_perturb = [0.65, 0.9, 1.0, 1.1];
+
+    if perturbed_stability_check::<N>(
+        R, L, T, m, &gains.q_pi, &R_perturb, &L_perturb
     ) {
         Ok(gains)
     } else {
-        Err(PITuningFault::Unstable)
+        Err(PITuningFault::NotRobust)
     }
 }
 
+fn jury_test(a0: f32, a1: f32, a2: f32, a3: f32) -> bool {
+    let f_at_1 = a3 + a2 + a1 + a0;
+    let f_at_neg1 = -a3 + a2 - a1 + a0;
 
-/// Polynomial coefficients 
-struct PolyTerms {
-    num_a0: f32,
-    num_a1: f32,
-    denum_b0: f32,
-    denum_b1: f32,
-    denum_b2: f32
+    f_at_1 > 0.0
+    && f_at_neg1 < 0.0
+    && a0.abs() < a3
+    && (a0 * a0 - a3 * a3).abs() > (a0 * a2 - a3 * a1).abs()
 }
 
-/// Collect the polynomial coefficients for the transfer function T(z) = (C(z)P(z)) / (1 + C(z)P(z))
-fn polyterm_T(R: f32, L: f32, gains: &ControllerParameters, pwm_freq_hz: f32) -> PolyTerms {
-    let T = 1.0 / pwm_freq_hz;
-    let kp = gains.q_pi.kp;
-    let ki = gains.q_pi.ki;
-    let C1 = expf((R*T)/L);
-
-    PolyTerms { 
-        num_a0: kp - kp*C1, 
-        num_a1: kp*C1 - T*ki - kp + T*ki*C1, 
-        denum_b0: R + kp - kp*C1, 
-        denum_b1: kp*C1 - kp - T*ki - R*C1 - R + T*ki*C1, 
-        denum_b2: R*C1
-    }
-}
-
-/// Collect the polynomial coefficients for the transfer function Delta(z) = (P_perturbed(z) - P(z)) / P(z)
-fn polyterm_delta(R: f32, L: f32, Rp: f32, Lp: f32, pwm_freq_hz: f32) -> PolyTerms {
-    let T = 1.0 / pwm_freq_hz;
-    let C1 = expf(Rp*T/Lp);
-    let C2 = expf(R*T/L);
-
-    PolyTerms { 
-        num_a0: R - Rp + Rp*C2 - R*C1, 
-        num_a1: Rp*C1 - R*C2 + R*C2*C1 - Rp*C2*C1, 
-        denum_b0: Rp - Rp*C2, 
-        denum_b1: Rp*C2*C1 - Rp*C1, 
-        denum_b2: 0.0
-    }
-}
-
-// Evaluate the gain of a fractional 2nd order transfer function in the form:
-// Y(z) = (a0 + a1*z) / (b0 + b1*z + b2*z*z)
-fn eval_mag(polyterms: &PolyTerms, z: Complex32) -> f32 {
-    let num = polyterms.num_a1*z + polyterms.num_a0;
-    let den = polyterms.denum_b2*z*z + polyterms.denum_b1*z + polyterms.denum_b0;
-    (num / den).norm()
-}
-
-/// Robust stability check using a grid search over parameter variations and frequencies,
-/// checking the small-gain theorem for all of them
-fn small_gain_stability_check<const N: usize>(
-    R: f32, L: f32, gains: &ControllerParameters, pwm_freq_hz: f32,
-    R_perturb: &[f32], L_perturb: &[f32]
+/// Robust stability check using a grid search over parameter variations,
+/// checking the Jury stability criterion for each of combination
+fn perturbed_stability_check<const N: usize>(
+    R: f32, L: f32, T: f32, m: f32, gains: &PIGains, R_perturb: &[f32], L_perturb: &[f32]
 ) -> bool {
-    let T = 1.0 / pwm_freq_hz;
-
-    let mut z_vals = [Complex32::new(0.0, 0.0); N];
-    let mut t_vals = [0.0; N];
-
-    // Logarithmic spacing of frequencies (0 to ~5kHz, or 0 to ~30k rad/s):
-    let r = powf(3e4, 1.0 / N as f32);
-    let mut omega = 1.0;
-
-    // Compute the gain |T(z)|:
-    let t_polyterms = polyterm_T(R, L, gains, pwm_freq_hz);
-    for idx in 0..t_vals.len() {
-        z_vals[idx] = Complex32::new(cosf(omega*T), sinf(omega*T));
-        let gain_recip = 1.0 / eval_mag(&t_polyterms, z_vals[idx]);
-        t_vals[idx] = gain_recip;
-        omega *= r;
-    }
-
-    // Iterate over a grid of parameter perturbations and check the small-gain stability condition:
-    // stable = |Delta(z)| * |T(z)| < 1 (iff. both Delta(z) and T(z) individually stable)
-    // stable = |Delta(z)| < 1/|T(z)|
+    // Iterate over a grid of parameter perturbations and check the Jury stability test passes
     for R_scaler in R_perturb {
         for L_scaler in L_perturb {
-            for idx in 0..z_vals.len() {
-                let Rp = R_scaler * R;
-                let Lp = L_scaler * L;
-                let delta_polyterms = polyterm_delta(R, L, Rp, Lp, pwm_freq_hz);
-                let mag = eval_mag(&delta_polyterms, z_vals[idx]);
-                if mag >= t_vals[idx] {
-                    return false
-                }
+            let Rp = R_scaler * R;
+            let Lp = L_scaler * L;
+
+            let C1 = expf(-(Rp/Lp)*m*T);
+            let C2 = expf(-(Rp/Lp)*T);
+            // Charasteristic polynomial numerator polynomial coefficients:
+            let a3 = Rp;
+            let a2 = gains.kp - Rp - C1*gains.kp + T*gains.ki - C2*Rp - C1*T*gains.ki;
+            let a1 = 2.0*C1*gains.kp - gains.kp - C2*gains.kp + C2*Rp + C1*T*gains.ki - C2*T*gains.ki;
+            let a0 = C2*gains.kp - C1*gains.kp;
+
+            let stable = jury_test(a0, a1, a2, a3);
+            if !stable {
+                return false
             }
         }
     }
@@ -223,193 +211,16 @@ fn small_gain_stability_check<const N: usize>(
 mod tests {
     use crate::*;
     use super::*;
-    struct TestParams {
-        L: f32,
-        R: f32,
-        po: f32,
-        ts: f32,
-    }
-    struct ExpectedPI {
-        kp: f32,
-        ki: f32
+
+    struct StepResponse {
+        overshoot_pct: f32,
+        settling_2pct_s: f32,
+        max_abs_i_d: f32,
     }
 
-    #[test]
-    // Cross check symbolic pole placement formula against explicit values
-    fn pole_placement_formula_matches() {
-        let test_vals = [
-            (TestParams{L: 0.00184, R: 0.66, po: 5.0, ts: 0.01}, ExpectedPI{kp: 0.7959, ki: 611.3735}),
-            (TestParams{L: 0.00084, R: 0.3, po: 5.0, ts: 0.01}, ExpectedPI{kp: 0.3646, ki: 279.0945}),
-            (TestParams{L: 0.00184, R: 0.66, po: 2.5, ts: 0.005}, ExpectedPI{kp: 2.1948, ki: 1969.6648}),
-            (TestParams{L: 0.00084, R: 0.3, po: 2.5, ts: 0.005}, ExpectedPI{kp: 1.0032, ki: 899.1600}),
-        ];
-
-        for test_cfg in test_vals {
-            let params = MotorParamsEstimate::from_nominal(MotorParams {
-                num_pole_pairs: 0,
-                stator_resistance: test_cfg.0.R,
-                d_inductance: test_cfg.0.L,
-                q_inductance: test_cfg.0.L,
-                pm_flux_linkage: 0.0
-            });
-
-            if let Ok(gains) = compute_current_pi_controller_gains::<50>(params, 20_000.0, test_cfg.0.po, test_cfg.0.ts) {
-                assert!(
-                    test_cfg.1.kp - 1e-3 < gains.d_pi.kp && gains.d_pi.kp < test_cfg.1.kp + 1e-3, 
-                    "P gain mismatch {} < {} < {}", test_cfg.1.kp - 1e-3, gains.d_pi.kp, test_cfg.1.kp + 1e-3
-                );
-                assert!(
-                    test_cfg.1.ki - 1.0 < gains.d_pi.ki && gains.d_pi.ki < test_cfg.1.ki + 1.0,
-                    "I gain mismatch {} < {} < {}", test_cfg.1.ki - 1.0, gains.d_pi.ki, test_cfg.1.ki + 1.0
-                );
-            } else {
-                assert!(false);
-            }
-        }
-    }
-
-    #[test]
-    // Reject step response requirements outside the feasible range
-    fn infeasible_spec_rejected() {
-        let params = MotorParamsEstimate::from_nominal(MotorParams {
-            num_pole_pairs: 0,
-            stator_resistance: 0.3,
-            d_inductance: 0.00084,
-            q_inductance: 0.00084,
-            pm_flux_linkage: 0.0
-        });
-
-        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 0.0, 0.005).is_err());
-        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 100.0, 0.005).is_err());
-        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 2.5, 0.0).is_err());
-        // Settling time slower than 8*L/R (22.4ms here) would need a negative kp:
-        assert!(compute_current_pi_controller_gains::<50>(params, 20_000.0, 2.5, 0.05).is_err());
-    }
-
-    struct ExpectedGain {
-        omega: f32,
-        mag: f32
-    }
-    
-    #[test]
-    // Cross check the symbolic transfer function of T(z) and Delta(z) against explicit values
-    fn small_gain_frequency_response_matches() {
-        // Test params:
-        let motor_params = MotorParamsEstimate::from_nominal(MotorParams {
-            num_pole_pairs: 0,
-            stator_resistance: 0.66,
-            d_inductance: 0.00184,
-            q_inductance: 0.00184,
-            pm_flux_linkage: 0.0
-        });
-        let R = motor_params.stator_resistance.unwrap();
-        let L = motor_params.d_inductance.unwrap();
-        let Rp = 1.4*R;
-        let Lp = 0.5*L;
-        let gains = PIGains {
-            kr: 0.0,
-            kp: 11.5813,
-            ki: 5.1050e4,
-            kt: 0.0
-        };
-        let controller_params = ControllerParameters {
-            d_pi: gains, q_pi: gains
-        };
-        let pwm_freq_hz = 20_000.0;
-        let T = 1.0/pwm_freq_hz;
-
-        // T(z) test:
-        let T_expected = [
-            ExpectedGain {omega: 10.0, mag: 1.0},
-            ExpectedGain {omega: 4.9721e03, mag: 1.3218},
-            ExpectedGain {omega: 3.0000e+04, mag: 0.3124},
-        ];
-        let term_T = polyterm_T(R, L, &controller_params, pwm_freq_hz);
-        for expected in T_expected {
-            let z = Complex32::new(cosf(expected.omega*T), sinf(expected.omega*T));
-            let mag = eval_mag(&term_T, z);
-            assert!(
-                expected.mag - 1e-3 < mag && mag < expected.mag + 1e-3,
-                "T(z) magnitude mismatch at {} rad/s: {} < {} < {}", 
-                expected.omega, expected.mag - 1e-3, mag, expected.mag + 1e-3
-            )
-        }
-        
-        // Delta(z) test:
-        let delta_expected = [
-            ExpectedGain {omega: 10.0, mag: 0.2857},
-            ExpectedGain {omega: 4.9721e03, mag: 0.9817},
-            ExpectedGain {omega: 3.0000e+04, mag: 0.9993},
-        ];
-        let term_delta = polyterm_delta(R, L, Rp, Lp, pwm_freq_hz);
-        for expected in delta_expected {
-            let z = Complex32::new(cosf(expected.omega*T), sinf(expected.omega*T));
-            let mag = eval_mag(&term_delta, z);
-            assert!(
-                expected.mag - 1e-3 < mag && mag < expected.mag + 1e-3,
-                "Delta(z) magnitude mismatch at {} rad/s: {} < {} < {}", 
-                expected.omega, expected.mag - 1e-3, mag, expected.mag + 1e-3
-            )
-        }
-    }
-
-    #[test]
-    // Check using a known stable parameter range that stability is confirmed:
-    fn small_gain_stable_ok() {
-        let motor_params = MotorParams {
-            num_pole_pairs: 0,
-            stator_resistance: 0.66,
-            d_inductance: 0.00184,
-            q_inductance: 0.00184,
-            pm_flux_linkage: 0.0
-        };
-        let R = motor_params.stator_resistance;
-        let L = motor_params.q_inductance;
-        let gains = PIGains {
-            kr: 0.0,
-            kp: 11.5813,
-            ki: 5.1050e4,
-            kt: 0.0
-        };
-        let pwm_freq_hz = 20_000.0;
-        let controller_params = ControllerParameters {
-            d_pi: gains, q_pi: gains
-        };
-        let stable = small_gain_stability_check::<100>(R, L, &controller_params, pwm_freq_hz, &[1.0], &[1.0]);
-        assert_eq!(stable, true, "False positive unstable result")
-    }
-
-    #[test]
-    // Check using a known unstable parameter range that the instability is detected:
-    fn small_gain_unstable_detected() {
-        let motor_params = MotorParams {
-            num_pole_pairs: 0,
-            stator_resistance: 0.66,
-            d_inductance: 0.00184,
-            q_inductance: 0.00184,
-            pm_flux_linkage: 0.0
-        };
-        let R = motor_params.stator_resistance;
-        let L = motor_params.q_inductance;
-        let gains = PIGains {
-            kr: 0.0,
-            kp: 11.5813,
-            ki: 5.1050e4,
-            kt: 0.0
-        };
-        let pwm_freq_hz = 20_000.0;
-        let controller_params = ControllerParameters {
-            d_pi: gains, q_pi: gains
-        };
-        let stable = small_gain_stability_check::<100>(R, L, &controller_params, pwm_freq_hz, &[1.4], &[0.5]);
-        assert_eq!(stable, false, "Stability violation not detected")
-    }
-
-    /// Closed-loop acceptance of the computed gains against the sim: overshoot,
-    /// settling time and d-axis regulation within the design spec.
-    #[test]
-    fn pmsm_known_params_step_response() {
-        let setpoint = 0.12;
+    /// Tune gains for the given spec and measure a torque step response against the sim
+    fn run_step_response(overshoot_pct: f32, settling_time_s: f32, plot_path: &str) -> StepResponse {
+        let setpoint = 0.1;
         let pwm_freq_hz = 20_000.0;
         let sim_dt = 1.0/pwm_freq_hz;
         let sim_cfg = PMSMConfig::default();
@@ -435,19 +246,17 @@ mod tests {
             }
         );
 
-        if let Ok(gains) = compute_current_pi_controller_gains::<50>(
-            motor_params, pwm_freq_hz, 5.0, 0.01
-        ) {
-            foc.set_pi_gains(Some(gains));
-        } else {
-            assert!(false, "Couldn't tune controller")
-        }
+        let gains = compute_current_pi_controller_gains::<100>(
+            motor_params, pwm_freq_hz, overshoot_pct, settling_time_s
+        ).expect("Couldn't tune controller");
+        foc.set_pi_gains(Some(gains));
         let iq_setpoint = 0.666667 / (motor_params.num_pole_pairs.unwrap() as f32 * motor_params.pm_flux_linkage.unwrap()) * setpoint;
 
+        let mut response = StepResponse { overshoot_pct: 0.0, settling_2pct_s: 0.0, max_abs_i_d: 0.0 };
         let mut out = sim.state();
-        let mut time_s = 0.0_f32;
+        let mut time_s = 0.0;
         let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
-        while time_s < 0.005 {
+        while time_s < 1.5*settling_time_s {
             let foc_input = FocInput {
                 command: FocInputType::TargetTorque(setpoint),
                 dc_bus_voltage: sim_cfg.dc_bus_voltage,
@@ -465,26 +274,51 @@ mod tests {
                 sim: out,
                 estimates: std::vec::Vec::new(),
             });
-
-            if time_s < 0.01 {
-                // Overshoot <= 5%
-                assert!(out.state.i_dq.q <= 1.05*iq_setpoint, "Step response overshoot threshold exceeded")
-            } else {
-                // Settling time (to within 2%) <= 10ms
-                assert!(
-                    0.98*iq_setpoint <= out.state.i_dq.q && out.state.i_dq.q <= 1.02*iq_setpoint,
-                    "Step response settling time exceeded"
-                )
-            }
-            assert!(
-                -5e-2 <= out.state.i_dq.d && out.state.i_dq.d <= 5e-2,
-                "d-axis current not correctly regulated: {} > {}",
-                out.state.i_dq.d.abs(), 5e-2
-            );
-
             time_s += sim_dt;
+
+            response.overshoot_pct = response.overshoot_pct.max(100.0*(out.state.i_dq.q - iq_setpoint)/iq_setpoint);
+            response.max_abs_i_d = response.max_abs_i_d.max(out.state.i_dq.d.abs());
+            if (out.state.i_dq.q - iq_setpoint).abs() > 0.02*iq_setpoint {
+                response.settling_2pct_s = time_s;
+            }
         }
 
-        plot_simulation("pmsm_step_response.html", sim_dt as f32, &records);
+        plot_simulation(plot_path, sim_dt, &records);
+        response
+    }
+
+    /// Closed-loop acceptance of the computed gains against simulation with ideal current feed: 
+    /// overshoot settling time and d-axis regulation within the design spec
+    #[test]
+    fn pmsm_known_params_step_response() {
+        let specs = [
+            (5.0, 0.01, "pmsm_step_response_5pct_10ms.html"),
+            (5.0, 0.001, "pmsm_step_response_5pct_1ms.html"),
+            (2.5, 0.01, "pmsm_step_response_1pct_10ms.html"),
+            (2.5, 0.001, "pmsm_step_response_1pct_1ms.html"),
+        ];
+        for (overshoot_pct, settling_time_s, plot_path) in specs {
+            let response = run_step_response(overshoot_pct, settling_time_s, plot_path);
+            assert!(
+                response.overshoot_pct <= overshoot_pct,
+                "Overshoot {:.2}% above the {:.2}% spec", response.overshoot_pct, overshoot_pct
+            );
+            assert!(
+                response.overshoot_pct >= 0.5*overshoot_pct,
+                "Overshoot {:.2}% below half the {:.2}% spec", response.overshoot_pct, overshoot_pct
+            );
+            assert!(
+                response.settling_2pct_s <= 1.1*settling_time_s,
+                "Settling time {:.4}s above the {:.4}s spec", response.settling_2pct_s, settling_time_s
+            );
+            assert!(
+                response.settling_2pct_s >= 0.5*settling_time_s,
+                "Settling time {:.4}s below half the {:.4}s spec", response.settling_2pct_s, settling_time_s
+            );
+            assert!(
+                response.max_abs_i_d <= 5e-2,
+                "d-axis current not correctly regulated: {} > {}", response.max_abs_i_d, 5e-2
+            );
+        }
     }
 }

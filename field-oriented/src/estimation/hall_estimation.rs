@@ -229,7 +229,7 @@ mod test {
     }
 
     /// When the rotor stops mid-sector after rotating, theta must hold within the
-    /// last sector (no overrun into the next) and omega must taper down to zero.
+    /// current sector (no overrun into the next) and omega must taper down to zero.
     #[test]
     fn standstill_after_motion_holds_sector_and_decays_omega() {
         let sample_rate_hz = 20_000.0;
@@ -301,10 +301,9 @@ mod test {
         }
     }
 
-    /// Full sensor pipeline: run hall calibration against the sim, hand the
-    /// resulting table to the hall estimator (as the firmware does over
-    /// update_hall_table), then spin the motor under torque control and check
-    /// the estimate against sim ground truth while coasting.
+    /// Full sensor pipeline: 
+    /// 1) run hall calibration against the sim and hand the resulting table to the hall estimator
+    /// 2) spin up the motor under torque control and check the estimate against sim ground truth while coasting
     #[test]
     fn hall_calibration_to_estimation_tracks_rotor() {
         let pwm_freq_hz = 20_000.0;
@@ -358,8 +357,8 @@ mod test {
         let mut estimator = HallEstimator::new();
         estimator.set_calibration(calibrator.hall_pattern_to_theta);
 
-        // Spin the motor up under torque control, then coast at constant speed:
-        let gains = compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap();
+        // Spin the motor up under torque control, then coast at constant speed (no friction in simulation):
+        let gains = compute_current_pi_controller_gains::<100>(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap();
         foc.set_pi_gains(Some(gains));
         foc.clear_windup();
 
@@ -383,8 +382,7 @@ mod test {
             let estimate = estimator.get_estimate(timer.sample(out.measurement.hall_pattern.unwrap())).unwrap();
 
             if step % record_interval == 0 {
-                // Electrical to mechanical for plotting, picking the electrical
-                // revolution branch from ground truth (visualization only):
+                // Electrical to mechanical for plotting:
                 let branch = (out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
                 records.push(SimRecord {
                     input: foc_input,

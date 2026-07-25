@@ -3,7 +3,7 @@ use crate::{
 };
 use super::utils::Lse;
 
-#[derive(Clone, Copy, defmt::Format)]
+#[derive(Clone, Copy, defmt::Format, Debug)]
 pub enum EstimationStepFault {
     MissingParameter,
     Overflow,
@@ -500,8 +500,7 @@ mod test {
             out = sim.step(foc_result.unwrap());
             hall = hall_estimator.get_estimate(timer.sample(out.measurement.hall_pattern.unwrap())).unwrap();
             if step % record_interval == 0 {
-                // Electrical to mechanical for plotting, picking the electrical
-                // revolution branch from ground truth (visualization only):
+                // Electrical to mechanical for plotting:
                 let branch = (out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
                 records.push(SimRecord {
                     input: foc_input,
@@ -539,7 +538,7 @@ mod test {
             r_err * 100.0, est.stator_resistance.unwrap(), sim_cfg.stator_resistance);
         assert!(l_err < 0.10, "L estimate error {:.1}%: got {}, expected {}",
             l_err * 100.0, est.d_inductance.unwrap(), sim_cfg.inductance);
-        assert!(f_err < 0.5, "F estimate error {:.1}%: got {}, expected {}",
+        assert!(f_err < 0.05, "F estimate error {:.1}%: got {}, expected {}",
             l_err * 100.0, est.pm_flux_linkage.unwrap(), sim_cfg.pm_flux_linkage);
     }
 }

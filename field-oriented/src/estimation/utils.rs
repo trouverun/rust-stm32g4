@@ -47,3 +47,38 @@ impl Lse {
         self.num_data
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::Lse;
+    use crate::estimation::EstimationStepFault;
+    use rand::{SeedableRng, rngs::StdRng};
+    use rand_distr::{Distribution, Normal};
+
+    /// Gaussian noise on y averages out: the fitted slope lands far closer to
+    /// the true one than any single noisy sample would suggest.
+    #[test]
+    fn noise_on_y_averages_out() {
+        let slope = 0.66;
+        let noise = Normal::new(0.0, 0.1).unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut lse = Lse::new();
+        for i in 0..10_000 {
+            let x = 1.0 + (i % 100) as f32 / 100.0;
+            let y = slope * x + noise.sample(&mut rng);
+            lse.accumulate(x, y);
+        }
+        let estimate = lse.solve(100).unwrap();
+        assert!((estimate / slope - 1.0).abs() < 0.005);
+    }
+
+    /// All-zero x is reported as a degenerate solution, not divided into.
+    #[test]
+    fn zero_x_is_degen_not_div_by_zero() {
+        let mut lse = Lse::new();
+        for _ in 0..100 {
+            lse.accumulate(0.0, 1.0);
+        }
+        assert!(matches!(lse.solve(100), Err(EstimationStepFault::DegenSolution)));
+    }
+}
