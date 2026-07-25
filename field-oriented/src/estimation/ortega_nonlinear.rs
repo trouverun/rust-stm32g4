@@ -120,9 +120,7 @@ mod test {
     /// Rotation needed to converge from zero flux
     const INITIAL_LOCK_REVOLUTIONS: f32 = 3.0;
 
-    /// Omega is scored as the worst RMS over tumbling windows of contiguous
-    /// observable samples, so brief re-acquisition and PLL lag transients
-    /// don't dominate the score the way a pointwise peak would.
+    /// The size of the RMS window used for tracking errors
     const RMS_WINDOW_S: f32 = 0.02;
 
     struct TrackingError {

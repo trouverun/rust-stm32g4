@@ -8,7 +8,7 @@ use crate::{DoesFocMath, FocInput, FocInputType, FocResult, HallEstimatorInput};
 use crate::sim::{HallEncoder, SimOutput};
 use crate::types::*;
 
-/// Host model of the hall capture timer: counts ticks since the last hall edge
+/// Model of the hall capture timer: counts ticks since the last hall edge
 /// and measures the duration of the previous hall sector, like the STM32 timer
 /// in hall-sensor mode does in hardware.
 pub struct SimulatedHallTimer {
