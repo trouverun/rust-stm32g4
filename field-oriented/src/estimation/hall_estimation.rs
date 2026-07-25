@@ -358,7 +358,7 @@ mod test {
         estimator.set_calibration(calibrator.hall_pattern_to_theta);
 
         // Spin the motor up under torque control, then coast at constant speed (no friction in simulation):
-        let gains = compute_current_pi_controller_gains::<100>(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap();
+        let gains = compute_current_pi_controller_gains(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap();
         foc.set_pi_gains(Some(gains));
         foc.clear_windup();
 

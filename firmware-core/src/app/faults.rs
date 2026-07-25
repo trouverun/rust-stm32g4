@@ -28,9 +28,9 @@ pub enum FaultCause {
     EstimationDegenSolution,
     EstimationParameterOutOfBounds,
 
-    TuningUnstable,
     TuningInfeasibleParameters,
-    TuningMissingMotorParams,
+    TuningInvalidTuningGoals,
+    TuningUnstable,
 
     MissingMotorParams,
     MissingControllerGains,
@@ -92,9 +92,10 @@ impl From<HallCalibrationFault> for FaultCause {
 impl From<PITuningFault> for FaultCause {
     fn from(f: PITuningFault) -> Self {
         match f {
-            PITuningFault::Unstable => FaultCause::TuningUnstable,
+            PITuningFault::MissingMotorParameters => FaultCause::MissingMotorParams,
             PITuningFault::InfeasibleMotorParameters => FaultCause::TuningInfeasibleParameters,
-            PITuningFault::MissingMotorParameters => FaultCause::TuningMissingMotorParams,
+            PITuningFault::InvalidTuningGoals => FaultCause::TuningInvalidTuningGoals,
+            PITuningFault::Unstable | PITuningFault::NotRobust => FaultCause::TuningUnstable,
         }
     }
 }
