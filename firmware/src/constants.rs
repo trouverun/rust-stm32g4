@@ -64,8 +64,6 @@ pub const OPAMP_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 
 // FOC:
 
-/// Size of the motor parameter perturbation grid used to check current control loop PI stability
-pub const PI_STABILITY_GRID_CHECKS: usize = 100;
 /// Tuning goal overshoot percentage for current control loop PI gains
 pub const PI_OVERSHOOT_PCT: f32 = 1.0;
 /// Tuning goal settling time for current control loop PI gains

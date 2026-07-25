@@ -151,7 +151,7 @@ mod test {
         let mut accelerator = DummyAccelerator;
         let motor_params = nominal_params(sim_cfg);
         foc.set_pi_gains(Some(
-            compute_current_pi_controller_gains::<100>(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap(),
+            compute_current_pi_controller_gains(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap(),
         ));
         let mut estimator = OrtegaPralyEstimator::new(OBSERVER_GAIN, PLL_BANDWIDTH);
 

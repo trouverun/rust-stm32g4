@@ -70,7 +70,7 @@ mod tests {
             pm_flux_linkage: sim_cfg.pm_flux_linkage,
         });
         foc.set_pi_gains(Some(
-            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap(),
+            compute_current_pi_controller_gains(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap(),
         ));
 
         // One torque-controlled FOC + sim iteration, recorded for plotting:
@@ -160,7 +160,7 @@ mod tests {
             pm_flux_linkage: sim_cfg.pm_flux_linkage,
         });
         foc.set_pi_gains(Some(
-            compute_current_pi_controller_gains::<50>(motor_params, pwm_freq_hz, 5.0, 0.01).unwrap(),
+            compute_current_pi_controller_gains(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap(),
         ));
 
         let mut out = sim.state();
