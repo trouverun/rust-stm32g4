@@ -101,7 +101,7 @@ pub fn compute_current_pi_controller_gains<const N: usize>(
     // - damping ratio:
     let zeta = -logf(overshoot_pct/100.0)/sqrtf(PI*PI + logf(overshoot_pct/100.0)*logf(overshoot_pct/100.0));
     // - natural frequency:
-    let omega_n = 4.0 / (settling_time_s*zeta); 
+    let omega_n = -logf(0.02*sqrtf(1.0 - zeta*zeta)) / (settling_time_s*zeta); 
 
     // Polar form of the complex pole pair which creates the desired 2nd order system:
     // - placed complex pole pair magnitude:
@@ -304,15 +304,15 @@ mod tests {
                 "Overshoot {:.2}% above the {:.2}% spec", response.overshoot_pct, overshoot_pct
             );
             assert!(
-                response.overshoot_pct >= 0.5*overshoot_pct,
+                response.overshoot_pct >= 0.9*overshoot_pct,
                 "Overshoot {:.2}% below half the {:.2}% spec", response.overshoot_pct, overshoot_pct
             );
             assert!(
-                response.settling_2pct_s <= 1.1*settling_time_s,
+                response.settling_2pct_s <= settling_time_s,
                 "Settling time {:.4}s above the {:.4}s spec", response.settling_2pct_s, settling_time_s
             );
             assert!(
-                response.settling_2pct_s >= 0.5*settling_time_s,
+                response.settling_2pct_s >= 0.9*settling_time_s,
                 "Settling time {:.4}s below half the {:.4}s spec", response.settling_2pct_s, settling_time_s
             );
             assert!(
