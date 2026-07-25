@@ -490,7 +490,7 @@ mod test {
                 foc.clear_windup();
                 estimator.acknowledge_unwind_request();
             } else if estimator.should_tune_controller() {
-                let pi_gains = compute_current_pi_controller_gains::<100>(
+                let pi_gains = compute_current_pi_controller_gains(
                     estimator.get_estimate(), pwm_freq_hz, 1.0, 0.001
                 ).expect("Failed to tune PI controller");
                 foc.set_pi_gains(Some(pi_gains));

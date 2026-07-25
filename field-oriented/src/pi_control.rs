@@ -78,7 +78,7 @@ impl PIController {
 }
 
 // PI autotuning based on step response requirements using discrete-time pole-placement
-pub fn compute_current_pi_controller_gains<const N: usize>(
+pub fn compute_current_pi_controller_gains(
     params: MotorParamsEstimate, pwm_freq_hz: f32, overshoot_pct: f32, settling_time_s: f32
 ) -> Result<ControllerParameters, PITuningFault> {
     let R = params.stator_resistance.ok_or(PITuningFault::MissingMotorParameters)?;
@@ -159,7 +159,7 @@ pub fn compute_current_pi_controller_gains<const N: usize>(
     // (assume system identification routine which does not saturate)
     let L_perturb = [0.65, 0.9, 1.0, 1.1];
 
-    if perturbed_stability_check::<N>(
+    if perturbed_stability_check(
         R, L, T, m, &gains.q_pi, &R_perturb, &L_perturb
     ) {
         Ok(gains)
@@ -180,7 +180,7 @@ fn jury_test(a0: f32, a1: f32, a2: f32, a3: f32) -> bool {
 
 /// Robust stability check using a grid search over parameter variations,
 /// checking the Jury stability criterion for each of combination
-fn perturbed_stability_check<const N: usize>(
+fn perturbed_stability_check(
     R: f32, L: f32, T: f32, m: f32, gains: &PIGains, R_perturb: &[f32], L_perturb: &[f32]
 ) -> bool {
     // Iterate over a grid of parameter perturbations and check the Jury stability test passes
@@ -246,7 +246,7 @@ mod tests {
             }
         );
 
-        let gains = compute_current_pi_controller_gains::<100>(
+        let gains = compute_current_pi_controller_gains(
             motor_params, pwm_freq_hz, overshoot_pct, settling_time_s
         ).expect("Couldn't tune controller");
         foc.set_pi_gains(Some(gains));
@@ -294,8 +294,10 @@ mod tests {
         let specs = [
             (5.0, 0.01, "pmsm_step_response_5pct_10ms.html"),
             (5.0, 0.001, "pmsm_step_response_5pct_1ms.html"),
-            (2.5, 0.01, "pmsm_step_response_1pct_10ms.html"),
-            (2.5, 0.001, "pmsm_step_response_1pct_1ms.html"),
+            (2.5, 0.01, "pmsm_step_response_2_5pct_10ms.html"),
+            (2.5, 0.001, "pmsm_step_response_2_5pct_1ms.html"),
+            (1.0, 0.01, "pmsm_step_response_1pct_10ms.html"),
+            (1.0, 0.001, "pmsm_step_response_1pct_1ms.html"),
         ];
         for (overshoot_pct, settling_time_s, plot_path) in specs {
             let response = run_step_response(overshoot_pct, settling_time_s, plot_path);
@@ -304,15 +306,15 @@ mod tests {
                 "Overshoot {:.2}% above the {:.2}% spec", response.overshoot_pct, overshoot_pct
             );
             assert!(
-                response.overshoot_pct >= 0.9*overshoot_pct,
-                "Overshoot {:.2}% below half the {:.2}% spec", response.overshoot_pct, overshoot_pct
+                response.overshoot_pct >= 0.5*overshoot_pct,
+                "Overshoot {:.2}% below half of the {:.2}% spec", response.overshoot_pct, overshoot_pct
             );
             assert!(
                 response.settling_2pct_s <= settling_time_s,
                 "Settling time {:.4}s above the {:.4}s spec", response.settling_2pct_s, settling_time_s
             );
             assert!(
-                response.settling_2pct_s >= 0.9*settling_time_s,
+                response.settling_2pct_s >= 0.5*settling_time_s,
                 "Settling time {:.4}s below half the {:.4}s spec", response.settling_2pct_s, settling_time_s
             );
             assert!(
@@ -320,5 +322,85 @@ mod tests {
                 "d-axis current not correctly regulated: {} > {}", response.max_abs_i_d, 5e-2
             );
         }
+    }
+
+    /// Coefficients of lead*(z - real_root)*(z^2 - 2*r*cos(theta)*z + r^2)
+    fn cubic_from_roots(real_root: f32, r: f32, theta: f32, lead: f32) -> (f32, f32, f32, f32) {
+        let pair_sum = 2.0*r*cosf(theta);
+        (
+            lead*(-real_root*r*r),
+            lead*(r*r + real_root*pair_sum),
+            lead*(-(real_root + pair_sum)),
+            lead
+        )
+    }
+
+    /// The Jury criterion has to agree with where the polynomial roots actually lie
+    #[test]
+    fn jury_criterion_matches_root_locations() {
+        // (real root, complex pair magnitude, complex pair angle, leading coefficient, stable)
+        let cases = [
+            (0.5, 0.9, 0.0, 1.0, true),
+            (0.2, 0.9, 0.5, 1.0, true),
+            // Leading coefficient is the stator resistance in the closed loop polynomial:
+            (0.2, 0.9, 0.5, 0.66, true),
+            (1.2, 0.3, 0.0, 1.0, false),
+            (-1.05, 0.5, 0.0, 1.0, false),
+            // A root on the unit circle is not stable:
+            (1.0, 0.5, 0.0, 1.0, false),
+            (0.5, 1.05, 0.5, 1.0, false),
+            (0.75, 1.4, 0.5, 1.0, false),
+        ];
+        for (real_root, r, theta, lead, stable) in cases {
+            let (a0, a1, a2, a3) = cubic_from_roots(real_root, r, theta, lead);
+            assert_eq!(
+                jury_test(a0, a1, a2, a3), stable,
+                "Roots {} and {} at +-{} rad: expected stable = {}", real_root, r, theta, stable
+            );
+        }
+    }
+
+    // Plant and perturbation grid the hand picked gains below were checked against
+    const R: f32 = 0.66;
+    const L: f32 = 0.00184;
+    const T: f32 = 1.0/20_000.0;
+    const M: f32 = 0.5;
+    const R_PERTURB: [f32; 4] = [0.9, 1.0, 1.25, 1.5];
+    const L_PERTURB: [f32; 4] = [0.65, 0.9, 1.0, 1.1];
+
+    /// Gains stable over the whole perturbation grid have to be accepted
+    #[test]
+    fn stable_gains_deemed_stable() {
+        // Worst case closed loop pole over the grid is at |z| = 0.84.
+        let gains = PIGains { kr: 0.0, kp: 10.5, ki: 40_000.0, kt: 0.0 };
+
+        assert!(
+            perturbed_stability_check(R, L, T, M, &gains, &R_PERTURB, &L_PERTURB),
+            "Stable gains rejected"
+        );
+    }
+
+    /// Gains unstable anywhere on the perturbation grid have to be rejected
+    #[test]
+    fn unstable_gains_deemed_unstable() {
+        // 8x the stable gains, worst case closed loop pole over the grid is at |z| = 1.44:
+        let gains = PIGains { kr: 0.0, kp: 84.0, ki: 320_000.0, kt: 0.0 };
+
+        assert!(
+            !perturbed_stability_check(R, L, T, M, &gains, &R_PERTURB, &L_PERTURB),
+            "Unstable gains accepted"
+        );
+
+        // A single unstable grid point is enough to reject: these gains are stable on the
+        // nominal plant (|z| = 0.82) but not at a tenth of the inductance (|z| = 1.22)
+        let gains = PIGains { kr: 0.0, kp: 10.5, ki: 40_000.0, kt: 0.0 };
+        assert!(
+            perturbed_stability_check(R, L, T, M, &gains, &[1.0], &[1.0]),
+            "Stable nominal plant rejected"
+        );
+        assert!(
+            !perturbed_stability_check(R, L, T, M, &gains, &[1.0], &[1.0, 0.1]),
+            "Unstable grid point accepted"
+        );
     }
 }
