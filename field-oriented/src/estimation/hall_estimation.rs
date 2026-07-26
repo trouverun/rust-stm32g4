@@ -199,11 +199,11 @@ mod test {
     use core::f32::consts::TAU;
     use super::HallEstimator;
     use crate::{
-        AngleType, ClarkParkValue, DummyAccelerator, EstimatorRecord, FOC, FocConfig, FocInput,
-        FocInputType, HallCalibrator, HallEncoder, MotorParams, MotorParamsEstimate, PMSMConfig,
-        PMSMSim, SimOutput, SimRecord, SimulatedHallTimer, angle_error,
-        compute_current_pi_controller_gains, ideal_hall_table, plot_simulation,
+        AngleType, ClarkParkValue, EstimatorRecord, FocInputType, HallCalibrator, HallEncoder,
+        PMSMConfig, PMSMSim, Recorder, SimulatedHallTimer, TestBench, angle_error, ideal_hall_table,
     };
+
+    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
 
     /// Before any hall edge has been observed, the best estimate is the midpoint
     /// of the current sector with zero velocity.
@@ -219,7 +219,7 @@ mod test {
         let sector_start = encoder.edge_theta(pattern).unwrap();
         let sector_end = encoder.edge_theta(next_pattern).unwrap();
         let expected_theta = 0.5 * (sector_start + sector_end);
-        let mut timer = SimulatedHallTimer::new(20_000.0, 50, pattern);
+        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, pattern);
         for _ in 0..1000 {
             let estimate = estimator.get_estimate(timer.sample(pattern)).unwrap();
             assert_eq!(estimate.omega, 0.0);
@@ -232,8 +232,7 @@ mod test {
     /// current sector (no overrun into the next) and omega must taper down to zero.
     #[test]
     fn standstill_after_motion_holds_sector_and_decays_omega() {
-        let sample_rate_hz = 20_000.0;
-        let dt = 1.0 / sample_rate_hz;
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
         let encoder = HallEncoder::ideal();
         let mut estimator = HallEstimator::new();
         estimator.set_calibration(ideal_hall_table());
@@ -245,7 +244,7 @@ mod test {
         // Drive the pattern stream kinematically at constant electrical velocity:
         let omega_e: f32 = 60.0;
         let mut theta_e = 0.1;
-        let mut timer = SimulatedHallTimer::new(sample_rate_hz, 50, pattern_at(theta_e));
+        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, pattern_at(theta_e));
         let mut estimate = estimator.get_estimate(timer.sample(pattern_at(theta_e))).unwrap();
         let mut t = 0.0;
         while t < 0.5 {
@@ -286,7 +285,7 @@ mod test {
         estimator.set_calibration(ideal_hall_table());
 
         // Dither back and forth across the edge, holding each side for 40 samples:
-        let mut timer = SimulatedHallTimer::new(20_000.0, 50, before_edge);
+        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, before_edge);
         for _ in 0..100 {
             for pattern in [before_edge, after_edge] {
                 for _ in 0..40 {
@@ -306,50 +305,23 @@ mod test {
     /// 2) spin up the motor under torque control and check the estimate against sim ground truth while coasting
     #[test]
     fn hall_calibration_to_estimation_tracks_rotor() {
-        let pwm_freq_hz = 20_000.0;
-        let dt = 1.0 / pwm_freq_hz;
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
+        let target_omega_mech = 40.0;
         let sim_cfg = PMSMConfig::default();
-        let mut sim = PMSMSim::new(dt, sim_cfg).with_hall_encoder(HallEncoder::ideal());
-
-        let foc_cfg = FocConfig {
-            pwm_frequency_hz: pwm_freq_hz,
-            mosfet_deadtime_ns: 0.0,
-            mosfet_on_delay_ns: 0.0,
-            mosfet_off_delay_ns: 0.0,
-            deadtime_compensation_band_a: 1.0,
-            saturation_d_ratio: 0.0
-        };
-        let mut foc = FOC::new(foc_cfg);
-        let mut accelerator = DummyAccelerator;
-        let motor_params = MotorParamsEstimate::from_nominal(
-            MotorParams {
-                num_pole_pairs: sim_cfg.num_pole_pairs as u8,
-                stator_resistance: sim_cfg.stator_resistance,
-                d_inductance: sim_cfg.inductance,
-                q_inductance: sim_cfg.inductance,
-                pm_flux_linkage: sim_cfg.pm_flux_linkage
-            }
+        let mut bench = TestBench::new(
+            PMSMSim::new(dt, sim_cfg).with_hall_encoder(HallEncoder::ideal()), 5.0
         );
 
         // Calibrate the halls, as the firmware calibration stage would:
         let mut calibrator = HallCalibrator::new(5.0, dt);
-        let mut out = sim.state();
         let mut t = 0.0;
         while !calibrator.check_calibration_done() {
-            let pattern = out.measurement.hall_pattern.unwrap();
+            let pattern = bench.out.measurement.hall_pattern.unwrap();
             let theta = calibrator.calibration_step(pattern, 0.43).unwrap();
-            let foc_input = FocInput {
-                dc_bus_voltage_v: 24.0,
-                command: FocInputType::CalibrationCurrents(ClarkParkValue {
-                    d: 1.5, q: 0.0
-                }),
-                theta,
-                angle_type: AngleType::Electrical,
-                omega: 0.0,
-                phase_currents: out.measurement.currents,
-                current_limit_a: 5.0
-            };
-            out = sim.step(foc.compute(foc_input, motor_params, &mut accelerator).unwrap());
+            bench.step(
+                FocInputType::CalibrationCurrents(ClarkParkValue { d: 1.5, q: 0.0 }),
+                theta, AngleType::Electrical, 0.0
+            );
             t += dt;
             assert!(t < 60.0, "calibration timeout");
         }
@@ -359,54 +331,33 @@ mod test {
         estimator.set_calibration(calibrator.hall_pattern_to_theta);
 
         // Spin the motor up under torque control, then coast at constant speed (no friction in simulation):
-        let gains = compute_current_pi_controller_gains(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap();
-        foc.set_pi_gains(Some(gains));
-        foc.clear_windup();
+        bench.tune_pi(bench.params);
+        bench.foc.clear_windup();
 
-        let mut timer = SimulatedHallTimer::new(pwm_freq_hz, 50, out.measurement.hall_pattern.unwrap());
+        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, bench.out.measurement.hall_pattern.unwrap());
         let record_interval = (0.01 / dt).round() as u64;
-        let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
-        let mut step: u64 = 0;
+        let mut recorder = Recorder::new("hall_estimation.html", dt, record_interval);
 
         // One torque-controlled FOC + sim + hall estimation iteration:
-        let mut drive = |out: SimOutput, target_torque: f32| {
-            let foc_input = FocInput {
-                dc_bus_voltage_v: 24.0,
-                command: FocInputType::TargetTorque(target_torque),
-                theta: out.measurement.theta,
-                angle_type: AngleType::Mechanical,
-                omega: out.measurement.omega,
-                phase_currents: out.measurement.currents,
-                current_limit_a: 5.0
-            };
-            let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
-            let out = sim.step(foc_result);
-            let estimate = estimator.get_estimate(timer.sample(out.measurement.hall_pattern.unwrap())).unwrap();
+        let mut drive = |bench: &mut TestBench, recorder: &mut Recorder, target_torque: f32| {
+            let step = bench.step_torque(target_torque);
+            let estimate = estimator.get_estimate(timer.sample(step.out.measurement.hall_pattern.unwrap())).unwrap();
 
-            if step % record_interval == 0 {
-                // Electrical to mechanical for plotting:
-                let branch = (out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
-                records.push(SimRecord {
-                    input: foc_input,
-                    result: foc_result,
-                    sim: out,
-                    estimates: std::vec![EstimatorRecord {
-                        name: "hall",
-                        theta: (estimate.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
-                        omega: estimate.omega / sim_cfg.num_pole_pairs,
-                    }],
-                });
-            }
-            step += 1;
+            // Electrical to mechanical for plotting:
+            let branch = (step.out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
+            recorder.record(&step, &[EstimatorRecord {
+                name: "hall",
+                theta: (estimate.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
+                omega: estimate.omega / sim_cfg.num_pole_pairs,
+            }]);
 
-            (out, estimate)
+            estimate
         };
 
         // Accelerate to the target speed:
-        let target_omega_mech = 40.0;
         let mut t = 0.0;
-        while out.measurement.omega < target_omega_mech {
-            (out, _) = drive(out, 0.005);
+        while bench.out.measurement.omega < target_omega_mech {
+            drive(&mut bench, &mut recorder, 0.005);
             t += dt;
             assert!(t < 1.0, "motor never reached target speed");
         }
@@ -414,18 +365,17 @@ mod test {
         // Coast, letting the residual currents decay:
         let coasted = t;
         while t - coasted < 0.05 {
-            (out, _) = drive(out, 0.0);
+            drive(&mut bench, &mut recorder, 0.0);
             t += dt;
         }
 
         // Still coasting at constant speed, the estimate must track ground truth:
         let settled = t;
         while t - settled < 0.4 {
-            let estimate;
-            (out, estimate) = drive(out, 0.0);
+            let estimate = drive(&mut bench, &mut recorder, 0.0);
 
-            let theta_e = (out.measurement.theta * sim_cfg.num_pole_pairs).rem_euclid(TAU);
-            let omega_e = out.measurement.omega * sim_cfg.num_pole_pairs;
+            let theta_e = (bench.out.measurement.theta * sim_cfg.num_pole_pairs).rem_euclid(TAU);
+            let omega_e = bench.out.measurement.omega * sim_cfg.num_pole_pairs;
             let theta_err = angle_error(estimate.theta, theta_e);
             assert!(
                 theta_err.abs() < 0.1,
@@ -441,6 +391,6 @@ mod test {
             t += dt;
         }
 
-        plot_simulation("hall_estimation.html", dt * record_interval as f32, &records);
+        recorder.plot();
     }
 }

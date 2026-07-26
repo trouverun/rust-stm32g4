@@ -1,5 +1,5 @@
 use core::f32::consts::PI;
-use crate::{ControllerParameters, FocFault, MotorParamsEstimate};
+use crate::{FocFault, MotorParamsEstimate};
 use libm::{cosf, expf, logf, sinf, sqrtf};
 use num_complex::{Complex32};
 
@@ -22,6 +22,13 @@ pub struct PIGains {
     pub ki: f32,
     /// Anti-windup "gain" (1 / time constant)
     pub kt: f32,
+}
+
+#[derive(Clone, Copy, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub struct ControllerParameters {
+    pub d_pi: PIGains,
+    pub q_pi: PIGains,
+    pub closed_loop_bandwidth: Option<f32>
 }
 
 pub struct PIController {
@@ -102,6 +109,7 @@ pub fn compute_current_pi_controller_gains(
     let zeta = -logf(overshoot_pct/100.0)/sqrtf(PI*PI + logf(overshoot_pct/100.0)*logf(overshoot_pct/100.0));
     // - natural frequency:
     let omega_n = -logf(0.02*sqrtf(1.0 - zeta*zeta)) / (settling_time_s*zeta); 
+    let closed_loop_bandwidth = omega_n * sqrtf( 1.0 - 2.0*zeta*zeta + sqrtf(4.0*zeta*zeta*zeta*zeta - 4.0*zeta*zeta + 2.0) );
 
     // Polar form of the complex pole pair which creates the desired 2nd order system:
     // - placed complex pole pair magnitude:
@@ -147,7 +155,8 @@ pub fn compute_current_pi_controller_gains(
     let z0 = kp/(kp+T*ki); // Controller zero cancellation setpoint filter
     let gains = ControllerParameters {
         d_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp },
-        q_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp }
+        q_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp },
+        closed_loop_bandwidth: Some(closed_loop_bandwidth)
     };
 
     // 20c to 120c temperature change causes roughly 40% resistive gain in copper
@@ -212,79 +221,45 @@ mod tests {
     use crate::*;
     use super::*;
 
+    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
+
     struct StepResponse {
         overshoot_pct: f32,
         settling_2pct_s: f32,
         max_abs_i_d: f32,
+        iq_setpoint: f32,
     }
 
     /// Tune gains for the given spec and measure a torque step response against the sim
     fn run_step_response(overshoot_pct: f32, settling_time_s: f32, plot_path: &str) -> StepResponse {
+        let dt = 1.0/PWM_FREQUENCY_HZ;
         let setpoint = 0.1;
-        let pwm_freq_hz = 20_000.0;
-        let sim_dt = 1.0/pwm_freq_hz;
         let sim_cfg = PMSMConfig::default();
-        let mut sim = PMSMSim::new(sim_dt, sim_cfg);
-
-        let foc_cfg = FocConfig {
-            pwm_frequency_hz: pwm_freq_hz,
-            mosfet_deadtime_ns: 0.0,
-            mosfet_on_delay_ns: 0.0,
-            mosfet_off_delay_ns: 0.0,
-            deadtime_compensation_band_a: 1.0,
-            saturation_d_ratio: 0.0
-        };
-        let mut foc = FOC::new(foc_cfg);
-        let mut accelerator = DummyAccelerator;
-        let motor_params = MotorParamsEstimate::from_nominal(
-            MotorParams {
-                num_pole_pairs: sim_cfg.num_pole_pairs as u8,
-                stator_resistance: sim_cfg.stator_resistance,
-                d_inductance: sim_cfg.inductance,
-                q_inductance: sim_cfg.inductance,
-                pm_flux_linkage: sim_cfg.pm_flux_linkage
-            }
-        );
+        let mut bench = TestBench::new(PMSMSim::new(dt, sim_cfg), 5.0);
 
         let gains = compute_current_pi_controller_gains(
-            motor_params, pwm_freq_hz, overshoot_pct, settling_time_s
+            bench.params, PWM_FREQUENCY_HZ, overshoot_pct, settling_time_s
         ).expect("Couldn't tune controller");
-        foc.set_pi_gains(Some(gains));
-        let iq_setpoint = 0.666667 / (motor_params.num_pole_pairs.unwrap() as f32 * motor_params.pm_flux_linkage.unwrap()) * setpoint;
+        bench.foc.set_pi_gains(Some(gains));
+        let iq_setpoint = 0.666667 / (bench.params.num_pole_pairs.unwrap() as f32 * bench.params.pm_flux_linkage.unwrap()) * setpoint;
 
-        let mut response = StepResponse { overshoot_pct: 0.0, settling_2pct_s: 0.0, max_abs_i_d: 0.0 };
-        let mut out = sim.state();
-        let mut time_s = 0.0;
-        let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
-        while time_s < 1.5*settling_time_s {
-            let foc_input = FocInput {
-                command: FocInputType::TargetTorque(setpoint),
-                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
-                theta: out.measurement.theta,
-                angle_type: AngleType::Mechanical,
-                omega: out.measurement.omega,
-                phase_currents: out.measurement.currents,
-                current_limit_a: 5.0
-            };
-            let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
+        let mut recorder = Recorder::new(plot_path, dt, 1);
+        let mut response = StepResponse { overshoot_pct: 0.0, settling_2pct_s: 0.0, max_abs_i_d: 0.0, iq_setpoint };
+        let mut t = 0.0;
+        while t < 1.5*settling_time_s {
+            let step = bench.step_torque(setpoint);
+            recorder.record(&step, &[]);
+            t += dt;
 
-            out = sim.step(foc_result);
-            records.push(SimRecord {
-                input: foc_input,
-                result: foc_result,
-                sim: out,
-                estimates: std::vec::Vec::new(),
-            });
-            time_s += sim_dt;
-
-            response.overshoot_pct = response.overshoot_pct.max(100.0*(out.state.i_dq.q - iq_setpoint)/iq_setpoint);
-            response.max_abs_i_d = response.max_abs_i_d.max(out.state.i_dq.d.abs());
-            if (out.state.i_dq.q - iq_setpoint).abs() > 0.02*iq_setpoint {
-                response.settling_2pct_s = time_s;
+            let i_dq = step.out.state.i_dq;
+            response.overshoot_pct = response.overshoot_pct.max(100.0*(i_dq.q - iq_setpoint)/iq_setpoint);
+            response.max_abs_i_d = response.max_abs_i_d.max(i_dq.d.abs());
+            if (i_dq.q - iq_setpoint).abs() > 0.02*iq_setpoint {
+                response.settling_2pct_s = t;
             }
         }
 
-        plot_simulation(plot_path, sim_dt, &records);
+        recorder.plot();
         response
     }
 
@@ -318,11 +293,67 @@ mod tests {
                 response.settling_2pct_s >= 0.5*settling_time_s,
                 "Settling time {:.4}s below half the {:.4}s spec", response.settling_2pct_s, settling_time_s
             );
+            let i_d_bound = 0.025 * response.iq_setpoint;
             assert!(
-                response.max_abs_i_d <= 5e-2,
-                "d-axis current not correctly regulated: {} > {}", response.max_abs_i_d, 5e-2
+                response.max_abs_i_d <= i_d_bound,
+                "d-axis current not correctly regulated: {} > {i_d_bound}", response.max_abs_i_d
             );
         }
+    }
+
+    /// The integrator must not wind up past the voltage the bus can actually apply,
+    /// and current control has to recover as soon as the command is feasible again
+    #[test]
+    fn starved_bus_does_not_wind_up_integrator() {
+        let dt = 1.0/PWM_FREQUENCY_HZ;
+        let settling_time_s = 0.001;
+        // Bus too low to reach the commanded current, rotor held by a load it cannot overcome:
+        let sim_cfg = PMSMConfig { dc_bus_voltage: 2.0, ..PMSMConfig::default() };
+        let mut bench = TestBench::new(PMSMSim::new(dt, sim_cfg).with_load_torque(1.0), 10.0);
+
+        let gains = compute_current_pi_controller_gains(
+            bench.params, PWM_FREQUENCY_HZ, 5.0, settling_time_s
+        ).expect("Couldn't tune controller");
+        bench.foc.set_pi_gains(Some(gains));
+
+        const SQRT3_RECIPROCAL: f32 = 1.0/1.73205080757;
+        let u_max = sim_cfg.dc_bus_voltage * SQRT3_RECIPROCAL;
+        let bus_limited_i_q = u_max / sim_cfg.stator_resistance;
+        let saturating_time_s = 20.0*settling_time_s;
+
+        let mut max_integral_term = 0.0f32;
+        let mut min_integral_term = f32::INFINITY;
+        let mut recovery_s = 0.0;
+        let mut t = 0.0;
+        while t < 2.0*saturating_time_s {
+            let saturating = t < saturating_time_s;
+            let target_i_q = if saturating { 3.0*bus_limited_i_q } else { 0.5*bus_limited_i_q };
+            let step = bench.step_measured(FocInputType::TargetCurrents(ClarkParkValue { d: 0.0, q: target_i_q }));
+            t += dt;
+
+            // Only once the delayed anti-windup feedback has caught up with the step:
+            if saturating && t > 0.5*saturating_time_s {
+                max_integral_term = max_integral_term.max(bench.foc.q_pi.integral_term);
+                min_integral_term = min_integral_term.min(bench.foc.q_pi.integral_term);
+            }
+            if !saturating && (step.out.state.i_dq.q - target_i_q).abs() > 0.02*target_i_q {
+                recovery_s = t - saturating_time_s;
+            }
+        }
+
+        assert!(
+            max_integral_term <= 1.01*u_max,
+            "Integrator wound up to {:.2}V, above the {:.2}V the bus can apply", max_integral_term, u_max
+        );
+        assert!(
+            min_integral_term >= 0.95*u_max,
+            "Integrator settled to {:.2}V, below the {:.2}V the bus is applying", min_integral_term, u_max
+        );
+        // Recovery unwinds from the saturation limit instead of starting from rest:
+        assert!(
+            recovery_s <= 2.0*settling_time_s,
+            "Recovery from saturation took {:.4}s, above the {:.4}s allowed", recovery_s, 2.0*settling_time_s
+        );
     }
 
     /// Coefficients of lead*(z - real_root)*(z^2 - 2*r*cos(theta)*z + r^2)
