@@ -264,3 +264,168 @@ impl CalibrationRunner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FaultCause;
+    use field_oriented::{AlphaBeta, FocResult, PhaseValues};
+
+    const POLE_PAIRS: u8 = 7;
+    const MAX_RPM: f32 = 3000.0;
+    const DT_S: f32 = 1.0 / 20_000.0;
+    const TARGET_CURRENT_A: f32 = 1.5;
+
+    fn runner_at(phase: CalibrationPhase) -> CalibrationRunner {
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, DT_S);
+        runner.phase = phase;
+        runner
+    }
+
+    fn inputs() -> CalibrationInputs {
+        CalibrationInputs {
+            dc_bus_voltage_v: 48.0,
+            angle_type: AngleType::Electrical,
+            theta: 0.3,
+            hall_pattern: 1,
+            target_voltage_v: 2.0,
+            target_current_a: TARGET_CURRENT_A,
+            target_omega_rads: 10.0,
+        }
+    }
+
+    fn foc_result() -> FocResult {
+        FocResult {
+            omega_e: 0.0,
+            duty_cycles: PhaseValues::zero(),
+            voltage_hexagon_sector: 0,
+            measured_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            target_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            u_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
+        }
+    }
+
+    fn phase_name(phase: &CalibrationPhase) -> &'static str {
+        match phase {
+            CalibrationPhase::WaitingEncoderZeroing { .. } => "WaitingEncoderZeroing",
+            CalibrationPhase::HallCalibration { .. } => "HallCalibration",
+            CalibrationPhase::MotorEstimation => "MotorEstimation",
+            CalibrationPhase::WaitingHallCompletion => "WaitingHallCompletion",
+            CalibrationPhase::WaitingTuning => "WaitingTuning",
+            CalibrationPhase::Done => "Done",
+        }
+    }
+
+    fn zero_voltage_command(output: &CalibrationOutput) {
+        let FocInputType::CalibrationVoltage(u_dq) = output.foc_command else {
+            panic!("the motor is still being driven");
+        };
+        assert_eq!(u_dq.d, 0.0);
+        assert_eq!(u_dq.q, 0.0);
+    }
+
+    /// Wait phases advance on resume and never on their own.
+    #[test]
+    fn wait_phases_advance_only_on_resume() {
+        let transitions = [
+            (CalibrationPhase::WaitingHallCompletion, "MotorEstimation"),
+            (CalibrationPhase::WaitingTuning, "MotorEstimation"),
+        ];
+
+        for (phase, expected) in transitions {
+            let mut runner = runner_at(phase);
+            for _ in 0..100 {
+                runner.step(inputs());
+            }
+            assert_eq!(phase_name(&runner.phase), phase_name(&phase), "left the wait phase unprompted");
+
+            runner.resume();
+            assert_eq!(phase_name(&runner.phase), expected);
+        }
+    }
+
+    /// Resume outside a wait phase changes nothing.
+    #[test]
+    fn spurious_resume_does_not_skip_a_stage() {
+        let phases = [
+            CalibrationPhase::HallCalibration { time_passed_s: 0.0 },
+            CalibrationPhase::MotorEstimation,
+            CalibrationPhase::Done,
+        ];
+
+        for phase in phases {
+            let mut runner = runner_at(phase);
+            runner.resume();
+            assert_eq!(phase_name(&runner.phase), phase_name(&phase));
+        }
+    }
+
+    /// Hall calibration fails once its time limit is reached.
+    #[test]
+    fn hall_calibration_times_out() {
+        let mut runner = runner_at(CalibrationPhase::HallCalibration { time_passed_s: 0.0 });
+        let (_, result) = runner.step(inputs());
+        assert!(result.is_none());
+
+        let mut runner = runner_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });
+        let (_, result) = runner.step(inputs());
+        assert!(matches!(result, Some(StageResult::Failure { cause: CalibrationFailureCause::Timeout })));
+    }
+
+    /// Hall calibration drives at the configured calibration current.
+    #[test]
+    fn hall_calibration_uses_the_configured_target_current() {
+        let mut runner = runner_at(CalibrationPhase::HallCalibration { time_passed_s: 0.0 });
+
+        let (output, _) = runner.step(inputs());
+        let FocInputType::CalibrationCurrents(i_dq) = output.foc_command else {
+            panic!("hall calibration did not command a current");
+        };
+        assert_eq!(i_dq.d, TARGET_CURRENT_A);
+        assert_eq!(i_dq.q, 0.0);
+    }
+
+    /// Wait phases hold the inverter at zero voltage.
+    #[test]
+    fn wait_phases_command_zero_voltage() {
+        let phases = [
+            CalibrationPhase::WaitingHallCompletion,
+            CalibrationPhase::WaitingTuning,
+            CalibrationPhase::Done,
+        ];
+
+        for phase in phases {
+            let mut runner = runner_at(phase);
+            let (output, result) = runner.step(inputs());
+            assert!(result.is_none());
+            zero_voltage_command(&output);
+        }
+    }
+
+    /// A failed stage stops driving the motor.
+    #[test]
+    fn stage_failure_stops_driving_the_motor() {
+        let mut runner = runner_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });
+
+        let (output, result) = runner.step(inputs());
+        assert!(matches!(result, Some(StageResult::Failure { .. })));
+        zero_voltage_command(&output);
+    }
+
+    /// An estimator fault ends calibration with the mapped fault cause.
+    #[test]
+    fn estimator_fault_ends_calibration_with_mapped_cause() {
+        let mut runner = runner_at(CalibrationPhase::MotorEstimation);
+        runner.get_estimator().reset();
+        runner.get_estimator().after_foc_iteration(foc_result());
+
+        let (output, result) = runner.step(inputs());
+        let Some(StageResult::Failure { cause }) = result else {
+            panic!("estimator fault did not fail the stage");
+        };
+        assert_eq!(FaultCause::from(cause), FaultCause::MissingMotorParams);
+        assert_eq!(phase_name(&runner.phase), "Done");
+        zero_voltage_command(&output);
+    }
+}

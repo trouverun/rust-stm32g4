@@ -1,7 +1,7 @@
 use super::calibration::{CalibrationFailureCause};
 use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuningFault};
 
-#[derive(Clone, Copy, PartialEq, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
 #[repr(u8)]
 pub enum FaultCause {
     Empty,
