@@ -412,58 +412,46 @@ mod test {
     use super::*;
     use core::f32::consts::TAU;
     use crate::{
-        AngleType, DummyAccelerator, EstimatorRecord, FOC, FocConfig, FocInput, FocInputType,
-        HallEncoder, HallEstimator, PMSMConfig, PMSMSim, SimRecord, SimulatedHallTimer,
-        compute_current_pi_controller_gains, ideal_hall_table, plot_simulation
+        AngleType, EstimatorRecord, FocInputType, HallEncoder, HallEstimator, Motor, PMSMSim,
+        Recorder, SimulatedHallTimer, TestBench, ideal_hall_table, reference_motors
     };
 
-    /// Test the estimation routine using a simulation model with noisy current measurements and imperfect hall feedback,
-    /// and assert that the estimated parameters are within the following bounds:
-    /// R: +/- 10%
-    /// L: +/- 10%
-    /// F: +/- 5%
-    #[test]
-    fn motor_param_estimation() {
-        let pwm_freq_hz = 20_000.0;
-        let dt_s = 1.0 / pwm_freq_hz;
-        let sim_cfg = PMSMConfig::default();
-        let mut sim = PMSMSim::new(dt_s, sim_cfg)
-            .with_current_noise(0.1, 777)
+    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
+
+    /// Run the estimation routine against a motor, using noisy current measurements and
+    /// imperfect hall feedback
+    fn run_estimation(motor: Motor, plot_path: &str) -> MotorParamsEstimate {
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
+        let timeout_s = 60.0;
+        let sim_cfg = motor.config;
+        let sim = PMSMSim::new(dt, sim_cfg)
+            .with_current_noise(motor.current_noise_a, 777)
             .with_hall_encoder(HallEncoder::noisy(0.05, 0.1, 42));
+        let mut bench = TestBench::new(sim, motor.current_limit_a);
 
-        let foc_cfg = FocConfig { pwm_frequency_hz: pwm_freq_hz, mosfet_deadtime_ns: 0.0, mosfet_on_delay_ns: 0.0, mosfet_off_delay_ns: 0.0, deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 };
-        let mut foc = FOC::new(foc_cfg);
-        let mut accelerator = DummyAccelerator;
-
-        let max_current = 1.5;
-        let max_voltage = 12.0;
         let est_config = OfflineEstimatorConfig {
             settle_time_s: 2.5,
             test_time_s: 3.0,
             max_spin_time_s: 20.0,
-            min_spin_omega_mech: 100.0,
-            dt_s,
+            min_spin_omega_mech: motor.calibration_omega,
+            dt_s: dt,
         };
-        let mut estimator = OfflineMotorEstimator::new(est_config, 2);
+        let mut estimator = OfflineMotorEstimator::new(est_config, sim_cfg.num_pole_pairs as u8);
         estimator.start(sim_cfg.num_pole_pairs as u8);
 
-        let mut out = sim.state();
         // Rotor feedback through the hall pipeline:
         let mut hall_estimator = HallEstimator::new();
         hall_estimator.set_calibration(ideal_hall_table());
-        let mut timer = SimulatedHallTimer::new(pwm_freq_hz, 50, out.measurement.hall_pattern.unwrap());
-        let mut hall = hall_estimator.get_estimate(timer.sample(out.measurement.hall_pattern.unwrap())).unwrap();
+        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, bench.out.measurement.hall_pattern.unwrap());
+        let mut hall = hall_estimator.get_estimate(timer.sample(bench.out.measurement.hall_pattern.unwrap())).unwrap();
 
-        let mut t = 0.0;
         let record_interval = 10;
-        let mut step = 0u64;
-        let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
-        let timeout = 60.0;
-
+        let mut recorder = Recorder::new(plot_path, dt, record_interval);
+        let mut t = 0.0;
         while !estimator.estimation_done() {
             let step_in = OfflineEstimatorInput {
-                target_voltage: max_voltage,
-                target_current: max_current,
+                target_voltage: motor.calibration_voltage_v,
+                target_current: motor.calibration_current_a,
                 dc_bus_voltage: sim_cfg.dc_bus_voltage,
                 theta: hall.theta
             };
@@ -474,72 +462,64 @@ mod test {
                 OfflineEstimatorOutput::CalibrationVoltage(u_dq) => FocInputType::CalibrationVoltage(u_dq),
                 OfflineEstimatorOutput::Current(i_dq) => FocInputType::TargetCurrents(i_dq)
             };
-            let foc_input = FocInput {
-                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
-                command,
-                theta: cmd.theta,
-                angle_type: AngleType::Electrical,
-                omega: hall.omega,
-                phase_currents: out.measurement.currents,
-                current_limit_a: 5.0
-            };
 
-            let foc_result = foc.compute(foc_input, estimator.get_estimate(), &mut accelerator);
-            estimator.after_foc_iteration(foc_result.unwrap());
+            bench.params = estimator.get_estimate();
+            let step = bench.step(command, cmd.theta, AngleType::Electrical, hall.omega);
+            estimator.after_foc_iteration(step.result);
 
             if estimator.should_unwind_controller() {
-                foc.clear_windup();
+                bench.foc.clear_windup();
                 estimator.acknowledge_unwind_request();
             } else if estimator.should_tune_controller() {
-                let pi_gains = compute_current_pi_controller_gains(
-                    estimator.get_estimate(), pwm_freq_hz, 1.0, 0.001
-                ).expect("Failed to tune PI controller");
-                foc.set_pi_gains(Some(pi_gains));
+                bench.tune_pi(estimator.get_estimate());
                 estimator.acknowledge_tuning_request();
             }
 
-            out = sim.step(foc_result.unwrap());
-            hall = hall_estimator.get_estimate(timer.sample(out.measurement.hall_pattern.unwrap())).unwrap();
-            if step % record_interval == 0 {
-                // Electrical to mechanical for plotting:
-                let branch = (out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
-                records.push(SimRecord {
-                    input: foc_input,
-                    result: foc_result.unwrap(),
-                    sim: out,
-                    estimates: std::vec![EstimatorRecord {
-                        name: "hall",
-                        theta: (hall.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
-                        omega: hall.omega / sim_cfg.num_pole_pairs,
-                    }],
-                });
-            }
-            step += 1;
+            hall = hall_estimator.get_estimate(timer.sample(step.out.measurement.hall_pattern.unwrap())).unwrap();
+            // Electrical to mechanical for plotting:
+            let branch = (step.out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
+            recorder.record(&step, &[EstimatorRecord {
+                name: "hall",
+                theta: (hall.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
+                omega: hall.omega / sim_cfg.num_pole_pairs,
+            }]);
 
-            t += dt_s;
-            if t > timeout {
-                plot_simulation("motor_estimation.html", dt_s * record_interval as f32, &records);
-                panic!("Estimation did not complete within {timeout}s");
+            t += dt;
+            if t > timeout_s {
+                recorder.plot();
+                panic!("Estimation did not complete within {timeout_s}s");
             }
 
             if estimator.estimation_failed() {
-                plot_simulation("motor_estimation.html", dt_s * record_interval as f32, &records);
+                recorder.plot();
                 panic!("Estimation failed!")
             }
         }
 
-        plot_simulation("motor_estimation.html", dt_s * record_interval as f32, &records);
+        recorder.plot();
+        estimator.params
+    }
 
-        let est = estimator.params;
-        let r_err = (est.stator_resistance.unwrap() - sim_cfg.stator_resistance).abs() / sim_cfg.stator_resistance;
-        let l_err = (est.d_inductance.unwrap() - sim_cfg.inductance).abs() / sim_cfg.inductance;
-        let f_err = (est.pm_flux_linkage.unwrap() - sim_cfg.pm_flux_linkage).abs() / sim_cfg.pm_flux_linkage;
+    /// Estimate every reference motor and assert the parameters land within:
+    /// R: +/- 10%
+    /// L: +/- 10%
+    /// F: +/- 5%
+    #[test]
+    fn motor_param_estimation() {
+        for motor in reference_motors() {
+            let est = run_estimation(motor, &std::format!("motor_estimation_{}.html", motor.name));
+            let sim_cfg = motor.config;
 
-        assert!(r_err < 0.10, "R estimate error {:.1}%: got {}, expected {}",
-            r_err * 100.0, est.stator_resistance.unwrap(), sim_cfg.stator_resistance);
-        assert!(l_err < 0.10, "L estimate error {:.1}%: got {}, expected {}",
-            l_err * 100.0, est.d_inductance.unwrap(), sim_cfg.inductance);
-        assert!(f_err < 0.05, "F estimate error {:.1}%: got {}, expected {}",
-            l_err * 100.0, est.pm_flux_linkage.unwrap(), sim_cfg.pm_flux_linkage);
+            let r_err = (est.stator_resistance.unwrap() - sim_cfg.stator_resistance).abs() / sim_cfg.stator_resistance;
+            let l_err = (est.d_inductance.unwrap() - sim_cfg.inductance).abs() / sim_cfg.inductance;
+            let f_err = (est.pm_flux_linkage.unwrap() - sim_cfg.pm_flux_linkage).abs() / sim_cfg.pm_flux_linkage;
+
+            assert!(r_err < 0.10, "{}: R estimate error {:.1}%: got {}, expected {}",
+                motor.name, r_err * 100.0, est.stator_resistance.unwrap(), sim_cfg.stator_resistance);
+            assert!(l_err < 0.10, "{}: L estimate error {:.1}%: got {}, expected {}",
+                motor.name, l_err * 100.0, est.d_inductance.unwrap(), sim_cfg.inductance);
+            assert!(f_err < 0.05, "{}: F estimate error {:.1}%: got {}, expected {}",
+                motor.name, f_err * 100.0, est.pm_flux_linkage.unwrap(), sim_cfg.pm_flux_linkage);
+        }
     }
 }

@@ -4,13 +4,182 @@ use std::string::String;
 use plotly::{Plot, Scatter, Layout};
 use plotly::common::{DashType, Fill, Line, LineShape, Mode};
 use plotly::layout::Axis;
-use crate::{DoesFocMath, FocInput, FocInputType, FocResult, HallEstimatorInput};
-use crate::sim::{HallEncoder, SimOutput};
+use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, compute_current_pi_controller_gains};
+use crate::sim::{HallEncoder, PMSMConfig, PMSMSim, SimOutput};
 use crate::types::*;
+use crate::estimation::{MotorParams, MotorParamsEstimate};
+
+const SQRT3_RECIPROCAL: f32 = 1.0 / 1.73205080757;
+
+/// Overmodulation threshold shared by the bench FOC config and the tests asserting against it
+pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
+
+/// Nominal parameter estimate matching a sim config exactly
+pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {
+    MotorParamsEstimate::from_nominal(MotorParams {
+        num_pole_pairs: config.num_pole_pairs as u8,
+        stator_resistance: config.stator_resistance,
+        d_inductance: config.inductance,
+        q_inductance: config.inductance,
+        pm_flux_linkage: config.pm_flux_linkage,
+    })
+}
+
+/// A machine to run scenarios against, together with the current limit of the drive feeding it
+#[derive(Clone, Copy)]
+pub struct Motor {
+    pub name: &'static str,
+    pub config: PMSMConfig,
+    pub current_limit_a: f32,
+    /// Drive levels and spin target for the offline estimation routine
+    pub calibration_current_a: f32,
+    pub calibration_voltage_v: f32,
+    pub calibration_omega: f32,
+    /// Measurement noise of the drive's current sense chain
+    pub current_noise_a: f32,
+}
+
+impl Motor {
+    pub fn params(&self) -> MotorParamsEstimate {
+        nominal_params(self.config)
+    }
+
+    /// Largest voltage vector the bus can produce without leaving linear modulation
+    pub fn u_max(&self) -> f32 {
+        self.config.dc_bus_voltage * SQRT3_RECIPROCAL
+    }
+
+    /// Speed at which the back-emf alone fills the bus
+    pub fn base_omega(&self) -> f32 {
+        self.u_max() / (self.config.pm_flux_linkage * self.config.num_pole_pairs)
+    }
+
+    pub fn torque_at_current_limit(&self) -> f32 {
+        self.params().torque_constant().unwrap() * self.current_limit_a
+    }
+}
+
+// Moons' R57BLB50L2, 4 pole 57 mm servo
+pub const MOONS_R57BLB50L2: PMSMConfig = PMSMConfig {
+    dc_bus_voltage: 24.0,
+    num_pole_pairs: 2.0,
+    stator_resistance: 0.66,
+    inductance: 1.84e-3,
+    pm_flux_linkage: 16.7e-3,
+    rotor_inertia: 6.7e-6,
+};
+
+// Faulhaber 3268 G 024 BX4, 4 pole inrunner
+pub const FAULHABER_3268G024BX4: PMSMConfig = PMSMConfig {
+    dc_bus_voltage: 24.0,
+    num_pole_pairs: 2.0,
+    stator_resistance: 0.735,
+    inductance: 55.0e-6,
+    pm_flux_linkage: 12.5e-3,
+    rotor_inertia: 6.3e-6,
+};
+
+// Nanotec DB59S024035-A, 6 pole NEMA 23 servo
+pub const NANOTEC_DB59S024035A: PMSMConfig = PMSMConfig {
+    dc_bus_voltage: 24.0,
+    num_pole_pairs: 3.0,
+    stator_resistance: 0.285,
+    inductance: 315.0e-6,
+    pm_flux_linkage: 10.0e-3,
+    rotor_inertia: 7.5e-6,
+};
+
+// TQ RoboDrive ILM 25x08, frameless robot joint
+pub const TQ_ILM25X08: PMSMConfig = PMSMConfig {
+    dc_bus_voltage: 24.0,
+    num_pole_pairs: 7.0,
+    stator_resistance: 0.37,
+    inductance: 165.0e-6,
+    pm_flux_linkage: 1.4e-3,
+    rotor_inertia: 2.3e-7,
+};
+
+// TQ RoboDrive ILM 70x18, frameless robot joint
+pub const TQ_ILM70X18: PMSMConfig = PMSMConfig {
+    dc_bus_voltage: 48.0,
+    num_pole_pairs: 10.0,
+    stator_resistance: 0.33,
+    inductance: 730.0e-6,
+    pm_flux_linkage: 12.5e-3,
+    rotor_inertia: 3.21e-5,
+};
+
+// TQ RoboDrive ILM 115x25, frameless robot joint
+pub const TQ_ILM115X25: PMSMConfig = PMSMConfig {
+    dc_bus_voltage: 48.0,
+    num_pole_pairs: 15.0,
+    stator_resistance: 0.07,
+    inductance: 300.0e-6,
+    pm_flux_linkage: 12.5e-3,
+    rotor_inertia: 3.93e-4,
+};
+
+pub fn reference_motors() -> [Motor; 6] {
+    [
+        Motor {
+            name: "moons_r57blb50l2",
+            config: MOONS_R57BLB50L2,
+            current_limit_a: 2.78,
+            current_noise_a: 0.02,
+            calibration_current_a: 1.5,
+            calibration_voltage_v: 12.0,
+            calibration_omega: 100.0,
+        },
+        Motor {
+            name: "faulhaber_3268bx4",
+            config: FAULHABER_3268G024BX4,
+            current_limit_a: 2.0,
+            current_noise_a: 0.015,
+            calibration_current_a: 1.2,
+            calibration_voltage_v: 6.0,
+            calibration_omega: 120.0,
+        },
+        Motor {
+            name: "nanotec_db59s",
+            config: NANOTEC_DB59S024035A,
+            current_limit_a: 5.0,
+            current_noise_a: 0.04,
+            calibration_current_a: 2.5,
+            calibration_voltage_v: 2.3,
+            calibration_omega: 100.0,
+        },
+        Motor {
+            name: "ilm25x08",
+            config: TQ_ILM25X08,
+            current_limit_a: 4.3,
+            current_noise_a: 0.03,
+            calibration_current_a: 2.0,
+            calibration_voltage_v: 3.0,
+            calibration_omega: 300.0,
+        },
+        Motor {
+            name: "ilm70x18",
+            config: TQ_ILM70X18,
+            current_limit_a: 6.7,
+            current_noise_a: 0.05,
+            calibration_current_a: 3.0,
+            calibration_voltage_v: 2.6,
+            calibration_omega: 50.0,
+        },
+        Motor {
+            name: "ilm115x25",
+            config: TQ_ILM115X25,
+            current_limit_a: 14.0,
+            current_noise_a: 0.1,
+            calibration_current_a: 3.0,
+            calibration_voltage_v: 0.6,
+            calibration_omega: 35.0,
+        },
+    ]
+}
 
 /// Model of the hall capture timer: counts ticks since the last hall edge
-/// and measures the duration of the previous hall sector, like the STM32 timer
-/// in hall-sensor mode does in hardware.
+/// and measures the duration of the previous hall sector
 pub struct SimulatedHallTimer {
     tick_frequency_hz: f32,
     ticks_per_sample: u32,
@@ -87,24 +256,134 @@ impl DoesFocMath for DummyAccelerator {
     }
 }
 
+/// Closed loop rig pairing a sim with a FOC wired to the standard test config
+pub struct TestBench {
+    pub sim: PMSMSim,
+    pub foc: FOC,
+    pub accelerator: DummyAccelerator,
+    /// Motor params handed to the FOC each step, nominal for the sim config by default
+    pub params: MotorParamsEstimate,
+    pub current_limit_a: f32,
+    /// Latest sim output, also the feedback source for the next step
+    pub out: SimOutput,
+    dc_bus_voltage: f32,
+    dt: f32,
+}
+
+/// One closed loop iteration
+pub struct BenchStep {
+    pub input: FocInput,
+    pub result: FocResult,
+    pub out: SimOutput,
+}
+
+impl TestBench {
+    pub fn new(sim: PMSMSim, current_limit_a: f32) -> Self {
+        let config = sim.config();
+        let dt = sim.dt();
+        let foc = FOC::new(FocConfig {
+            pwm_frequency_hz: 1.0 / dt,
+            mosfet_deadtime_ns: 0.0,
+            mosfet_on_delay_ns: 0.0,
+            mosfet_off_delay_ns: 0.0,
+            deadtime_compensation_band_a: 1.0,
+            overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
+            field_weakening_bandwidth: 1000.0,
+        });
+        let out = sim.state();
+        Self {
+            sim,
+            foc,
+            accelerator: DummyAccelerator,
+            params: nominal_params(config),
+            current_limit_a,
+            out,
+            dc_bus_voltage: config.dc_bus_voltage,
+            dt,
+        }
+    }
+
+    /// Tune the current loop for the given params with the 1% / 1 ms spec the tests share
+    pub fn tune_pi(&mut self, params: MotorParamsEstimate) {
+        let gains = compute_current_pi_controller_gains(params, 1.0 / self.dt, 1.0, 0.001)
+            .expect("Failed to tune PI controller");
+        self.foc.set_pi_gains(Some(gains)).unwrap();
+    }
+
+    /// One FOC + sim iteration with the given command and rotor feedback
+    pub fn step(&mut self, command: FocInputType, theta: f32, angle_type: AngleType, omega: f32) -> BenchStep {
+        let input = FocInput {
+            command,
+            dc_bus_voltage_v: self.dc_bus_voltage,
+            angle_type,
+            theta,
+            omega,
+            phase_currents: self.out.measurement.currents,
+            current_limit_a: self.current_limit_a,
+        };
+        let result = self.foc.compute(input, self.params, &mut self.accelerator).unwrap();
+        self.out = self.sim.step(result);
+        BenchStep { input, result, out: self.out }
+    }
+
+    /// Step with ground truth rotor feedback from the sim
+    pub fn step_measured(&mut self, command: FocInputType) -> BenchStep {
+        let measurement = self.out.measurement;
+        self.step(command, measurement.theta, AngleType::Mechanical, measurement.omega)
+    }
+
+    /// Torque command with ground truth rotor feedback
+    pub fn step_torque(&mut self, torque_nm: f32) -> BenchStep {
+        self.step_measured(FocInputType::TargetTorque(torque_nm))
+    }
+}
+
 pub struct SimRecord {
     pub input: FocInput,
     pub result: FocResult,
     pub sim: SimOutput,
-    /// Estimator outputs at this record point, overlaid dashed on the angle and
-    /// speed rows. Any number of estimators (hall, encoder, sensorless, ...) can
-    /// be recorded side by side, keyed by name.
+    /// Estimator outputs at this record point
     pub estimates: Vec<EstimatorRecord>,
 }
 
 /// One estimator's output at a record point, for overlaying on the plot.
-/// Values must be in the same frame and units as `SimSnapshot::theta` /
-/// `SimSnapshot::omega` (mechanical).
+/// Values must be in the mechanical not electrical.
 #[derive(Clone, Copy)]
 pub struct EstimatorRecord {
     pub name: &'static str,
     pub theta: f32,
     pub omega: f32,
+}
+
+/// Collects every Nth bench step into SimRecords and plots them
+pub struct Recorder {
+    path: String,
+    dt: f32,
+    interval: u64,
+    step: u64,
+    records: Vec<SimRecord>,
+}
+
+impl Recorder {
+    pub fn new(path: &str, dt: f32, interval: u64) -> Self {
+        Self { path: path.into(), dt, interval, step: 0, records: Vec::new() }
+    }
+
+    pub fn record(&mut self, step: &BenchStep, estimates: &[EstimatorRecord]) {
+        if self.step % self.interval == 0 {
+            self.records.push(SimRecord {
+                input: step.input,
+                result: step.result,
+                sim: step.out,
+                estimates: estimates.to_vec(),
+            });
+        }
+        self.step += 1;
+    }
+
+    pub fn plot(&self) {
+        plot_simulation(&self.path, self.dt * self.interval as f32, &self.records);
+    }
 }
 
 pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
