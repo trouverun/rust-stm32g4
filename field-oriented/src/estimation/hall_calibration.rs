@@ -143,82 +143,43 @@ impl HallCalibrator {
 mod test {
     use super::HallCalibrator;
     use crate::{
-        ClarkParkValue, FOC, FocConfig, FocInput, MotorParams, ConstantMotorParameters, MotorParamsEstimate,
-        PMSMConfig, PMSMSim, HallEncoder, FocInputType, AngleType, DummyAccelerator, plot_simulation, SimRecord
+        AngleType, ClarkParkValue, FocInputType, HallEncoder, PMSMConfig, PMSMSim, Recorder, TestBench
     };
 
-    /// Run the calibrator against a simulator with an ideal Hall encoder and no cogging torque, 
-    /// and check that the calibrated Hall edges match those configured to the simulator 
+    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
+
+    /// Run the calibrator against a simulator and check that the 
+    /// calibrated Hall edges match those configured to the simulator
     #[test]
     fn hall_calibration_works_vs_ideal() {
-        let pwm_freq_hz = 20_000.0;
-        let dt = 1.0 / pwm_freq_hz;
-        let mut sim_cfg = PMSMConfig::default();
-        let mut sim = PMSMSim::new(dt, sim_cfg)
-            .with_hall_encoder(HallEncoder::ideal());
-
-        let foc_cfg = FocConfig {
-            pwm_frequency_hz: pwm_freq_hz,
-            mosfet_deadtime_ns: 0.0,
-            mosfet_on_delay_ns: 0.0,
-            mosfet_off_delay_ns: 0.0,
-            deadtime_compensation_band_a: 1.0,
-            saturation_d_ratio: 0.0
-        };
-        let mut foc = FOC::new(foc_cfg);
-        let mut accelerator = DummyAccelerator;
-        let motor_params = MotorParamsEstimate::from_nominal(
-            MotorParams {
-                num_pole_pairs: sim_cfg.num_pole_pairs as u8,
-                stator_resistance: sim_cfg.stator_resistance,
-                d_inductance: sim_cfg.inductance,
-                q_inductance: sim_cfg.inductance,
-                pm_flux_linkage: sim_cfg.pm_flux_linkage
-            }
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
+        let timeout_s = 60.0;
+        let mut bench = TestBench::new(
+            PMSMSim::new(dt, PMSMConfig::default()).with_hall_encoder(HallEncoder::ideal()), 5.0
         );
         let mut calibrator = HallCalibrator::new(5.0, dt);
 
-        let mut out = sim.state();
-        let mut t = 0.0;
         let record_interval = (0.1 / dt).round() as u64;
-        let mut step: u64 = 0;
-        let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
+        let mut recorder = Recorder::new("hall_calibration.html", dt, record_interval);
+        let mut t = 0.0;
         while !calibrator.check_calibration_done() {
-            let pattern = out.measurement.hall_pattern.unwrap();
+            let pattern = bench.out.measurement.hall_pattern.unwrap();
             let theta = calibrator.calibration_step(pattern, 0.43).unwrap();
 
-            let foc_input = FocInput {
-                dc_bus_voltage_v: 24.0,
-                command: FocInputType::CalibrationCurrents(ClarkParkValue {
-                    d: 1.5, q: 0.0
-                }),
-                theta,
-                angle_type: AngleType::Electrical,
-                omega: 0.0,
-                phase_currents: out.measurement.currents,
-                current_limit_a: 5.0
-            };
+            let step = bench.step(
+                FocInputType::CalibrationCurrents(ClarkParkValue { d: 1.5, q: 0.0 }),
+                theta, AngleType::Electrical, 0.0
+            );
+            recorder.record(&step, &[]);
 
-            let foc_result = foc.compute(foc_input, motor_params, &mut accelerator);
-            out = sim.step(foc_result.unwrap());
-            if step % record_interval == 0 {
-                records.push(SimRecord {
-                    input: foc_input,
-                    result: foc_result.unwrap(),
-                    sim: out,
-                    estimates: std::vec::Vec::new(),
-                });
-            }
-
-            step += 1;
             t += dt;
-            if (t > 60.0) {
-                plot_simulation("hall_calibration.html", dt * record_interval as f32, &records);
-                assert!(false, "Timeout reached")
+            if t > timeout_s {
+                recorder.plot();
+                panic!("calibration timeout");
             }
         }
 
-        if let Some(encoder) = sim.hall_encoder {
+        if let Some(encoder) = bench.sim.hall_encoder {
             let tolerance = 0.01;
             for (i, &angle) in calibrator.hall_pattern_to_theta.iter().enumerate() {
                 let pattern = (i + 1) as u8;
@@ -231,6 +192,6 @@ mod test {
             assert!(false)
         }
 
-        plot_simulation("hall_calibration.html", dt * record_interval as f32, &records);
+        recorder.plot();
     }
 }

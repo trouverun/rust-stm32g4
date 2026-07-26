@@ -64,13 +64,20 @@ impl PhaseValues {
 }
 
 pub struct FocConfig {
+    /// The frequency of the PWM carrier
     pub pwm_frequency_hz: f32,
     pub mosfet_deadtime_ns: f32,
+    /// MOSFET ON delay (not including rise time)
     pub mosfet_on_delay_ns: f32,
+    /// MOSFET OFF delay (not including fall time)
     pub mosfet_off_delay_ns: f32,
+    /// The phase current magnitude at which deadtime compensation becomes fully active
+    /// (below this value, it is linearly scaled down to avoid alternating sign noise degrading modulation)
     pub deadtime_compensation_band_a: f32,
-    pub saturation_d_ratio: f32,
-
+    /// The ratio of the maximum linear modulation voltage which can be reached before field weakening starts 
+    pub overmodulation_threshold_ratio: f32,
+    /// Design bandwidth of the field weakening controller
+    pub field_weakening_bandwidth: f32
 }
 
 type TorqueNm = f32;
@@ -101,6 +108,7 @@ pub struct FocInput {
 pub enum FocFault {
     MissingMotorParams,
     MissingControllerGains,
+    InvalidParameter,
     NumericalError
 }
 

@@ -107,14 +107,15 @@ mod test {
     use core::f32::consts::TAU;
     use super::*;
     use crate::{
-        DummyAccelerator, EstimatorRecord, FOC, FocConfig, FocInput, FocInputType, MotorParams,
-        PMSMConfig, PMSMSim, SimRecord, angle_error, compute_current_pi_controller_gains, plot_simulation
+        DummyAccelerator, EstimatorRecord, Motor, PMSMConfig, PMSMSim, Recorder, TestBench,
+        angle_error, nominal_params, reference_motors
     };
 
+    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
     const OBSERVER_GAIN: f32 = 1000.0;
     const PLL_BANDWIDTH: f32 = 1500.0;
     /// Too little back-EMF to observe below this
-    const MIN_OBSERVABLE_OMEGA_E: f32 = 150.0;
+    const MIN_OBSERVABLE_EMF_V: f32 = 2.5;
     /// 1% settling of the critically damped PLL
     const REACQUIRE_S: f32 = 6.6 / PLL_BANDWIDTH;
     /// Rotation needed to converge from zero flux
@@ -123,93 +124,85 @@ mod test {
     /// The size of the RMS window used for tracking errors
     const RMS_WINDOW_S: f32 = 0.02;
 
+    /// Parameter errors the mismatch case must survive
+    const R_MISMATCH: f32 = 1.5;
+    const F_MISMATCH: f32 = 0.9;
+    const L_MISMATCH: f32 = 0.8;
+    /// R mismatch voltage error tolerated relative to the scoring EMF
+    const MISMATCH_EMF_RATIO: f32 = 0.5;
+
     struct TrackingError {
         theta_rad: f32,
         omega_rms_rad_s: f32,
+        /// Analytic PLL omega lag at the sweep's peak acceleration
+        pll_lag_rad_s: f32,
     }
 
-    fn nominal_params(cfg: PMSMConfig) -> MotorParamsEstimate {
-        MotorParamsEstimate::from_nominal(MotorParams {
-            num_pole_pairs: cfg.num_pole_pairs as u8,
-            stator_resistance: cfg.stator_resistance,
-            d_inductance: cfg.inductance,
-            q_inductance: cfg.inductance,
-            pm_flux_linkage: cfg.pm_flux_linkage,
-        })
-    }
-
-    /// Test estimation against a swept-frequency speed profile with noisy current measurements, 
+    /// Test estimation against a swept-frequency speed profile with noisy current measurements,
     /// estimation accuracy is scored only where the rotor is observable (above minimum omega).
-    fn run_observer(observer_params: MotorParamsEstimate, plot_path: &str) -> TrackingError {
-        let pwm_freq_hz = 20_000.0;
-        let dt = 1.0 / pwm_freq_hz;
-        let sim_cfg = PMSMConfig::default();
-        let mut sim = PMSMSim::new(dt, sim_cfg)
-            .with_current_noise(0.25, 987);
-
-        let mut foc = FOC::new(FocConfig { pwm_frequency_hz: pwm_freq_hz, mosfet_deadtime_ns: 0.0, mosfet_on_delay_ns: 0.0, mosfet_off_delay_ns: 0.0, deadtime_compensation_band_a: 1.0, saturation_d_ratio: 0.0 });
-        let mut accelerator = DummyAccelerator;
-        let motor_params = nominal_params(sim_cfg);
-        foc.set_pi_gains(Some(
-            compute_current_pi_controller_gains(motor_params, pwm_freq_hz, 1.0, 0.001).unwrap(),
-        ));
+    fn run_observer(motor: Motor, observer_params: MotorParamsEstimate, plot_path: &str) -> TrackingError {
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
+        let sim_cfg = motor.config;
+        let mut bench = TestBench::new(
+            PMSMSim::new(dt, sim_cfg).with_current_noise(motor.current_noise_a, 987), motor.current_limit_a
+        );
+        bench.tune_pi(bench.params);
         let mut estimator = OrtegaPralyEstimator::new(OBSERVER_GAIN, PLL_BANDWIDTH);
+
+        // Scoring gate must sit well above the winding noise voltage:
+        assert!(MIN_OBSERVABLE_EMF_V > 10.0 * motor.current_noise_a * sim_cfg.stator_resistance);
 
         // Sized to keep back-EMF and the torque to follow it within the voltage limit:
         let run_s = 0.5;
-        let amplitude = 100.0;
+        let amplitude = 0.25 * motor.base_omega();
         let sweep_start_hz = 2.0;
-        let sweep_end_hz = 20.0;
+        // Chirp current low enough that the R mismatch error stays within MISMATCH_EMF_RATIO at the gate:
+        let i_q_chirp = MISMATCH_EMF_RATIO * MIN_OBSERVABLE_EMF_V
+            / ((R_MISMATCH - 1.0) * sim_cfg.stator_resistance);
+        let torque_limited_hz = i_q_chirp * motor.params().torque_constant().unwrap()
+            / (sim_cfg.rotor_inertia * amplitude * TAU);
+        let sweep_end_hz = torque_limited_hz.min(20.0);
         let sweep_rate = (sweep_end_hz - sweep_start_hz) / run_s;
+        let alpha_e_max = amplitude * sim_cfg.num_pole_pairs * TAU * sweep_end_hz;
+        let min_observable_omega_e = MIN_OBSERVABLE_EMF_V / sim_cfg.pm_flux_linkage;
 
+        let rms_window_samples = (RMS_WINDOW_S * PWM_FREQUENCY_HZ) as u32;
         let record_interval = 10;
-        let mut records: std::vec::Vec<SimRecord> = std::vec::Vec::new();
-        let mut worst = TrackingError { theta_rad: 0.0, omega_rms_rad_s: 0.0 };
-        let rms_window_samples = (RMS_WINDOW_S * pwm_freq_hz) as u32;
+        let mut recorder = Recorder::new(plot_path, dt, record_interval);
+        let mut worst = TrackingError {
+            theta_rad: 0.0,
+            omega_rms_rad_s: 0.0,
+            pll_lag_rad_s: 2.0 * alpha_e_max / PLL_BANDWIDTH,
+        };
         let mut win_err_sq_sum = 0.0;
         let mut win_samples = 0u32;
-        let mut out = sim.state();
         let mut observable_s = 0.0;
         let mut revolutions = 0.0;
-        let mut step = 0u64;
         let mut t = 0.0;
         while t < run_s {
             let phase = TAU * (sweep_start_hz * t + 0.5 * sweep_rate * t * t);
             let phase_rate = TAU * (sweep_start_hz + sweep_rate * t);
             let omega_ref = amplitude * (1.0 - phase.cos());
             let omega_ref_rate = amplitude * phase.sin() * phase_rate;
-            let target_torque = sim_cfg.rotor_inertia * (omega_ref_rate + 500.0 * (omega_ref - out.measurement.omega));
+            let target_torque = sim_cfg.rotor_inertia * (omega_ref_rate + 500.0 * (omega_ref - bench.out.measurement.omega));
 
-            let foc_input = FocInput {
-                dc_bus_voltage_v: sim_cfg.dc_bus_voltage,
-                command: FocInputType::TargetTorque(target_torque),
-                theta: out.measurement.theta,
-                angle_type: AngleType::Mechanical,
-                omega: out.measurement.omega,
-                phase_currents: out.measurement.currents,
-                current_limit_a: 5.0
-            };
-            let foc_result = foc.compute(foc_input, motor_params, &mut accelerator).unwrap();
-
+            let step = bench.step_torque(target_torque);
             estimator.update(OrtegaPralyEstimatorInput {
-                currents: out.measurement.currents,
-                voltages: foc_result.u_ab,
+                currents: step.input.phase_currents,
+                voltages: step.result.u_ab,
                 params: observer_params,
                 dt_s: dt,
-            }, &mut accelerator);
+            }, &mut bench.accelerator);
             let estimate = estimator.read().unwrap();
             assert!(estimate.theta.is_finite() && estimate.omega.is_finite(), "estimator diverged at t={t:.4}");
 
             // The estimate belongs to the mid-step sample its currents came from:
-            let theta_e = (out.measurement.theta * sim_cfg.num_pole_pairs).rem_euclid(TAU);
-            let omega_e = out.measurement.omega * sim_cfg.num_pole_pairs;
-            observable_s = if omega_e > MIN_OBSERVABLE_OMEGA_E { observable_s + dt } else { 0.0 };
+            let theta_e = (step.input.theta * sim_cfg.num_pole_pairs).rem_euclid(TAU);
+            let omega_e = step.input.omega * sim_cfg.num_pole_pairs;
+            observable_s = if omega_e > min_observable_omega_e { observable_s + dt } else { 0.0 };
             revolutions += omega_e * dt / TAU;
             if revolutions > INITIAL_LOCK_REVOLUTIONS && observable_s > REACQUIRE_S {
                 let theta_err = angle_error(estimate.theta, theta_e).abs();
-                if theta_err > worst.theta_rad {
-                    std::eprintln!("DIAG worst theta {theta_err:.4} at t={t:.4} observable_s={observable_s:.4} omega_e={omega_e:.1}");
-                }
                 worst.theta_rad = worst.theta_rad.max(theta_err);
                 let omega_err = estimate.omega - omega_e;
                 win_err_sq_sum += omega_err * omega_err;
@@ -224,26 +217,17 @@ mod test {
                 win_samples = 0;
             }
 
-            out = sim.step(foc_result);
-            if step % record_interval == 0 {
-                // Offset from truth, so the two wrap together:
-                let theta_e_now = (out.state.theta * sim_cfg.num_pole_pairs).rem_euclid(TAU);
-                records.push(SimRecord {
-                    input: foc_input,
-                    result: foc_result,
-                    sim: out,
-                    estimates: std::vec![EstimatorRecord {
-                        name: "ortega",
-                        theta: out.state.theta + angle_error(estimate.theta, theta_e_now) / sim_cfg.num_pole_pairs,
-                        omega: estimate.omega / sim_cfg.num_pole_pairs,
-                    }],
-                });
-            }
-            step += 1;
+            // Offset from truth, so the two wrap together:
+            let theta_e_now = (step.out.state.theta * sim_cfg.num_pole_pairs).rem_euclid(TAU);
+            recorder.record(&step, &[EstimatorRecord {
+                name: "ortega",
+                theta: step.out.state.theta + angle_error(estimate.theta, theta_e_now) / sim_cfg.num_pole_pairs,
+                omega: estimate.omega / sim_cfg.num_pole_pairs,
+            }]);
             t += dt;
         }
 
-        plot_simulation(plot_path, dt * record_interval as f32, &records);
+        recorder.plot();
         worst
     }
 
@@ -271,18 +255,39 @@ mod test {
         assert!(estimator.read().is_ok(), "fault held on after parameters were provided");
     }
 
+    /// With matching model parameters the observer must track the swept speed profile closely.
+    #[test]
+    fn nominal_parameters_track_the_sweep() {
+        for motor in reference_motors() {
+            let worst = run_observer(
+                motor, motor.params(), &std::format!("ortega_estimation_{}.html", motor.name)
+            );
+            assert!(worst.theta_rad < 0.25, "{}: theta error {:.3} rad", motor.name, worst.theta_rad);
+            assert!(worst.omega_rms_rad_s < worst.pll_lag_rad_s,
+                "{}: omega RMS error {:.1} rad/s, PLL lag {:.1}", motor.name, worst.omega_rms_rad_s, worst.pll_lag_rad_s);
+        }
+    }
+
     /// A mismatched model degrades the estimate rather than breaking the lock.
     #[test]
     fn parameter_mismatch_degrades_gracefully() {
-        let sim_cfg = PMSMConfig::default();
-        let mut params = nominal_params(sim_cfg);
-        params.stator_resistance = Some(1.5 * sim_cfg.stator_resistance);
-        params.pm_flux_linkage = Some(0.9 * sim_cfg.pm_flux_linkage);
-        params.d_inductance = Some(0.8 * sim_cfg.inductance);
+        for motor in reference_motors() {
+            let mut params = motor.params();
+            params.stator_resistance = Some(R_MISMATCH * motor.config.stator_resistance);
+            params.pm_flux_linkage = Some(F_MISMATCH * motor.config.pm_flux_linkage);
+            params.d_inductance = Some(L_MISMATCH * motor.config.inductance);
 
-        let worst = run_observer(params, "ortega_estimation_mismatch.html");
-        // A wrong flux magnitude biases the angle, the rotation still tracks:
-        assert!(worst.theta_rad < 0.5, "theta error {:.3} rad", worst.theta_rad);
-        assert!(worst.omega_rms_rad_s < 40.0, "omega RMS error {:.1} rad/s", worst.omega_rms_rad_s);
+            let worst = run_observer(
+                motor, params, &std::format!("ortega_estimation_mismatch_{}.html", motor.name)
+            );
+            // Worst R bias at the scoring gate, with transient margin:
+            let theta_bound = 1.5 * f32::atan(MISMATCH_EMF_RATIO);
+            assert!(worst.theta_rad < theta_bound,
+                "{}: theta error {:.3} rad, bound {theta_bound:.3}", motor.name, worst.theta_rad);
+            // Re-acquisition transients ride on the structural lag:
+            let omega_bound = 3.0 * worst.pll_lag_rad_s;
+            assert!(worst.omega_rms_rad_s < omega_bound,
+                "{}: omega RMS error {:.1} rad/s, bound {omega_bound:.1}", motor.name, worst.omega_rms_rad_s);
+        }
     }
 }

@@ -136,6 +136,13 @@ impl CurrentNoise {
     }
 }
 
+/// Gaussian rotor feedback noise, as a position sensor and its speed estimate would have
+struct FeedbackNoise {
+    theta_distribution: Normal<f32>,
+    omega_distribution: Normal<f32>,
+    rng: StdRng,
+}
+
 pub struct PMSMSim {
     /// Simulation timestep in seconds, represents one PWM period: duties take effect at the
     /// step start (the update event) and sensors sample mid-step (the carrier peak)
@@ -143,17 +150,30 @@ pub struct PMSMSim {
     state: PMSMState,
     config: PMSMConfig,
     pub hall_encoder: Option<HallEncoder>,
+    /// Load torque in Nm, opposes rotation and holds the rotor when the machine cannot overcome it
+    pub load_torque: f32,
     noise: Option<CurrentNoise>,
+    feedback_noise: Option<FeedbackNoise>,
 }
 
 impl PMSMSim {
+    pub fn dt(&self) -> f32 {
+        self.dt
+    }
+
+    pub fn config(&self) -> PMSMConfig {
+        self.config
+    }
+
     pub fn new(dt: f32, config: PMSMConfig) -> Self {
         Self {
             dt,
             state: PMSMState { i_d: 0.0, i_q: 0.0, omega: 0.0, theta: 0.0 },
             config,
             hall_encoder: None,
+            load_torque: 0.0,
             noise: None,
+            feedback_noise: None,
         }
     }
 
@@ -162,9 +182,23 @@ impl PMSMSim {
         self
     }
 
+    pub fn with_load_torque(mut self, nm: f32) -> Self {
+        self.load_torque = nm;
+        self
+    }
+
     pub fn with_current_noise(mut self, std_dev_a: f32, seed: u64) -> Self {
         self.noise = Some(CurrentNoise {
             distribution: Normal::new(0.0, std_dev_a).unwrap(),
+            rng: StdRng::seed_from_u64(seed),
+        });
+        self
+    }
+
+    pub fn with_feedback_noise(mut self, theta_std_dev_rad: f32, omega_std_dev_rad_s: f32, seed: u64) -> Self {
+        self.feedback_noise = Some(FeedbackNoise {
+            theta_distribution: Normal::new(0.0, theta_std_dev_rad).unwrap(),
+            omega_distribution: Normal::new(0.0, omega_std_dev_rad_s).unwrap(),
             rng: StdRng::seed_from_u64(seed),
         });
         self
@@ -215,7 +249,14 @@ impl PMSMSim {
 
         let torque = 1.5 * cfg.num_pole_pairs * cfg.pm_flux_linkage * i_q;
         let theta = (theta + h * omega).rem_euclid(TAU);
-        let omega = omega + h * torque / cfg.rotor_inertia;
+        let load = if omega != 0.0 {
+            self.load_torque * omega.signum()
+        } else {
+            torque.clamp(-self.load_torque, self.load_torque)
+        };
+        let next_omega = omega + h * (torque - load) / cfg.rotor_inertia;
+        // A load which cannot be overcome holds the rotor rather than reversing it:
+        let omega = if self.load_torque > 0.0 && omega * next_omega < 0.0 { 0.0 } else { next_omega };
 
         self.state = PMSMState { i_d, i_q, omega, theta };
         torque
@@ -237,9 +278,14 @@ impl PMSMSim {
         }
     }
 
-    /// Snapshot as the sensors read it: noise applied to currents and their dq transform.
+    /// Snapshot as the sensors read it: noise applied to the rotor feedback and to the currents,
+    /// with the currents transformed by the angle the controller would actually see.
     fn measure(&mut self, torque: f32) -> SimSnapshot {
         let mut snapshot = self.snapshot(torque);
+        if let Some(noise) = &mut self.feedback_noise {
+            snapshot.theta += noise.theta_distribution.sample(&mut noise.rng);
+            snapshot.omega += noise.omega_distribution.sample(&mut noise.rng);
+        }
         if let Some(noise) = &mut self.noise {
             let theta_e = self.config.num_pole_pairs * snapshot.theta;
             let sc = crate::SinCosResult { sin: sinf32(theta_e), cos: cosf32(theta_e) };
