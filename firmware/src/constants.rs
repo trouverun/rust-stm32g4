@@ -24,6 +24,8 @@ pub const ORTEGA_PRALY_BANDWIDTH: f32 = 1500.0;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
+// The design bandwidth of the field weakening controller
+pub const FIELD_WEAKENING_BANDWIDTH: f32 = 300.0;
 
 /// How much does each setpoint Rx faulty message fill the leaky fault bucket
 pub const TORQUE_SETPOINT_FAULT_FILL_RATE: u32 = 2;

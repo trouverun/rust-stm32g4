@@ -13,8 +13,8 @@ board-zest1 = ["mcu-opamps", "hall-feedback", "spi-encoder", "overcurrent-compar
 
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
-defmt = { version = "0.3", features = ["encoding-rzcobs"] }
-panic-probe = { version = "0.3", features = ["print-defmt"] }
+defmt = { version = "1", features = ["encoding-rzcobs"] }
+panic-probe = { version = "1", features = ["print-defmt"] }
 rtic = { version = "2.0.0", features = ["thumbv7-backend"] }
 rtic-monotonics = { version = "1.5", default-features = false, features = ["stm32g473qe", "stm32_tim2"] }
 embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["stm32g473qe", "defmt", "memory-x", "unstable-pac", "exti", "dual-bank"] }
@@ -23,7 +23,6 @@ firmware-core = { path = "../firmware-core" }
 field-oriented = { path = "../field-oriented" }
 defmt-rtt = "1.1.0"
 libm = "0.2"
-static_cell = "2"
 bitvec = { version = "1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 
@@ -32,48 +31,19 @@ dbc-codegen = "0.3"
 can-dbc = "5.0"
 heck = "0.5"
 
-# cargo build/run
 [profile.dev]
 codegen-units = 1
 debug = 2
-debug-assertions = true # <-
+debug-assertions = true
 incremental = false
-opt-level = "s" # <-
-overflow-checks = true # <-
+opt-level = "s"
+overflow-checks = true
 
-# cargo test
-[profile.test]
-codegen-units = 1
-debug = 2
-debug-assertions = true # <-
-incremental = false
-opt-level = "s" # <-
-overflow-checks = true # <-
-
-# cargo build/run --release
 [profile.release]
 codegen-units = 1
 debug = 2
-debug-assertions = false # <-
+debug-assertions = false
 incremental = false
 lto = 'fat'
-opt-level = 3 # <-
-overflow-checks = false # <-
-
-# cargo test --release
-[profile.bench]
-codegen-units = 1
-debug = 2
-debug-assertions = false # <-
-incremental = false
-lto = 'fat'
-opt-level = "s" # <-
-overflow-checks = false # <-
-
-# uncomment this to switch from the crates.io version of defmt to its git version
-# check app-template's README for instructions
-# [patch.crates-io]
-# defmt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
-# defmt-rtt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
-# defmt-test = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
-# panic-probe = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
+opt-level = 3
+overflow-checks = false

@@ -134,7 +134,8 @@ mod app {
             mosfet_on_delay_ns: BOARD.mosfet_on_delay_ns as f32,
             mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
             deadtime_compensation_band_a: BOARD.deadtime_compensation_band_a,
-            overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO
+            overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
+            field_weakening_bandwidth: FIELD_WEAKENING_BANDWIDTH
         };
         let mut foc = FOC::new(foc_cfg);
 
@@ -153,7 +154,13 @@ mod app {
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
         match memory.load::<ControllerParameters>() {
-            Ok(Some(p)) => {info!("Contpar {}", p); foc.set_pi_gains(Some(p))},
+            Ok(Some(p)) => {
+                info!("Contpar {}", p); 
+                match foc.set_pi_gains(Some(p)) {
+                    Ok(()) => {}
+                    Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
+                }
+            },
             Ok(None) => {}
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
