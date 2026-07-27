@@ -230,7 +230,13 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
     match result {
         Ok(pi_gains) => {
             cx.shared.foc.lock(|foc| {
-                foc.set_pi_gains(Some(pi_gains));
+                if let Err(f) = foc.set_pi_gains(Some(pi_gains)) {
+                    cx.shared.mode.lock(|mode| {
+                        mode.on_command(Command::AssertFault {
+                        cause: f.into(),
+                        });
+                    });
+                }
                 foc.clear_windup();
             });
             let command = cx.shared.memory.lock(|memory| {
@@ -245,7 +251,7 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
         }
         Err(fault) => {
             cx.shared.foc.lock(|foc| {
-                foc.set_pi_gains(None);
+                let _ = foc.set_pi_gains(None);
                 foc.clear_windup();
             });
             cx.shared.mode.lock(|mode| {
