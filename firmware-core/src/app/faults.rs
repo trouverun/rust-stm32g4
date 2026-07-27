@@ -54,6 +54,7 @@ impl From<FocFault> for FaultCause {
             FocFault::MissingMotorParams => FaultCause::MissingMotorParams,
             FocFault::MissingControllerGains => FaultCause::MissingControllerGains,
             FocFault::NumericalError => FaultCause::ControllerNumericalError,
+            FocFault::InvalidParameter => FaultCause::MissingControllerGains,
         }
     }
 }
