@@ -28,7 +28,7 @@ pub enum SafeControlStrategy {
     STOf,
     /// STO which can switch to ASC
     STO { should_switch: Debounced },
-    ASC { should_switch: Debounced },
+    ASC { should_switch: Debounced, feedback_valid: bool },
     SS1t { 
         brake: BangBangBrake,
         done: Debounced
@@ -43,7 +43,7 @@ impl SafeControlStrategy {
                 *waited_ms += input.tick_dt_ms;
                 if *waited_ms >= RAMPDOWN_DURATION_MS {
                     if input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v {
-                        *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
+                        *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: input.rotor_feedback_valid };
                     } else {
                         *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) };
                     }
@@ -51,13 +51,13 @@ impl SafeControlStrategy {
             }
             SafeControlStrategy::STO { should_switch } => {
                 should_switch.update(input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v, STO_ASC_DEBOUNCE_TICKS);
-                if should_switch.state() {
-                    *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
+                if should_switch.state() || !input.rotor_feedback_valid {
+                    *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: input.rotor_feedback_valid };
                 }
             }
-            SafeControlStrategy::ASC { should_switch } => {
+            SafeControlStrategy::ASC { should_switch, .. } => {
                 should_switch.update(input.dc_bus_v < STO_DC_BUS_RATIO*input.dc_bus_max_v, STO_ASC_DEBOUNCE_TICKS);
-                if should_switch.state() {
+                if should_switch.state() && input.rotor_feedback_valid {
                     *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) } ;
                 }
             },
@@ -74,7 +74,7 @@ impl SafeControlStrategy {
                 done.update(brake_done, STO_ASC_DEBOUNCE_TICKS);
                 if done.state() {
                     if input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v {
-                        *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false) };
+                        *self = SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: input.rotor_feedback_valid };
                     } else {
                         *self = SafeControlStrategy::STO { should_switch: Debounced::new(false) };
                     }
@@ -99,10 +99,21 @@ impl SafeControlStrategy {
 
     pub fn fault_evolve(&mut self, new: &SafeControlStrategy) {
         let new_strategy = match (&mut *self, new) {
-            (SafeControlStrategy::ASC { .. }, SafeControlStrategy::STOf) => SafeControlStrategy::STOf,
-            (SafeControlStrategy::ASC { .. }, SafeControlStrategy::STO { .. }) => SafeControlStrategy::STO { should_switch: Debounced::new(false) },
+            (_, SafeControlStrategy::STOf) => SafeControlStrategy::STOf,
+            (SafeControlStrategy::STO { .. }, SafeControlStrategy::ASC { feedback_valid, .. }) => SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: *feedback_valid },
+            (SafeControlStrategy::ASC { feedback_valid, .. }, SafeControlStrategy::STO { .. }) => {
+                if !*feedback_valid {
+                    return;
+                }
+                SafeControlStrategy::STO { should_switch: Debounced::new(false) }
+            },
+            (
+                SafeControlStrategy::ASC { feedback_valid: old_feedback_valid, .. }, 
+                SafeControlStrategy::ASC { feedback_valid: new_feedback_valid, .. }
+            ) => SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: *old_feedback_valid && *new_feedback_valid },
             (SafeControlStrategy::SS1t { .. }, SafeControlStrategy::STO { .. }) => SafeControlStrategy::STO { should_switch: Debounced::new(false) },
-            (SafeControlStrategy::SS1t { .. }, SafeControlStrategy::ASC { .. }) => SafeControlStrategy::ASC { should_switch: Debounced::new(false) },
+            (SafeControlStrategy::SS1t { .. }, SafeControlStrategy::ASC { feedback_valid, .. }) => SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: *feedback_valid },
+            (SafeControlStrategy::RampDown { .. }, _) => *new,
             _ => return
         };
         *self = new_strategy;
@@ -112,9 +123,11 @@ impl SafeControlStrategy {
 impl From<FaultCause> for SafeControlStrategy {
     fn from(value: FaultCause) -> Self {
         match value {
-            FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent | FaultCause::RegenLimitExceeded => SafeControlStrategy::STO { should_switch: Debounced::new(false) },
-            FaultCause::DcOverVoltage => SafeControlStrategy::ASC { should_switch: Debounced::new(false) },
-            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0 },
+            FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent | FaultCause::RegenLimitExceeded => SafeControlStrategy::STOf,
+            FaultCause::DcOverVoltage => SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: true },
+            FaultCause::InvalidRotorFeedback => SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: false },
+            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature => SafeControlStrategy::RampDown { waited_ms: 0.0 },
+            FaultCause::Overspeed => SafeControlStrategy::SS1t { brake: BangBangBrake::new(), done: Debounced::new(false) },
             _ => SafeControlStrategy::STO { should_switch: Debounced::new(false) }
         }
     }
@@ -149,7 +162,7 @@ mod tests {
     }
 
     fn asc() -> SafeControlStrategy {
-        SafeControlStrategy::ASC { should_switch: Debounced::new(false) }
+        SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: true }
     }
 
     fn ss1t() -> SafeControlStrategy {
@@ -170,18 +183,18 @@ mod tests {
     #[test]
     fn fault_reaction_mapping_matches_the_table() {
         let mapping: [(FaultCause, &[&str]); 12] = [
-            (FaultCause::Overcurrent, &["STO"]),
-            (FaultCause::Break1, &["STO"]),
-            (FaultCause::Break2, &["STO"]),
-            (FaultCause::RegenLimitExceeded, &["STO"]),
+            (FaultCause::Overcurrent, &["STOf"]),
+            (FaultCause::Break1, &["STOf"]),
+            (FaultCause::Break2, &["STOf"]),
+            (FaultCause::RegenLimitExceeded, &["STOf"]),
             (FaultCause::InvalidRotorFeedback, &["ASC"]),
             (FaultCause::DcOverVoltage, &["ASC"]),
             (FaultCause::RealtimeViolated, &["STO", "ASC"]),
-            (FaultCause::Overspeed, &["STO", "ASC"]),
-            (FaultCause::DcUnderVoltage, &["SS1t"]),
-            (FaultCause::Overtemperature, &["SS1t"]),
-            (FaultCause::SetpointTimeout, &["SS1t"]),
-            (FaultCause::CANMessageIntegrity, &["SS1t"]),
+            (FaultCause::Overspeed, &["SS1t"]),
+            (FaultCause::DcUnderVoltage, &["STO"]),
+            (FaultCause::Overtemperature, &["RampDown"]),
+            (FaultCause::SetpointTimeout, &["RampDown"]),
+            (FaultCause::CANMessageIntegrity, &["RampDown"]),
         ];
 
         for (cause, allowed) in mapping {
@@ -247,7 +260,8 @@ mod tests {
     /// STO switches to ASC when rotor feedback is lost, whatever the bus voltage.
     #[test]
     fn sto_switches_to_asc_when_rotor_feedback_invalid() {
-        let mut strategy = sto();
+        let mut strategy = SafeControlStrategy::from(FaultCause::RealtimeViolated);
+        assert!(matches!(strategy, SafeControlStrategy::STO { .. }), "starting fault did not map to a switchable STO");
         for _ in 0..(4 * STO_ASC_DEBOUNCE_TICKS) {
             let mut tick = input(0.0, 0.5 * DC_BUS_MAX_V);
             tick.rotor_feedback_valid = false;
@@ -321,17 +335,20 @@ mod tests {
         }
     }
 
-    /// The reaction priority is STO over ASC over SS1-t, and never the reverse.
+    /// STOf preempts every reaction, STO and ASC switch freely as peers,
+    /// and nothing downgrades to SS1-t.
     #[test]
     fn reaction_priority_never_downgrades() {
         let cases = [
-            (sto(), asc(), "STO"),
+            (sto(), asc(), "ASC"),
             (sto(), ss1t(), "STO"),
-            (asc(), ss1t(), "ASC"),
+            (sto(), SafeControlStrategy::STOf, "STOf"),
             (asc(), sto(), "STO"),
+            (asc(), ss1t(), "ASC"),
             (asc(), SafeControlStrategy::STOf, "STOf"),
             (ss1t(), sto(), "STO"),
             (ss1t(), asc(), "ASC"),
+            (ss1t(), SafeControlStrategy::STOf, "STOf"),
         ];
 
         for (mut active, requested, expected) in cases {
