@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            field-oriented
+            firmware-core
+
+      - name: Test field-oriented
+        working-directory: field-oriented
+        run: cargo nextest run --profile ci
+
+      - name: Test firmware-core
+        if: always()
+        working-directory: firmware-core
+        run: cargo nextest run --profile ci
+
+      - name: Collect reports
+        if: always()
+        run: |
+          mkdir -p report
+          cp field-oriented/target/nextest/ci/junit.xml report/field-oriented.xml || true
+          cp firmware-core/target/nextest/ci/junit.xml report/firmware-core.xml || true
+
+      - name: Publish test report
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Test results
+          path: report/*.xml
+          reporter: java-junit
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-report
+          path: report/
+
+  build-firmware:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install pinned toolchain
+        working-directory: firmware
+        run: |
+          rustup show
+          rustup target add thumbv7em-none-eabihf
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+
+      - name: Build
+        working-directory: firmware
+        run: cargo build --release
