@@ -14,6 +14,9 @@ const SQRT3_RECIPROCAL: f32 = 1.0 / 1.73205080757;
 /// Overmodulation threshold shared by the bench FOC config and the tests asserting against it
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
 
+/// Field weakening loop bandwidth of the bench FOC config, in rad/s
+pub const FIELD_WEAKENING_BANDWIDTH: f32 = 1000.0;
+
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {
     MotorParamsEstimate::from_nominal(MotorParams {
@@ -264,6 +267,8 @@ pub struct TestBench {
     /// Motor params handed to the FOC each step, nominal for the sim config by default
     pub params: MotorParamsEstimate,
     pub current_limit_a: f32,
+    /// Field weakening allowance handed to the FOC each step, on by default
+    pub field_weakening: bool,
     /// Latest sim output, also the feedback source for the next step
     pub out: SimOutput,
     dc_bus_voltage: f32,
@@ -288,7 +293,7 @@ impl TestBench {
             mosfet_off_delay_ns: 0.0,
             deadtime_compensation_band_a: 1.0,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
-            field_weakening_bandwidth: 1000.0,
+            field_weakening_bandwidth: FIELD_WEAKENING_BANDWIDTH,
         });
         let out = sim.state();
         Self {
@@ -297,6 +302,7 @@ impl TestBench {
             accelerator: DummyAccelerator,
             params: nominal_params(config),
             current_limit_a,
+            field_weakening: true,
             out,
             dc_bus_voltage: config.dc_bus_voltage,
             dt,
@@ -321,7 +327,7 @@ impl TestBench {
             phase_currents: self.out.measurement.currents,
             current_limit_a: self.current_limit_a,
         };
-        let result = self.foc.compute(input, self.params, &mut self.accelerator).unwrap();
+        let result = self.foc.compute(input, self.params, &mut self.accelerator, self.field_weakening).unwrap();
         self.out = self.sim.step(result);
         BenchStep { input, result, out: self.out }
     }
@@ -335,6 +341,80 @@ impl TestBench {
     /// Torque command with ground truth rotor feedback
     pub fn step_torque(&mut self, torque_nm: f32) -> BenchStep {
         self.step_measured(FocInputType::TargetTorque(torque_nm))
+    }
+}
+
+/// Mean of the last `window` samples, or of what exists during startup
+fn mean_tail(samples: &[f32], window: usize) -> f32 {
+    let tail = &samples[samples.len().saturating_sub(window)..];
+    tail.iter().sum::<f32>() / tail.len() as f32
+}
+
+/// Collects per step bench signals and reduces them to means over fixed size windows
+pub struct Windowed {
+    window: usize,
+    omegas: Vec<f32>,
+    torques: Vec<f32>,
+    i_ds: Vec<f32>,
+    i_qs: Vec<f32>,
+    i_d_targets: Vec<f32>,
+}
+
+/// Means over one window
+#[derive(Clone, Copy)]
+pub struct WindowMeans {
+    /// Speed at the middle sample of the window, where the means are centered in time
+    pub mid_omega: f32,
+    pub omega: f32,
+    pub torque: f32,
+    pub i_d: f32,
+    pub i_q: f32,
+    pub i_d_target: f32,
+}
+
+impl Windowed {
+    pub fn new(window_s: f32, dt: f32) -> Self {
+        Self {
+            window: (window_s / dt).round() as usize,
+            omegas: Vec::new(),
+            torques: Vec::new(),
+            i_ds: Vec::new(),
+            i_qs: Vec::new(),
+            i_d_targets: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, step: &BenchStep) {
+        self.omegas.push(step.out.state.omega);
+        self.torques.push(step.out.state.torque);
+        self.i_ds.push(step.out.state.i_dq.d);
+        self.i_qs.push(step.out.state.i_dq.q);
+        self.i_d_targets.push(step.result.target_i_dq.d);
+    }
+
+    /// Means of the latest window, Some once per full window
+    pub fn boundary(&self) -> Option<WindowMeans> {
+        if self.omegas.is_empty() || self.omegas.len() % self.window != 0 {
+            return None;
+        }
+        Some(WindowMeans {
+            mid_omega: self.omegas[self.omegas.len() - 1 - self.window / 2],
+            omega: mean_tail(&self.omegas, self.window),
+            torque: mean_tail(&self.torques, self.window),
+            i_d: mean_tail(&self.i_ds, self.window),
+            i_q: mean_tail(&self.i_qs, self.window),
+            i_d_target: mean_tail(&self.i_d_targets, self.window),
+        })
+    }
+}
+
+impl WindowMeans {
+    /// Since the previous window every state mean moved less than 0.1% of the machine's full scale
+    pub fn steady(&self, prev: &Option<WindowMeans>, motor: &Motor) -> bool {
+        let Some(prev) = prev else { return false };
+        (self.omega - prev.omega).abs() < 1e-3 * motor.base_omega()
+            && (self.i_d - prev.i_d).abs() < 1e-3 * motor.current_limit_a
+            && (self.i_q - prev.i_q).abs() < 1e-3 * motor.current_limit_a
     }
 }
 
@@ -355,6 +435,11 @@ pub struct EstimatorRecord {
     pub omega: f32,
 }
 
+/// Recorder interval subsampling a run to the given record frequency
+pub fn record_interval(record_hz: f32, dt: f32) -> u64 {
+    (1.0 / (record_hz * dt)).round().max(1.0) as u64
+}
+
 /// Collects every Nth bench step into SimRecords and plots them
 pub struct Recorder {
     path: String,
@@ -367,6 +452,11 @@ pub struct Recorder {
 impl Recorder {
     pub fn new(path: &str, dt: f32, interval: u64) -> Self {
         Self { path: path.into(), dt, interval, step: 0, records: Vec::new() }
+    }
+
+    /// Collects records without plotting them, for callers composing their own plot
+    pub fn buffer(dt: f32, interval: u64) -> Self {
+        Self::new("", dt, interval)
     }
 
     pub fn record(&mut self, step: &BenchStep, estimates: &[EstimatorRecord]) {
@@ -384,13 +474,28 @@ impl Recorder {
     pub fn plot(&self) {
         plot_simulation(&self.path, self.dt * self.interval as f32, &self.records);
     }
+
+    pub fn records(&self) -> &[SimRecord] {
+        &self.records
+    }
+
+    pub fn sample_dt(&self) -> f32 {
+        self.dt * self.interval as f32
+    }
 }
 
-pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
-    let n = records.len();
-    if n == 0 { return; }
+/// Plot on drop so failing tests still emit their trace
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        if !self.path.is_empty() {
+            self.plot();
+        }
+    }
+}
 
-    let time: Vec<f64> = (0..n).map(|i| i as f64 * dt as f64).collect();
+/// Overlay any number of labeled runs of one scenario across all recorded quantities
+pub fn plot_runs(path: &str, dt: f32, runs: &[(&str, &[SimRecord])]) {
+    if runs.iter().all(|(_, records)| records.is_empty()) { return; }
 
     let mut plot = Plot::new();
     let xa_id = |r: u32| -> String {
@@ -399,6 +504,16 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
     let ya_id = |r: u32| -> String {
         if r == 1 { "y".into() } else { std::format!("y{r}") }
     };
+    let named = |name: &str, label: &str| -> String {
+        if label.is_empty() { name.into() } else { std::format!("{name} {label}") }
+    };
+    let series = |records: &[SimRecord], f: fn(&SimRecord) -> f32| -> Vec<f32> {
+        records.iter().map(f).collect()
+    };
+    let times: Vec<Vec<f64>> = runs.iter()
+        .map(|(_, records)| (0..records.len()).map(|i| i as f64 * dt as f64).collect())
+        .collect();
+    let labeled = || runs.iter().zip(&times).map(|(run, time)| (run.0, run.1, time.as_slice()));
 
     let line_trace = |time: &[f64], data: &[f32], name: &str, row: u32| {
         let xa = xa_id(row);
@@ -414,110 +529,128 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
         line_trace(time, data, name, row).line(Line::new().dash(DashType::Dash))
     };
 
-    // Collect series
-    let theta: Vec<f32> = records.iter().map(|r| r.sim.state.theta).collect();
-    let omega: Vec<f32> = records.iter().map(|r| r.sim.state.omega).collect();
-    let d_u: Vec<f32> = records.iter().map(|r| r.result.duty_cycles.u).collect();
-    let d_v: Vec<f32> = records.iter().map(|r| r.result.duty_cycles.v).collect();
-    let d_w: Vec<f32> = records.iter().map(|r| r.result.duty_cycles.w).collect();
-
-    let target_torque: Vec<f32> = records.iter().map(|r| {
-        match r.input.command {
-            FocInputType::TargetTorque(t) => t,
-            _ => f32::NAN,
-        }
-    }).collect();
-    let has_torque_target = target_torque.iter().any(|t| !t.is_nan());
-    let has_hall = records.iter().any(|r| r.sim.measurement.hall_pattern.is_some());
+    let has_hall = runs.iter().any(|(_, records)| records.iter().any(|r| r.sim.measurement.hall_pattern.is_some()));
+    let has_torque_target = runs.iter().any(|(_, records)| records.iter()
+        .any(|r| matches!(r.input.command, FocInputType::TargetTorque(_))));
 
     let mut row = 1u32;
     if has_hall {
         let colors = ["#1f77b4", "#ff7f0e", "#2ca02c"];
         let labels = ["Hall A", "Hall B", "Hall C"];
         let bits = [2u8, 1, 0]; // bit positions: A=bit2, B=bit1, C=bit0
-        for (i, (&bit, &color)) in bits.iter().zip(colors.iter()).enumerate() {
-            let offset = (2 - i) as f64; // A=2, B=1, C=0
-            let base: Vec<f64> = std::vec![offset; n];
-            let signal: Vec<f64> = records.iter().map(|r| {
-                let p = r.sim.measurement.hall_pattern.unwrap_or(0);
-                if (p >> bit) & 1 == 1 { offset + 0.8 } else { offset }
-            }).collect();
-            // Baseline trace (invisible, anchor for fill)
-            plot.add_trace(
-                Scatter::new(time.clone(), base)
-                    .mode(Mode::Lines)
-                    .line(Line::new().shape(LineShape::Hv).width(0.0))
-                    .show_legend(false)
-                    .x_axis(&xa_id(row))
-                    .y_axis(&ya_id(row))
-            );
-            // Signal trace with fill down to baseline
-            plot.add_trace(
-                Scatter::new(time.clone(), signal)
-                    .mode(Mode::Lines)
-                    .name(labels[i])
-                    .line(Line::new().shape(LineShape::Hv).color(color).width(0.5))
-                    .fill(Fill::ToNextY)
-                    .fill_color(color)
-                    .x_axis(&xa_id(row))
-                    .y_axis(&ya_id(row))
-            );
+        for (label, records, time) in labeled() {
+            if !records.iter().any(|r| r.sim.measurement.hall_pattern.is_some()) {
+                continue;
+            }
+            for (i, (&bit, &color)) in bits.iter().zip(colors.iter()).enumerate() {
+                let offset = (2 - i) as f64; // A=2, B=1, C=0
+                let base: Vec<f64> = std::vec![offset; records.len()];
+                let signal: Vec<f64> = records.iter().map(|r| {
+                    let p = r.sim.measurement.hall_pattern.unwrap_or(0);
+                    if (p >> bit) & 1 == 1 { offset + 0.8 } else { offset }
+                }).collect();
+                // Baseline trace (invisible, anchor for fill)
+                plot.add_trace(
+                    Scatter::new(time.to_vec(), base)
+                        .mode(Mode::Lines)
+                        .line(Line::new().shape(LineShape::Hv).width(0.0))
+                        .show_legend(false)
+                        .x_axis(&xa_id(row))
+                        .y_axis(&ya_id(row))
+                );
+                // Signal trace with fill down to baseline
+                plot.add_trace(
+                    Scatter::new(time.to_vec(), signal)
+                        .mode(Mode::Lines)
+                        .name(&named(labels[i], label))
+                        .line(Line::new().shape(LineShape::Hv).color(color).width(0.5))
+                        .fill(Fill::ToNextY)
+                        .fill_color(color)
+                        .x_axis(&xa_id(row))
+                        .y_axis(&ya_id(row))
+                );
+            }
         }
         row += 1;
     }
-    // Distinct estimator names, in first-seen order:
-    let mut estimator_names: Vec<&'static str> = Vec::new();
-    for r in records {
-        for e in &r.estimates {
-            if !estimator_names.contains(&e.name) {
-                estimator_names.push(e.name);
+    // Distinct estimator names of a run, in first-seen order:
+    let estimator_names = |records: &[SimRecord]| -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = Vec::new();
+        for r in records {
+            for e in &r.estimates {
+                if !names.contains(&e.name) {
+                    names.push(e.name);
+                }
             }
         }
-    }
-    let estimate_series = |name: &str, f: fn(&EstimatorRecord) -> f32| -> Vec<f32> {
+        names
+    };
+    let estimate_series = |records: &[SimRecord], name: &str, f: fn(&EstimatorRecord) -> f32| -> Vec<f32> {
         records.iter()
             .map(|r| r.estimates.iter().find(|e| e.name == name).map_or(f32::NAN, f))
             .collect()
     };
 
     // Rotor angle
-    plot.add_trace(line_trace(&time, &theta, "θ", row));
-    for name in &estimator_names {
-        plot.add_trace(dashed_trace(&time, &estimate_series(name, |e| e.theta), &std::format!("θ {name}"), row));
+    for (label, records, time) in labeled() {
+        plot.add_trace(line_trace(time, &series(records, |r| r.sim.state.theta), &named("θ", label), row));
+        for name in estimator_names(records) {
+            plot.add_trace(dashed_trace(time, &estimate_series(records, name, |e| e.theta), &named(&std::format!("θ {name}"), label), row));
+        }
     }
     row += 1;
     // Rotor speed
-    plot.add_trace(line_trace(&time, &omega, "ω", row));
-    for name in &estimator_names {
-        plot.add_trace(dashed_trace(&time, &estimate_series(name, |e| e.omega), &std::format!("ω {name}"), row));
+    for (label, records, time) in labeled() {
+        plot.add_trace(line_trace(time, &series(records, |r| r.sim.state.omega), &named("ω", label), row));
+        for name in estimator_names(records) {
+            plot.add_trace(dashed_trace(time, &estimate_series(records, name, |e| e.omega), &named(&std::format!("ω {name}"), label), row));
+        }
     }
     row += 1;
     // Duty cycles
-    plot.add_trace(line_trace(&time, &d_u, "D_u", row));
-    plot.add_trace(line_trace(&time, &d_v, "D_v", row));
-    plot.add_trace(line_trace(&time, &d_w, "D_w", row));
+    for (label, records, time) in labeled() {
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.duty_cycles.u), &named("D_u", label), row));
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.duty_cycles.v), &named("D_v", label), row));
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.duty_cycles.w), &named("D_w", label), row));
+    }
+    row += 1;
+    // Modulated voltage magnitude against the linear modulation limit
+    for (label, records, time) in labeled() {
+        let u_applied: Vec<f32> = records.iter().map(|r| {
+            let duties = r.result.duty_cycles;
+            let bus = r.input.dc_bus_voltage_v;
+            let alpha = bus * (2.0 * duties.u - duties.v - duties.w) / 3.0;
+            let beta = bus * (duties.v - duties.w) * SQRT3_RECIPROCAL;
+            (alpha * alpha + beta * beta).sqrt()
+        }).collect();
+        plot.add_trace(line_trace(time, &u_applied, &named("|U| applied", label), row));
+        plot.add_trace(dashed_trace(time, &series(records, |r| r.input.dc_bus_voltage_v * SQRT3_RECIPROCAL), &named("U linear max", label), row));
+    }
     row += 1;
     // D/Q voltages
-    let u_d: Vec<f32> = records.iter().map(|r| r.result.u_dq.d).collect();
-    let u_q: Vec<f32> = records.iter().map(|r| r.result.u_dq.q).collect();
-    plot.add_trace(line_trace(&time, &u_d, "U_d", row));
-    plot.add_trace(line_trace(&time, &u_q, "U_q", row));
+    for (label, records, time) in labeled() {
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.u_dq.d), &named("U_d", label), row));
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.u_dq.q), &named("U_q", label), row));
+    }
     row += 1;
     // D/Q axis currents
-    let meas_id: Vec<f32> = records.iter().map(|r| r.result.measured_i_dq.d).collect();
-    let meas_iq: Vec<f32> = records.iter().map(|r| r.result.measured_i_dq.q).collect();
-    let tgt_id: Vec<f32> = records.iter().map(|r| r.result.target_i_dq.d).collect();
-    let tgt_iq: Vec<f32> = records.iter().map(|r| r.result.target_i_dq.q).collect();
-    plot.add_trace(line_trace(&time, &meas_id, "I_d", row));
-    plot.add_trace(line_trace(&time, &meas_iq, "I_q", row));
-    plot.add_trace(line_trace(&time, &tgt_id, "I_d target", row));
-    plot.add_trace(line_trace(&time, &tgt_iq, "I_q target", row));
+    for (label, records, time) in labeled() {
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.measured_i_dq.d), &named("I_d", label), row));
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.measured_i_dq.q), &named("I_q", label), row));
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.target_i_dq.d), &named("I_d target", label), row));
+        plot.add_trace(line_trace(time, &series(records, |r| r.result.target_i_dq.q), &named("I_q target", label), row));
+    }
     row += 1;
     // Torque
-    let torque: Vec<f32> = records.iter().map(|r| r.sim.state.torque).collect();
-    plot.add_trace(line_trace(&time, &torque, "torque", row));
-    if has_torque_target {
-        plot.add_trace(line_trace(&time, &target_torque, "Target torque", row));
+    for (label, records, time) in labeled() {
+        plot.add_trace(line_trace(time, &series(records, |r| r.sim.state.torque), &named("torque", label), row));
+        if has_torque_target {
+            let target: Vec<f32> = records.iter().map(|r| match r.input.command {
+                FocInputType::TargetTorque(t) => t,
+                _ => f32::NAN,
+            }).collect();
+            plot.add_trace(line_trace(time, &target, &named("Target torque", label), row));
+        }
     }
     row += 1;
 
@@ -542,7 +675,7 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
     let mut row_labels: Vec<&str> = Vec::new();
     if has_hall { row_labels.push("Hall Pattern"); }
     row_labels.extend_from_slice(&[
-        "Rotor Angle [rad]", "Rotor Speed [rad/s]", "Duty Cycles",
+        "Rotor Angle [rad]", "Rotor Speed [rad/s]", "Duty Cycles", "Modulation [V]",
         "D/Q Voltages [V]", "D/Q Currents [A]", "Torque [Nm]",
     ]);
 
@@ -562,10 +695,16 @@ pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
             5 => layout.x_axis5(x).y_axis5(y),
             6 => layout.x_axis6(x).y_axis6(y),
             7 => layout.x_axis7(x).y_axis7(y),
+            8 => layout.x_axis8(x).y_axis8(y),
             _ => layout,
         };
     }
 
     plot.set_layout(layout);
-    plot.write_html(path);
+    let _ = std::fs::create_dir_all("test_plots");
+    plot.write_html(std::format!("test_plots/{path}"));
+}
+
+pub fn plot_simulation(path: &str, dt: f32, records: &[SimRecord]) {
+    plot_runs(path, dt, &[("", records)]);
 }
