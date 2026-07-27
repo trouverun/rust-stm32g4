@@ -15,7 +15,7 @@ const SQRT3_RECIPROCAL: f32 = 1.0 / 1.73205080757;
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
 
 /// Field weakening loop bandwidth of the bench FOC config, in rad/s
-pub const FIELD_WEAKENING_BANDWIDTH: f32 = 1000.0;
+pub const FIELD_WEAKENING_BANDWIDTH: f32 = 300.0;
 
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {

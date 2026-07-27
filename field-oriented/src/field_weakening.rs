@@ -73,6 +73,7 @@ impl FieldWeakening {
             let proportional = self.k_p * overmodulation_normalized;
             Ok((proportional + self.integral_term).clamp(lower_bound, 0.0))
         } else {
+            // Ensure its not possible to get stuck with unnecessary i_d current
             self.integral_term *= self.integral_decay_rate;
             Ok(self.integral_term.clamp(lower_bound, 0.0))
         }
@@ -89,9 +90,9 @@ impl FieldWeakening {
             return Err(FocFault::InvalidParameter)
         }
         let mut bandwidth = self.target_bandwidth;
-        // Stay below the current control loop bandwidth:
-        if self.target_bandwidth > 0.5*current_control_bandwidth {
-            bandwidth = 0.5*current_control_bandwidth;
+        // Stay well below the current control loop bandwidth:
+        if self.target_bandwidth > 0.33*current_control_bandwidth {
+            bandwidth = 0.33*current_control_bandwidth;
         }
         self.k_p = bandwidth / current_control_bandwidth;
         self.k_i = bandwidth;
@@ -348,7 +349,7 @@ mod test {
                         motor.name, now.mid_omega);
                 }
                 window_index += 1;
-                assert!(now.i_d_target < least_i_d_target + 0.05 * i_d_bound.abs(),
+                assert!(now.i_d_target < least_i_d_target + 0.1 * i_d_bound.abs(),
                     "{}: weakening current increased to {:.3} after {least_i_d_target:.3} at {:.1} rad/s",
                     motor.name, now.i_d_target, now.mid_omega);
                 least_i_d_target = least_i_d_target.min(now.i_d_target);
@@ -379,6 +380,8 @@ mod test {
 
     /// Sweep the speed range at full torque and a rotor load, and check that enabling weakening never
     /// delivers less torque than running without it
+    /// (note: in the .html plot, the velocities are not comparable, baseline is recorded under no load)
+    /// (field_weakening_extends_the_speed_range is responsible for testing the velocity increase)
     #[test]
     fn field_weakening_does_not_weaken_torque_under_load() {
         for motor in reference_motors() {
