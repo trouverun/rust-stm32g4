@@ -217,7 +217,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 }
                 if all || matches!(block, ConfigQueryBlockId::CurrentGainsD | ConfigQueryBlockId::CurrentGainsQ) {
                     let gains = cx.shared.foc.lock(|foc| foc.get_pi_gains());
-                    if let Some(ControllerParameters { d_pi, q_pi }) = gains {
+                    if let Some(ControllerParameters { d_pi, q_pi, .. }) = gains {
                         if all || matches!(block, ConfigQueryBlockId::CurrentGainsD) {
                             let f = CurrentGainsDReport::try_from(CurrentGainsDReportInit {
                                 kr: d_pi.kr, kp: d_pi.kp, ki: d_pi.ki, kt: d_pi.kt,
