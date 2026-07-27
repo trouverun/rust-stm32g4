@@ -143,7 +143,7 @@ impl HallCalibrator {
 mod test {
     use super::HallCalibrator;
     use crate::{
-        AngleType, ClarkParkValue, FocInputType, HallEncoder, PMSMConfig, PMSMSim, Recorder, TestBench
+        AngleType, ClarkParkValue, FocInputType, HallEncoder, PMSMConfig, PMSMSim, Recorder, TestBench, record_interval
     };
 
     const PWM_FREQUENCY_HZ: f32 = 20_000.0;
@@ -159,8 +159,7 @@ mod test {
         );
         let mut calibrator = HallCalibrator::new(5.0, dt);
 
-        let record_interval = (0.1 / dt).round() as u64;
-        let mut recorder = Recorder::new("hall_calibration.html", dt, record_interval);
+        let mut recorder = Recorder::new("hall_calibration.html", dt, record_interval(10.0, dt));
         let mut t = 0.0;
         while !calibrator.check_calibration_done() {
             let pattern = bench.out.measurement.hall_pattern.unwrap();
@@ -174,7 +173,6 @@ mod test {
 
             t += dt;
             if t > timeout_s {
-                recorder.plot();
                 panic!("calibration timeout");
             }
         }
@@ -192,6 +190,5 @@ mod test {
             assert!(false)
         }
 
-        recorder.plot();
     }
 }

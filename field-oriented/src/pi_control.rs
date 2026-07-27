@@ -259,7 +259,6 @@ mod tests {
             }
         }
 
-        recorder.plot();
         response
     }
 

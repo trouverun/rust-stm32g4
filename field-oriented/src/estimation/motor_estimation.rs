@@ -413,7 +413,7 @@ mod test {
     use core::f32::consts::TAU;
     use crate::{
         AngleType, EstimatorRecord, FocInputType, HallEncoder, HallEstimator, Motor, PMSMSim,
-        Recorder, SimulatedHallTimer, TestBench, ideal_hall_table, reference_motors
+        Recorder, SimulatedHallTimer, TestBench, ideal_hall_table, record_interval, reference_motors
     };
 
     const PWM_FREQUENCY_HZ: f32 = 20_000.0;
@@ -445,8 +445,7 @@ mod test {
         let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, bench.out.measurement.hall_pattern.unwrap());
         let mut hall = hall_estimator.get_estimate(timer.sample(bench.out.measurement.hall_pattern.unwrap())).unwrap();
 
-        let record_interval = 10;
-        let mut recorder = Recorder::new(plot_path, dt, record_interval);
+        let mut recorder = Recorder::new(plot_path, dt, record_interval(2_000.0, dt));
         let mut t = 0.0;
         while !estimator.estimation_done() {
             let step_in = OfflineEstimatorInput {
@@ -486,17 +485,14 @@ mod test {
 
             t += dt;
             if t > timeout_s {
-                recorder.plot();
                 panic!("Estimation did not complete within {timeout_s}s");
             }
 
             if estimator.estimation_failed() {
-                recorder.plot();
                 panic!("Estimation failed!")
             }
         }
 
-        recorder.plot();
         estimator.params
     }
 
