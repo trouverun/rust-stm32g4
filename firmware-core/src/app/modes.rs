@@ -61,7 +61,12 @@ impl OperatingMode {
     pub fn on_command(&mut self, command: Command) {
         info!("On command {}, state {}", command, &*self);
         let new_state = match (&mut *self, command) {
-            (OperatingMode::Fault { safe_strategy, .. }, Command::ClearFault) => OperatingMode::Idle { safe_strategy: *safe_strategy },
+            (OperatingMode::Fault { safe_strategy, .. }, Command::ClearFault) => {
+                if matches!(*safe_strategy, SafeControlStrategy::SS1t { .. } | SafeControlStrategy::RampDown {..} ) {
+                    return;
+                }
+                OperatingMode::Idle { safe_strategy: *safe_strategy }
+            },
             (OperatingMode::Fault { safe_strategy, write_index, trace },
                 Command::AssertFault { cause }) => {
                 if *write_index < trace.len() && !trace[..*write_index].contains(&cause) {
@@ -128,7 +133,7 @@ impl OperatingMode {
             OperatingMode::Fault { safe_strategy, .. } => FocGate { 
                 active: matches!(safe_strategy, SafeControlStrategy::SS1t { .. }), 
                 use_safety_command: true,
-                feedback_optional: true, 
+                feedback_optional: matches!(safe_strategy, SafeControlStrategy::STOf | SafeControlStrategy::ASC { .. }), 
             },
         }
     }
@@ -164,19 +169,7 @@ mod tests {
     }
 
     fn asc() -> SafeControlStrategy {
-        SafeControlStrategy::ASC { should_switch: Debounced::new(false) }
-    }
-
-    fn rampdown() -> SafeControlStrategy {
-        SafeControlStrategy::RampDown { waited_ms: 0.0 }
-    }
-
-    fn ss1t() -> SafeControlStrategy {
-        SafeControlStrategy::SS1t { brake: BangBangBrake::new(), done: Debounced::new(false) }
-    }
-
-    fn idle_with(safe_strategy: SafeControlStrategy) -> OperatingMode {
-        OperatingMode::Idle { safe_strategy }
+        SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: true }
     }
 
     fn faulted_with(safe_strategy: SafeControlStrategy) -> OperatingMode {
@@ -184,7 +177,7 @@ mod tests {
     }
 
     fn idle() -> OperatingMode {
-        idle_with(sto())
+        OperatingMode::Idle { safe_strategy: sto() }
     }
 
     fn calibrating() -> OperatingMode {
@@ -319,7 +312,7 @@ mod tests {
         let OperatingMode::Fault { safe_strategy, write_index, trace } = mode else {
             panic!("left fault mode");
         };
-        assert!(matches!(safe_strategy, SafeControlStrategy::STO { .. }));
+        assert!(matches!(safe_strategy, SafeControlStrategy::STOf));
         assert_eq!(write_index, 2);
         assert_eq!(trace[0], FaultCause::DcOverVoltage);
         assert_eq!(trace[1], FaultCause::Overcurrent);
@@ -354,14 +347,15 @@ mod tests {
     fn foc_gate_matches_the_mode_and_safe_strategy() {
         let cases = [
             (OperatingMode::TorqueControl, (true, false, false), "torque control"),
-            (idle_with(sto()), (false, true, true), "idle STO"),
-            (idle_with(asc()), (false, true, true), "idle ASC"),
-            (idle_with(SafeControlStrategy::STOf), (false, true, true), "idle terminal STO"),
-            (idle_with(rampdown()), (true, true, true), "idle rampdown"),
-            (faulted_with(sto()), (false, true, true), "fault STO"),
+            (OperatingMode::Idle { safe_strategy: sto() }, (false, true, true), "idle STO"),
+            (OperatingMode::Idle { safe_strategy: asc() }, (false, true, true), "idle ASC"),
+            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::STOf }, (false, true, true), "idle terminal STO"),
+            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }, (true, true, true), "idle rampdown"),
+            (faulted_with(sto()), (false, true, false), "fault STO"),
             (faulted_with(asc()), (false, true, true), "fault ASC"),
-            (faulted_with(rampdown()), (false, true, true), "fault rampdown"),
-            (faulted_with(ss1t()), (true, true, true), "fault SS1-t"),
+            (faulted_with(SafeControlStrategy::STOf), (false, true, true), "fault terminal STO"),
+            (faulted_with(SafeControlStrategy::RampDown { waited_ms: 0.0 }), (false, true, false), "fault rampdown"),
+            (faulted_with(SafeControlStrategy::SS1t { brake: BangBangBrake::new(), done: Debounced::new(false) }), (true, true, false), "fault SS1-t"),
         ];
 
         for (mode, expected, label) in cases {
