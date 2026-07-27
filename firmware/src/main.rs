@@ -72,6 +72,14 @@ mod app {
 
     #[init]
     fn init(_cx: init::Context) -> (Shared, Local) {
+        const _: () = {
+            assert!(BOARD.mosfet_deadtime_ns > 0, "MOSFET deadtime needs to be positive");
+            assert!(BOARD.mosfet_on_delay_ns > 0, "MOSFET on delay needs to be positive");
+            assert!(BOARD.mosfet_off_delay_ns > 0, "MOSFET off delay needs to be positive");
+            assert!(BOARD.deadtime_compensation_band_a >= 0.0);
+            assert!(OVERMODULATION_THRESHOLD_RATIO > 0.0 && OVERMODULATION_THRESHOLD_RATIO <= 1.0);
+        };
+
         let (
             adc_mappings,
             hall_mappings,
@@ -83,7 +91,6 @@ mod app {
             watchdog_mappings,
             debug_mappings,
         ) = map_peripherals();
-
 
         // Initialize HW:
         let pwm_output: PwmOutput = bsp::PwmOutput::new(pwm_mappings, 0.0);
@@ -127,7 +134,7 @@ mod app {
             mosfet_on_delay_ns: BOARD.mosfet_on_delay_ns as f32,
             mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
             deadtime_compensation_band_a: BOARD.deadtime_compensation_band_a,
-            saturation_d_ratio: 0.1
+            overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO
         };
         let mut foc = FOC::new(foc_cfg);
 
