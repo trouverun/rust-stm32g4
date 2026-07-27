@@ -22,6 +22,9 @@ pub const ORTEGA_PRALY_GAIN: f32 = 1000.0;
 /// Bandwidth of the PLL omega estimator for the ortega praly sensorless estimator
 pub const ORTEGA_PRALY_BANDWIDTH: f32 = 1500.0;
 
+// Factor of the linear modulation voltage budget that can be used before field weakening starts
+pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
+
 /// How much does each setpoint Rx faulty message fill the leaky fault bucket
 pub const TORQUE_SETPOINT_FAULT_FILL_RATE: u32 = 2;
 /// How much does each setpoint Rx valid message drain the leaky fault bucket
