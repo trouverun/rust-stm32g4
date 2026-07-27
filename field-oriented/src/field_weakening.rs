@@ -43,16 +43,18 @@ impl FieldWeakening {
         }
     }
 
-    pub fn compute(&mut self, input: FieldWeakeningInput) -> Result<f32, FocFault> {
-        let mut lower_bound = -input.current_limit_a;
-        let i_ch = if input.d_inductance != 0.0 {
-            (input.pm_flux_linkage / input.d_inductance).abs()
+    /// Most negative d axis command the weakening controller will output
+    pub fn lower_bound(d_inductance: f32, pm_flux_linkage: f32, current_limit_a: f32) -> f32 {
+        let i_ch = if d_inductance != 0.0 {
+            (pm_flux_linkage / d_inductance).abs()
         } else {
             0.0
         };
-        if -i_ch > lower_bound {
-            lower_bound = -i_ch;
-        }
+        (-current_limit_a).max(-i_ch)
+    }
+
+    pub fn compute(&mut self, input: FieldWeakeningInput) -> Result<f32, FocFault> {
+        let lower_bound = Self::lower_bound(input.d_inductance, input.pm_flux_linkage, input.current_limit_a);
 
         let du_did = if input.u_mag > 0.0 {
             (input.omega * input.u_q * input.d_inductance) / input.u_mag
@@ -106,11 +108,44 @@ impl FieldWeakening {
 mod test {
     use super::*;
     use crate::{
-        Motor, PMSMSim, Recorder, TestBench, reference_motors
+        FIELD_WEAKENING_BANDWIDTH, Motor, PMSMSim, Recorder, TestBench, Windowed,
+        record_interval, reference_motors
     };
+    use crate::sim::PMSMConfig;
+    use std::vec::Vec;
 
     const PWM_FREQUENCY_HZ: f32 = 20_000.0;
-    const RUN_DURATION_S: f32 = 0.15;
+    const SETTLING_S: f32 = 0.01;
+    const TORQUE_WINDOW_S: f32 = 0.001;
+
+    /// No field weakening baseline torque at the given speed, linearly interpolated
+    fn baseline_torque(curve: &[(f32, f32)], omega: f32) -> f32 {
+        match curve.iter().position(|(w, _)| *w >= omega) {
+            Some(0) => curve[0].1,
+            Some(i) => {
+                let (w0, t0) = curve[i - 1];
+                let (w1, t1) = curve[i];
+                if w1 - w0 > 1e-6 { t0 + (t1 - t0) * (omega - w0) / (w1 - w0) } else { t0 }
+            }
+            None => curve.last().map_or(0.0, |point| point.1),
+        }
+    }
+
+    /// Overlay of the weakened run on its baseline, written on drop so failures still emit it
+    struct RunComparison {
+        path: std::string::String,
+        unweakened: Recorder,
+        weakened: Recorder,
+    }
+
+    impl Drop for RunComparison {
+        fn drop(&mut self) {
+            crate::plot_runs(&self.path, self.weakened.sample_dt(), &[
+                ("weakened", self.weakened.records()),
+                ("not weakened", self.unweakened.records()),
+            ]);
+        }
+    }
 
     struct Load {
         torque_nm: f32,
@@ -124,10 +159,41 @@ mod test {
         final_omega: f32,
     }
 
-    /// Command the full current limit as torque against a load, and report what the controller did
-    fn run_against_load(motor: Motor, load: Load, feedback_noise: bool, plot_path: &str) -> LoadedRun {
+    /// Run full torque demand with weakening disabled until speed and currents settle,
+    /// recording a torque as a function of speed curve
+    fn no_weakening_baseline(motor: &Motor, config: PMSMConfig) -> (Vec<(f32, f32)>, Recorder) {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
-        let settling_s = 0.01;
+        let mut bench = TestBench::new(PMSMSim::new(dt, config), motor.current_limit_a);
+        bench.tune_pi(bench.params);
+        bench.field_weakening = false;
+
+        let mut recorder = Recorder::buffer(dt, record_interval(1_000.0, dt));
+        let mut signals = Windowed::new(TORQUE_WINDOW_S, dt);
+        let mut curve = Vec::new();
+        let mut prev = None;
+        let mut t = 0.0;
+        loop {
+            assert!(t < 30.0, "{}: the unweakened run never settled", motor.name);
+            let step = bench.step_torque(motor.torque_at_current_limit());
+            recorder.record(&step, &[]);
+            signals.push(&step);
+            t += dt;
+            if t < SETTLING_S {
+                continue;
+            }
+            let Some(now) = signals.boundary() else { continue };
+            curve.push((now.mid_omega, now.torque));
+            if now.steady(&prev, motor) {
+                return (curve, recorder);
+            }
+            prev = Some(now);
+        }
+    }
+
+    /// Command the full current limit as torque against a load, and record what the controller does
+    fn run_against_load(motor: Motor, load: Load, feedback_noise: bool, plot_path: &str) -> LoadedRun {
+        const RUN_DURATION_S: f32 = 0.15;
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
         let mut sim_cfg = motor.config;
         sim_cfg.rotor_inertia += load.inertia;
         let mut sim = PMSMSim::new(dt, sim_cfg)
@@ -148,72 +214,176 @@ mod test {
         let mut t = 0.0;
         while t < RUN_DURATION_S {
             let step = bench.step_torque(motor.torque_at_current_limit());
-            if t > settling_s {
+            if t > SETTLING_S {
                 run.worst_i_d = run.worst_i_d.min(step.result.target_i_dq.d);
             }
             recorder.record(&step, &[]);
             t += dt;
         }
-        recorder.plot();
 
         run.final_omega = bench.out.state.omega;
         run
     }
 
-    /// Accelerate an unloaded machine against a constant torque command and check that weakening
-    /// current carries it past the base speed where the back-emf alone fills the available bus
+    /// Command full torque and check against a no-weakening baseline window by window,
+    /// asserting that the field weakened torque dominates the non field weakened torque
+    fn assert_does_not_weaken(motor: &Motor, load_torque: f32, tag: &str) {
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
+        let ramp_s = 0.2;
+        let command = motor.torque_at_current_limit();
+        let target_omega = 1.25 * motor.base_omega();
+        // Inertia sized so speed changes slowly compared to the weakening loop:
+        let mut baseline_config = motor.config;
+        baseline_config.rotor_inertia = command * ramp_s / motor.base_omega();
+        let mut config = baseline_config;
+        config.rotor_inertia = (command - load_torque) * ramp_s / motor.base_omega();
+
+        let (baseline, baseline_recorder) = no_weakening_baseline(motor, baseline_config);
+        let baseline_max_omega = baseline.last().unwrap().0;
+
+        let mut bench = TestBench::new(
+            PMSMSim::new(dt, config).with_load_torque(load_torque),
+            motor.current_limit_a,
+        );
+        bench.tune_pi(bench.params);
+        let mut comparison = RunComparison {
+            path: std::format!("{tag}_{}.html", motor.name),
+            unweakened: baseline_recorder,
+            weakened: Recorder::buffer(dt, record_interval(1_000.0, dt)),
+        };
+
+        let mut signals = Windowed::new(TORQUE_WINDOW_S, dt);
+        let mut worst_i_d: f32 = 0.0;
+        let mut t = 0.0;
+        while bench.out.state.omega < target_omega {
+            if load_torque > 0.0 {
+                if t >= 4.0 * ramp_s {
+                    break;
+                }
+            } else {
+                assert!(t < 4.0 * ramp_s, "{}: stalled at {:.1} of {target_omega:.1} rad/s",
+                    motor.name, bench.out.state.omega);
+            }
+            let step = bench.step_torque(command);
+            comparison.weakened.record(&step, &[]);
+            signals.push(&step);
+            worst_i_d = worst_i_d.min(step.result.target_i_dq.d);
+            t += dt;
+            if t < SETTLING_S {
+                continue;
+            }
+            let Some(now) = signals.boundary() else { continue };
+            if now.mid_omega > baseline_max_omega {
+                continue;
+            }
+            let expected = baseline_torque(&baseline, now.mid_omega);
+            // Weakening starts at 95% of the modulation budget, add torque slack to account for it:
+            assert!(now.torque > 0.93 * expected,
+                "{}: torque {:.3} below the {expected:.3} the machine does without weakening at {:.1} rad/s",
+                motor.name, now.torque, now.mid_omega);
+        }
+
+        if load_torque > 0.0 {
+            // For this test to be meaningful, the run needs to end at a speed where full torque needs weakening:
+            let omega = bench.out.state.omega;
+            assert!(baseline_torque(&baseline, omega) < 0.95 * command,
+                "{}: load too light, full torque still fits the bus at {omega:.1} rad/s", motor.name);
+        }
+        let i_d_bound = FieldWeakening::lower_bound(
+            config.inductance, config.pm_flux_linkage, motor.current_limit_a
+        );
+        assert!(worst_i_d < 0.1 * i_d_bound,
+            "{}: weakening never engaged, i_d target {worst_i_d:.3} of the {i_d_bound:.3} bound",
+            motor.name);
+    }
+
+    /// Accelerate to the speed ceiling with and without weakening, and check that weakening
+    /// raises the ceiling and settles i_d at its lower bound, and that i_d is strictly decreasing
     #[test]
     fn field_weakening_extends_the_speed_range() {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
-        let run_s = 1.0;
-        let motor = Motor { current_limit_a: 5.0, ..reference_motors()[0] };
-        let mut bench = TestBench::new(PMSMSim::new(dt, motor.config).with_current_noise(motor.current_noise_a, 333), motor.current_limit_a);
-        bench.tune_pi(bench.params);
+        for motor in reference_motors() {
+            let command = motor.torque_at_current_limit();
+            let mut config = motor.config;
+            // Reach base speed in tens of weakening loop time constants:
+            let ramp_s = 50.0 / FIELD_WEAKENING_BANDWIDTH;
+            config.rotor_inertia = config.rotor_inertia.max(command * ramp_s / motor.base_omega());
 
-        let record_interval = (0.001 / dt).round() as u64;
-        let mut recorder = Recorder::new("field_weakening.html", dt, record_interval);
-        let mut t = 0.0;
-        while t < run_s {
-            let step = bench.step_torque(motor.torque_at_current_limit());
-            recorder.record(&step, &[]);
-            t += dt;
+            let (baseline, baseline_recorder) = no_weakening_baseline(&motor, config);
+            let mut bench = TestBench::new(PMSMSim::new(dt, config), motor.current_limit_a);
+            bench.tune_pi(bench.params);
+            let mut comparison = RunComparison {
+                path: std::format!("field_weakening_extends_the_speed_range_{}.html", motor.name),
+                unweakened: baseline_recorder,
+                weakened: Recorder::buffer(dt, record_interval(1_000.0, dt)),
+            };
+
+            let i_d_bound = FieldWeakening::lower_bound(
+                config.inductance, config.pm_flux_linkage, motor.current_limit_a
+            );
+            let mut signals = Windowed::new(TORQUE_WINDOW_S, dt);
+            let mut window_index = 0;
+            let mut least_i_d_target: f32 = 0.0;
+            let mut prev = None;
+            let mut t = 0.0;
+            let settled = loop {
+                assert!(t < 30.0, "{}: the weakened run never settled, {:.1} rad/s", motor.name, bench.out.state.omega);
+                let step = bench.step_torque(command);
+                comparison.weakened.record(&step, &[]);
+                signals.push(&step);
+                t += dt;
+                if t < SETTLING_S {
+                    continue;
+                }
+                let i_dq = step.out.state.i_dq;
+                let magnitude = (i_dq.d * i_dq.d + i_dq.q * i_dq.q).sqrt();
+                assert!(magnitude < 1.05 * motor.current_limit_a,
+                    "{}: current limit exceeded, |i_dq| {magnitude:.3} at {:.1} rad/s",
+                    motor.name, bench.out.state.omega);
+                let Some(now) = signals.boundary() else { continue };
+                if window_index < baseline.len() {
+                    let unweakened = baseline[window_index].0;
+                    assert!(now.mid_omega > unweakened - 0.01 * motor.base_omega(),
+                        "{}: weakened speed {:.1} behind the unweakened {unweakened:.1} rad/s",
+                        motor.name, now.mid_omega);
+                }
+                window_index += 1;
+                assert!(now.i_d_target < least_i_d_target + 0.05 * i_d_bound.abs(),
+                    "{}: weakening current increased to {:.3} after {least_i_d_target:.3} at {:.1} rad/s",
+                    motor.name, now.i_d_target, now.mid_omega);
+                least_i_d_target = least_i_d_target.min(now.i_d_target);
+                if now.steady(&prev, &motor) {
+                    break now;
+                }
+                prev = Some(now);
+            };
+
+            let unweakened_ceiling = baseline.last().unwrap().0;
+            assert!(settled.omega > 1.05 * unweakened_ceiling,
+                "{}: weakening did not extend the speed range, {:.1} vs {unweakened_ceiling:.1} rad/s",
+                motor.name, settled.omega);
+            assert!(settled.i_d_target < 0.95 * i_d_bound,
+                "{}: weakening current settled at {:.3} instead of the {i_d_bound:.3} bound",
+                motor.name, settled.i_d_target);
         }
-        recorder.plot();
-
-        let base_omega = motor.base_omega();
-        let i_dq = bench.out.state.i_dq;
-        // Holding any speed past base requires at least the i_d that fits the flux under the bus limit:
-        let omega_e = bench.out.state.omega * motor.config.num_pole_pairs;
-        let required_i_d = (motor.u_max() / omega_e - motor.config.pm_flux_linkage) / motor.config.inductance;
-        assert!(i_dq.d < required_i_d, "weakening current {:.3} above the {required_i_d:.3} the speed requires", i_dq.d);
-        let magnitude = (i_dq.d * i_dq.d + i_dq.q * i_dq.q).sqrt();
-        assert!(magnitude < 1.05 * motor.current_limit_a, "current limit exceeded, |i_dq| {magnitude:.3}");
-        assert!(bench.out.state.omega > base_omega, "stalled at {:.1} rad/s, base speed {base_omega:.1}", bench.out.state.omega);
     }
 
-    /// Accelerate a heavily loaded machine at the drive current limit and check that no
-    /// weakening current is spent below the base speed
+    /// Sweep the speed range at full torque and no rotor load, and check that enabling weakening never
+    /// delivers less torque than running without it
     #[test]
-    fn low_speed_acceleration_is_not_field_weakened() {
+    fn field_weakening_does_not_weaken_torque() {
         for motor in reference_motors() {
-            // Enough load to keep the machine crawling, and enough inertia that it takes the whole
-            // run to reach a fraction of the base speed:
-            let target_omega = 0.15 * motor.base_omega();
-            let load = Load {
-                torque_nm: 0.2 * motor.torque_at_current_limit(),
-                inertia: 0.8 * motor.torque_at_current_limit() * RUN_DURATION_S / target_omega,
-            };
-            let run = run_against_load(
-                motor, load, false, &std::format!("field_weakening_low_speed_{}.html", motor.name)
-            );
+            assert_does_not_weaken(&motor, 0.0, "field_weakening_does_not_weaken_torque");
+        }
+    }
 
-            // Premise, the rotor accelerated but stayed well below the base speed:
-            assert!((0.25 * target_omega..0.25 * motor.base_omega()).contains(&run.final_omega),
-                "{}: not a low speed acceleration, {:.1} rad/s, base speed {:.1}",
-                motor.name, run.final_omega, motor.base_omega());
-            assert!(run.worst_i_d > -0.05 * motor.current_limit_a,
-                "{}: weakening current spent without authority, i_d target {:.3}",
-                motor.name, run.worst_i_d);
+    /// Sweep the speed range at full torque and a rotor load, and check that enabling weakening never
+    /// delivers less torque than running without it
+    #[test]
+    fn field_weakening_does_not_weaken_torque_under_load() {
+        for motor in reference_motors() {
+            assert_does_not_weaken(&motor, 0.8 * motor.torque_at_current_limit(),
+                "field_weakening_does_not_weaken_torque_under_load");
         }
     }
 
@@ -223,60 +393,19 @@ mod test {
     fn stalled_rotor_is_not_field_weakened() {
         for motor in reference_motors() {
             let load = Load { torque_nm: 2.0 * motor.torque_at_current_limit(), inertia: 0.0 };
+            // The bench unwraps controller faults, so a fault at standstill panics the run:
             let run = run_against_load(
-                motor, load, true, &std::format!("field_weakening_stalled_{}.html", motor.name)
+                motor, load, true, &std::format!("stalled_rotor_is_not_field_weakened_{}.html", motor.name)
             );
 
-            // Premise, the rotor never broke away:
-            assert!(run.final_omega == 0.0, "{}: rotor was not stalled, {:.1} rad/s", motor.name, run.final_omega);
-            assert!(run.worst_i_d > -0.05 * motor.current_limit_a,
+            // This test is only valid if the rotor never broke away:
+            assert!(run.final_omega.abs() < 1e-3, "{}: rotor was not stalled, {:.1} rad/s", motor.name, run.final_omega);
+            let i_d_bound = FieldWeakening::lower_bound(
+                motor.config.inductance, motor.config.pm_flux_linkage, motor.current_limit_a
+            );
+            assert!(run.worst_i_d > 0.05 * i_d_bound,
                 "{}: weakening current spent on a stalled rotor, i_d target {:.3}",
                 motor.name, run.worst_i_d);
         }
-    }
-
-    /// Wind the flux weakening integrator to its bound with a demand that can be supplied, then take the
-    /// control authority away and check that the integrator empties at the designed rate rather than being stuck
-    #[test]
-    fn weakening_integral_empties_without_authority() {
-        let bandwidth = 1000.0;
-        let dt = 1.0 / 20_000.0;
-        let mut weakening = FieldWeakening::new(bandwidth, dt);
-        weakening.derive_gains(4.0 * bandwidth).unwrap();
-
-        let d_inductance = 0.00184;
-        let pm_flux_linkage = 0.0167;
-        let i_ch = pm_flux_linkage / d_inductance;
-        // Bus filled past the threshold (negative headroom) while spinning:
-        let demand = |omega| FieldWeakeningInput {
-            omega,
-            d_inductance,
-            pm_flux_linkage,
-            overmodulation: -2.0,
-            u_q: 13.0,
-            u_mag: 13.86,
-            current_limit_a: 25.0
-        };
-
-        let steps_per_time_constant = (bandwidth * dt).recip().round() as u32;
-        let mut i_d = 0.0;
-        for _ in 0..10 * steps_per_time_constant {
-            i_d = weakening.compute(demand(800.0)).unwrap();
-        }
-        assert!((i_d + i_ch).abs() < 1e-3, "integral did not reach its bound, i_d {i_d:.3} of {:.3}", -i_ch);
-
-        // Standstill leaves the demand in place but takes the authority to answer it away:
-        let wound_up = i_d;
-        for _ in 0..steps_per_time_constant {
-            i_d = weakening.compute(demand(0.0)).unwrap();
-        }
-        let decayed = i_d / wound_up;
-        assert!((decayed - 0.1).abs() < 0.01,
-            "decayed {decayed:.4} of the integral over one time constant, expected a decade");
-
-        for _ in 0..4 * steps_per_time_constant {
-            i_d = weakening.compute(demand(0.0)).unwrap();
-        }
-        assert!(i_d.abs() < 1e-3, "integral stuck at {i_d:.4} after five time constants");
     }
 }

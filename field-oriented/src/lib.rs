@@ -103,7 +103,8 @@ impl FOC {
     pub fn compute<A>(&mut self, 
         input: FocInput, 
         motor_params: MotorParamsEstimate,
-        accelerator: &mut A
+        accelerator: &mut A,
+        field_weakening: bool
     ) -> Result<FocResult, FocFault> where A: DoesFocMath {
         let pole_pairs = motor_params.num_pole_pairs.ok_or(FocFault::MissingMotorParams)?;
         let angle_scaler = match input.angle_type {
@@ -131,21 +132,26 @@ impl FOC {
                 self.compute_voltages(target_i_dq, measured_i_dq, omega_e, 0.0, motor_params)?
             }
             FocInputType::TargetTorque(target_torque) => {
-                // Compute target d-axis current based on field weakening need:
-                let u_mag = accelerator.sqrt(self.prev_values.u_mag_sq);
-                let overmodulation = self.config.overmodulation_threshold_ratio*self.prev_values.u_max - u_mag;
-                let d_inductance =  motor_params.d_inductance.ok_or(FocFault::MissingMotorParams)?;
                 let pm_flux_linkage = motor_params.pm_flux_linkage.ok_or(FocFault::MissingMotorParams)?;
-                let field_weakening_input = FieldWeakeningInput {
-                    omega: omega_e,
-                    d_inductance,
-                    pm_flux_linkage,
-                    overmodulation,
-                    u_q: self.prev_values.u_q,
-                    u_mag,
-                    current_limit_a: input.current_limit_a,
+                let target_i_d = if field_weakening {
+                    // Compute target d-axis current based on field weakening need:
+                    let u_mag = accelerator.sqrt(self.prev_values.u_mag_sq).clamp(0.0, self.prev_values.u_max);
+                    let overmodulation = self.config.overmodulation_threshold_ratio*self.prev_values.u_max - u_mag;
+                    let d_inductance =  motor_params.d_inductance.ok_or(FocFault::MissingMotorParams)?;
+                    let field_weakening_input = FieldWeakeningInput {
+                        omega: omega_e,
+                        d_inductance,
+                        pm_flux_linkage,
+                        overmodulation,
+                        u_q: self.prev_values.u_q,
+                        u_mag,
+                        current_limit_a: input.current_limit_a,
+                    };
+                    self.field_weakening.compute(field_weakening_input)?
+                } else {
+                    0.0
                 };
-                let target_i_d = self.field_weakening.compute(field_weakening_input)?;
+
                 let current_budget_sq = input.current_limit_a*input.current_limit_a - target_i_d*target_i_d;
                 let current_budget = if current_budget_sq > 0.0 {
                     accelerator.sqrt(current_budget_sq)

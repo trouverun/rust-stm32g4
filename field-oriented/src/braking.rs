@@ -92,7 +92,6 @@ mod tests {
             assert!(brake_ms < max_duration_ms + 100.0, "brake failed to terminate");
         }
 
-        recorder.plot();
 
         // Terminated on the velocity cutoff, not the timeout:
         assert!(brake_ms < max_duration_ms, "brake ran to timeout instead of stopping");
@@ -141,7 +140,6 @@ mod tests {
             assert!(brake_ms < max_duration_ms + 100.0, "brake failed to terminate");
         }
 
-        recorder.plot();
 
         // Terminated on the timeout with the rotor still turning:
         assert!(brake_ms >= max_duration_ms, "brake stopped before the timeout");

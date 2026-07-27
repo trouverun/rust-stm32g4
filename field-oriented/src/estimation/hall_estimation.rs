@@ -201,6 +201,7 @@ mod test {
     use crate::{
         AngleType, ClarkParkValue, EstimatorRecord, FocInputType, HallCalibrator, HallEncoder,
         PMSMConfig, PMSMSim, Recorder, SimulatedHallTimer, TestBench, angle_error, ideal_hall_table,
+        record_interval,
     };
 
     const PWM_FREQUENCY_HZ: f32 = 20_000.0;
@@ -335,8 +336,7 @@ mod test {
         bench.foc.clear_windup();
 
         let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, bench.out.measurement.hall_pattern.unwrap());
-        let record_interval = (0.01 / dt).round() as u64;
-        let mut recorder = Recorder::new("hall_estimation.html", dt, record_interval);
+        let mut recorder = Recorder::new("hall_estimation.html", dt, record_interval(100.0, dt));
 
         // One torque-controlled FOC + sim + hall estimation iteration:
         let mut drive = |bench: &mut TestBench, recorder: &mut Recorder, target_torque: f32| {
@@ -391,6 +391,5 @@ mod test {
             t += dt;
         }
 
-        recorder.plot();
     }
 }
