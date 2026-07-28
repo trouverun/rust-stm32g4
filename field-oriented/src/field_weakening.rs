@@ -279,7 +279,7 @@ mod test {
             }
             let expected = baseline_torque(&baseline, now.mid_omega);
             // Weakening starts at 95% of the modulation budget, add torque slack to account for it:
-            assert!(now.torque > 0.93 * expected,
+            assert!(now.torque > 0.95 * expected,
                 "{}: torque {:.3} below the {expected:.3} the machine does without weakening at {:.1} rad/s",
                 motor.name, now.torque, now.mid_omega);
         }

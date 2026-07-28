@@ -254,6 +254,7 @@ impl FOC {
     }
 
     pub fn set_pi_gains(&mut self, gains: Option<ControllerParameters>) -> Result<(), FocFault> {
+        self.clear_windup();
         if let Some(ControllerParameters { d_pi, q_pi , closed_loop_bandwidth }) = gains {
             self.d_pi.set_gains(Some(d_pi));
             self.q_pi.set_gains(Some(q_pi));
