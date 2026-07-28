@@ -1,6 +1,4 @@
-use crate::Debounced;
-
-use super::calibration::{CalibrationPhase, CalibrationRunner};
+use super::calibration::{CalibrationPhase, CalibrationRunner, Calibrator};
 use super::faults::FaultCause;
 use super::safe_strategy::SafeControlStrategy;
 use defmt::{Format, Formatter, write, info};
@@ -12,7 +10,7 @@ pub struct FocGate {
     pub feedback_optional: bool
 }
 
-#[derive(Clone, Copy, defmt::Format)]
+#[derive(Clone, defmt::Format)]
 pub enum Command {
     Idle { safe_strategy: SafeControlStrategy },
     StartCalibration { num_pole_pairs: u8, max_rotor_rpm_mech: f32, dt_s: f32 },
@@ -25,11 +23,11 @@ pub enum Command {
     NoOp
 }
 
-pub enum OperatingMode {
+pub enum OperatingMode<C = CalibrationRunner> {
     Idle {
         safe_strategy: SafeControlStrategy
     },
-    Calibration { calibrator: CalibrationRunner },
+    Calibration { calibrator: C },
     TorqueControl,
     Fault {
         safe_strategy: SafeControlStrategy,
@@ -38,14 +36,14 @@ pub enum OperatingMode {
     },
 }
 
-impl Format for OperatingMode {
+impl<C: Calibrator> Format for OperatingMode<C> {
     fn format(&self, f: Formatter<'_>) {
         match self {
             OperatingMode::Idle { safe_strategy } => {
                 write!(f, "Idle {{ safe_strategy: {} }}", safe_strategy)
             }
             OperatingMode::Calibration { calibrator, .. } => {
-                write!(f, "Calibration {{ phase: {} }}", calibrator.phase)
+                write!(f, "Calibration {{ phase: {} }}", calibrator.phase())
             }
             OperatingMode::TorqueControl => {
                 write!(f, "TorqueControl")
@@ -57,7 +55,7 @@ impl Format for OperatingMode {
     }
 }
 
-impl OperatingMode {
+impl<C: Calibrator> OperatingMode<C> {
     pub fn on_command(&mut self, command: Command) {
         info!("On command {}, state {}", command, &*self);
         let new_state = match (&mut *self, command) {
@@ -65,7 +63,7 @@ impl OperatingMode {
                 if matches!(*safe_strategy, SafeControlStrategy::SS1t { .. } | SafeControlStrategy::RampDown {..} ) {
                     return;
                 }
-                OperatingMode::Idle { safe_strategy: *safe_strategy }
+                OperatingMode::Idle { safe_strategy: safe_strategy.clone() }
             },
             (OperatingMode::Fault { safe_strategy, write_index, trace },
                 Command::AssertFault { cause }) => {
@@ -82,7 +80,7 @@ impl OperatingMode {
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
             (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, dt_s }) => {
-                OperatingMode::Calibration { calibrator: CalibrationRunner::new(num_pole_pairs, max_rotor_rpm_mech, dt_s) }
+                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, max_rotor_rpm_mech, dt_s) }
             }
             (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
@@ -90,14 +88,10 @@ impl OperatingMode {
                 return;
             }
             (OperatingMode::Calibration { .. }, Command::FinishCalibration) => {
-                OperatingMode::Idle {
-                    safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) }
-                }
+                OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }
             },
             (OperatingMode::Calibration { .. }, Command::CancelCalibration) => {
-                OperatingMode::Idle {
-                    safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) }
-                }
+                OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }
             },
             (OperatingMode::TorqueControl, Command::Idle { safe_strategy } ) => OperatingMode::Idle { safe_strategy },
             (_, _) => return,
@@ -115,13 +109,13 @@ impl OperatingMode {
             OperatingMode::Calibration { calibrator } => FocGate {
                 // Wait phases must not step the calibration state machine:
                 active: !matches!(
-                    calibrator.phase,
+                    calibrator.phase(),
                     CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
                 ),
                 use_safety_command: false,
                 // Encoder zeroing and hall calibration phases do not use rotor feedback:
                 feedback_optional: matches!(
-                    calibrator.phase,
+                    calibrator.phase(),
                     CalibrationPhase::WaitingEncoderZeroing { .. } | CalibrationPhase::HallCalibration { .. }
                 ),
             },
@@ -133,7 +127,7 @@ impl OperatingMode {
             OperatingMode::Fault { safe_strategy, .. } => FocGate { 
                 active: matches!(safe_strategy, SafeControlStrategy::SS1t { .. }), 
                 use_safety_command: true,
-                feedback_optional: matches!(safe_strategy, SafeControlStrategy::STOf | SafeControlStrategy::ASC { .. }), 
+                feedback_optional: !matches!(safe_strategy, SafeControlStrategy::SS1t { .. }), 
             },
         }
     }
@@ -158,26 +152,13 @@ impl OperatingMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field_oriented::BangBangBrake;
 
     const POLE_PAIRS: u8 = 7;
     const MAX_RPM: f32 = 3000.0;
     const DT_S: f32 = 1.0 / 20_000.0;
 
-    fn sto() -> SafeControlStrategy {
-        SafeControlStrategy::STO { should_switch: Debounced::new(false) }
-    }
-
-    fn asc() -> SafeControlStrategy {
-        SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: true }
-    }
-
     fn faulted_with(safe_strategy: SafeControlStrategy) -> OperatingMode {
         OperatingMode::Fault { safe_strategy, write_index: 0, trace: [FaultCause::Empty; 8] }
-    }
-
-    fn idle() -> OperatingMode {
-        OperatingMode::Idle { safe_strategy: sto() }
     }
 
     fn calibrating() -> OperatingMode {
@@ -185,7 +166,7 @@ mod tests {
     }
 
     fn faulted(cause: FaultCause) -> OperatingMode {
-        let mut mode = idle();
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
         mode.on_command(Command::AssertFault { cause });
         mode
     }
@@ -194,14 +175,14 @@ mod tests {
         Command::StartCalibration { num_pole_pairs: POLE_PAIRS, max_rotor_rpm_mech: MAX_RPM, dt_s: DT_S }
     }
 
-    /// Calibration is entered from idle and from nowhere else.
+    /// Calibration can be entered from idle and from nowhere else.
     #[test]
     fn calibration_entry_only_from_idle() {
-        let mut mode = idle();
+        let mut mode: OperatingMode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
         mode.on_command(start_calibration());
         assert!(matches!(mode, OperatingMode::Calibration { .. }));
 
-        let mut mode = OperatingMode::TorqueControl;
+        let mut mode: OperatingMode = OperatingMode::TorqueControl;
         mode.on_command(start_calibration());
         assert!(matches!(mode, OperatingMode::TorqueControl));
 
@@ -210,10 +191,10 @@ mod tests {
         assert!(matches!(mode, OperatingMode::Fault { .. }));
     }
 
-    /// Torque control is entered from idle and from nowhere else.
+    /// Torque control can be entered from idle and from nowhere else.
     #[test]
     fn torque_control_entry_only_from_idle() {
-        let mut mode = idle();
+        let mut mode: OperatingMode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
         mode.on_command(Command::EnableTorqueControl);
         assert!(matches!(mode, OperatingMode::TorqueControl));
 
@@ -229,22 +210,22 @@ mod tests {
     /// An idle request is honoured from torque control only.
     #[test]
     fn idle_command_only_accepted_from_torque_control() {
-        let request = Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } };
+        let request = || Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } };
 
-        let mut mode = OperatingMode::TorqueControl;
-        mode.on_command(request);
+        let mut mode: OperatingMode = OperatingMode::TorqueControl;
+        mode.on_command(request());
         assert!(matches!(mode, OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { .. } }));
 
         let mut mode = calibrating();
-        mode.on_command(request);
+        mode.on_command(request());
         assert!(matches!(mode, OperatingMode::Calibration { .. }));
 
         let mut mode = faulted(FaultCause::Overcurrent);
-        mode.on_command(request);
+        mode.on_command(request());
         assert!(matches!(mode, OperatingMode::Fault { .. }));
     }
 
-    /// Both calibration exits land in idle with a non-conducting strategy.
+    /// Both non-fault calibration exits land in idle with a non-conducting strategy.
     #[test]
     fn calibration_exit_paths_return_to_idle() {
         for command in [Command::FinishCalibration, Command::CancelCalibration] {
@@ -257,7 +238,12 @@ mod tests {
     /// A fault is entered from any mode, carrying its cause and reaction.
     #[test]
     fn fault_entry_from_every_mode() {
-        for mut mode in [idle(), calibrating(), OperatingMode::TorqueControl] {
+        let modes = [
+            OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() },
+            calibrating(),
+            OperatingMode::TorqueControl,
+        ];
+        for mut mode in modes {
             mode.on_command(Command::AssertFault { cause: FaultCause::DcOverVoltage });
 
             let OperatingMode::Fault { safe_strategy, write_index, trace } = mode else {
@@ -294,13 +280,19 @@ mod tests {
     /// A fault clear is honoured once the reaction has been applied, not while it is still running.
     #[test]
     fn clear_fault_blocked_until_reaction_applied() {
-        let mut mode = faulted(FaultCause::SetpointTimeout);
-        mode.on_command(Command::ClearFault);
-        assert!(matches!(mode, OperatingMode::Fault { .. }), "cleared mid-reaction");
+        let still_reacting = [SafeControlStrategy::RampDown { waited_ms: 0.0 }, SafeControlStrategy::ss1t()];
+        for safe_strategy in still_reacting {
+            let mut mode = faulted_with(safe_strategy);
+            mode.on_command(Command::ClearFault);
+            assert!(matches!(mode, OperatingMode::Fault { .. }), "cleared mid-reaction");
+        }
 
-        let mut mode = faulted(FaultCause::Overcurrent);
-        mode.on_command(Command::ClearFault);
-        assert!(matches!(mode, OperatingMode::Idle { .. }), "not cleared after reaction");
+        let reaction_applied = [SafeControlStrategy::sto(), SafeControlStrategy::asc(), SafeControlStrategy::STOf];
+        for safe_strategy in reaction_applied {
+            let mut mode = faulted_with(safe_strategy);
+            mode.on_command(Command::ClearFault);
+            assert!(matches!(mode, OperatingMode::Idle { .. }), "not cleared after reaction");
+        }
     }
 
     /// A second fault escalates the reaction and appends to the existing trace.
@@ -327,7 +319,7 @@ mod tests {
             FaultCause::Break1, FaultCause::Break2, FaultCause::WatchdogReboot, FaultCause::RealtimeViolated,
         ];
 
-        let mut mode = idle();
+        let mut mode: OperatingMode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
         for cause in causes {
             mode.on_command(Command::AssertFault { cause });
         }
@@ -342,42 +334,59 @@ mod tests {
         assert_eq!(trace, causes[..trace.len()]);
     }
 
-    /// The loop gate, command source and feedback tolerance follow the mode and its safe strategy.
+    /// The foc control loop gate, command source and feedback tolerance follow the mode and its safe strategy.
     #[test]
     fn foc_gate_matches_the_mode_and_safe_strategy() {
-        let cases = [
-            (OperatingMode::TorqueControl, (true, false, false), "torque control"),
-            (OperatingMode::Idle { safe_strategy: sto() }, (false, true, true), "idle STO"),
-            (OperatingMode::Idle { safe_strategy: asc() }, (false, true, true), "idle ASC"),
-            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::STOf }, (false, true, true), "idle terminal STO"),
-            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }, (true, true, true), "idle rampdown"),
-            (faulted_with(sto()), (false, true, false), "fault STO"),
-            (faulted_with(asc()), (false, true, true), "fault ASC"),
-            (faulted_with(SafeControlStrategy::STOf), (false, true, true), "fault terminal STO"),
-            (faulted_with(SafeControlStrategy::RampDown { waited_ms: 0.0 }), (false, true, false), "fault rampdown"),
-            (faulted_with(SafeControlStrategy::SS1t { brake: BangBangBrake::new(), done: Debounced::new(false) }), (true, true, false), "fault SS1-t"),
+        const CLOSED_LOOP_CONTROL: FocGate =
+            FocGate { active: true, use_safety_command: false, feedback_optional: false };
+        const CALIBRATION_NO_FEEDBACK: FocGate =
+            FocGate { active: true, use_safety_command: false, feedback_optional: true };
+        const CALIBRATION_HOLD: FocGate =
+            FocGate { active: false, use_safety_command: false, feedback_optional: false };
+        const SAFETY_HOLD: FocGate =
+            FocGate { active: false, use_safety_command: true, feedback_optional: true };
+        const SAFETY_RAMPDOWN: FocGate =
+            FocGate { active: true, use_safety_command: true, feedback_optional: true };
+        const SAFETY_BRAKING: FocGate =
+            FocGate { active: true, use_safety_command: true, feedback_optional: false };
+
+        fn assert_gate(gate: FocGate, expected: FocGate, label: &str) {
+            assert_eq!(gate.active, expected.active, "{label}: active");
+            assert_eq!(gate.use_safety_command, expected.use_safety_command, "{label}: use_safety_command");
+            assert_eq!(gate.feedback_optional, expected.feedback_optional, "{label}: feedback_optional");
+        }
+
+        let cases: [(OperatingMode, FocGate, &str); 10] = [
+            (OperatingMode::TorqueControl, CLOSED_LOOP_CONTROL, "torque control"),
+            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }, SAFETY_HOLD, "idle STO"),
+            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::asc() }, SAFETY_HOLD, "idle ASC"),
+            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::STOf }, SAFETY_HOLD, "idle terminal STO"),
+            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }, SAFETY_RAMPDOWN, "idle rampdown"),
+            (faulted_with(SafeControlStrategy::sto()), SAFETY_HOLD, "fault STO"),
+            (faulted_with(SafeControlStrategy::asc()), SAFETY_HOLD, "fault ASC"),
+            (faulted_with(SafeControlStrategy::STOf), SAFETY_HOLD, "fault terminal STO"),
+            (faulted_with(SafeControlStrategy::RampDown { waited_ms: 0.0 }), SAFETY_HOLD, "fault rampdown"),
+            (faulted_with(SafeControlStrategy::ss1t()), SAFETY_BRAKING, "fault SS1-t"),
         ];
 
         for (mode, expected, label) in cases {
-            let gate = mode.foc_gate();
-            assert_eq!((gate.active, gate.use_safety_command, gate.feedback_optional), expected, "{label}");
+            assert_gate(mode.foc_gate(), expected, label);
         }
 
         let phases = [
-            (CalibrationPhase::HallCalibration { time_passed_s: 0.0 }, (true, false, true)),
-            (CalibrationPhase::MotorEstimation, (true, false, false)),
-            (CalibrationPhase::WaitingHallCompletion, (false, false, false)),
-            (CalibrationPhase::WaitingTuning, (false, false, false)),
-            (CalibrationPhase::Done, (true, false, false)),
+            (CalibrationPhase::HallCalibration { time_passed_s: 0.0 }, CALIBRATION_NO_FEEDBACK, "hall calibration"),
+            (CalibrationPhase::MotorEstimation, CLOSED_LOOP_CONTROL, "motor estimation"),
+            (CalibrationPhase::WaitingHallCompletion, CALIBRATION_HOLD, "waiting hall completion"),
+            (CalibrationPhase::WaitingTuning, CALIBRATION_HOLD, "waiting tuning"),
+            (CalibrationPhase::Done, CLOSED_LOOP_CONTROL, "done"),
         ];
 
-        for (i, (phase, expected)) in phases.into_iter().enumerate() {
+        for (phase, expected, label) in phases {
             let mut mode = calibrating();
             if let OperatingMode::Calibration { calibrator } = &mut mode {
                 calibrator.phase = phase;
             }
-            let gate = mode.foc_gate();
-            assert_eq!((gate.active, gate.use_safety_command, gate.feedback_optional), expected, "phase {i}");
+            assert_gate(mode.foc_gate(), expected, label);
         }
     }
 }
