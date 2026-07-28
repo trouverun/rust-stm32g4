@@ -2,8 +2,8 @@ use core::f32::consts::PI;
 
 use field_oriented::{
     AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibration, HallCalibrationFault,
-    HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorConfig,
-    OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
+    HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorCommand,
+    OfflineEstimatorConfig, OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
 };
 use crate::{
     HALL_ALIGN_DURATION_S, HALL_CALIBRATION_TIMEOUT_S, MOTOR_ESTIMATOR_SETTLING_DURATION_S,
@@ -84,10 +84,10 @@ impl CalibrationConfig {
     }
 }
 
-pub struct CalibrationRunner {
+pub struct CalibrationRunner<H = HallCalibrator, E = OfflineMotorEstimator> {
     pub num_pole_pairs: u8,
-    pub hall_calibrator: HallCalibrator,
-    pub motor_estimator: OfflineMotorEstimator,
+    pub hall_calibrator: H,
+    pub motor_estimator: E,
     pub phase: CalibrationPhase,
     config: CalibrationConfig,
 }
@@ -104,11 +104,11 @@ impl StageResult {
     }
 }
 
-impl CalibrationRunner {
+impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
     pub fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, dt_s: f32) -> Self {
         let config = CalibrationConfig::new(max_rotor_mech_rpm, dt_s);
-        let hall_calibrator = HallCalibrator::new(config.hall_align_s, dt_s);
-        let motor_estimator = OfflineMotorEstimator::new(config.estimator, num_pole_pairs);
+        let hall_calibrator = H::new(config.hall_align_s, dt_s);
+        let motor_estimator = E::new(config.estimator, num_pole_pairs);
         Self {
             num_pole_pairs,
             hall_calibrator,
@@ -147,7 +147,7 @@ impl CalibrationRunner {
                     (output, Some(result))
                 } else if self.hall_calibrator.check_calibration_done() {
                     let result = StageResult::HallCalibration {
-                        angle_table: self.hall_calibrator.hall_pattern_to_theta,
+                        angle_table: self.hall_calibrator.angle_table(),
                     };
                     self.phase = CalibrationPhase::WaitingHallCompletion;
                     let output = self.idle_output(inputs);
@@ -241,7 +241,7 @@ impl CalibrationRunner {
         }
     }
 
-    pub fn get_estimator(&mut self) -> &mut OfflineMotorEstimator {
+    pub fn get_estimator(&mut self) -> &mut E {
         &mut self.motor_estimator
     }
 
@@ -265,11 +265,124 @@ impl CalibrationRunner {
     }
 }
 
+/// Trait to enable test mocking
+pub trait HallCalibrates {
+    fn new(initial_settle_time_s: f32, dt_s: f32) -> Self where Self: Sized;
+    fn start(&mut self);
+    fn check_calibration_done(&self) -> bool;
+    fn calibration_step(&mut self, hall_pattern: u8, target_omega: f32) -> Result<f32, HallCalibrationFault>;
+    fn angle_table(&self) -> HallCalibration;
+}
+
+impl HallCalibrates for HallCalibrator {
+    fn new(initial_settle_time_s: f32, dt_s: f32) -> Self {
+        HallCalibrator::new(initial_settle_time_s, dt_s)
+    }
+
+    fn start(&mut self) {
+        HallCalibrator::start(self)
+    }
+
+    fn check_calibration_done(&self) -> bool {
+        HallCalibrator::check_calibration_done(self)
+    }
+
+    fn calibration_step(&mut self, hall_pattern: u8, target_omega: f32) -> Result<f32, HallCalibrationFault> {
+        HallCalibrator::calibration_step(self, hall_pattern, target_omega)
+    }
+
+    fn angle_table(&self) -> HallCalibration {
+        self.hall_pattern_to_theta
+    }
+}
+
+/// Trait to enable test mocking
+pub trait EstimatesMotorParams: MotorParamEstimator {
+    fn new(config: OfflineEstimatorConfig, num_pole_pairs: u8) -> Self where Self: Sized;
+    fn start(&mut self, num_pole_pairs: u8);
+    fn get_fault(&self) -> Option<EstimationStepFault>;
+    fn estimation_done(&self) -> bool;
+    fn should_unwind_controller(&self) -> bool;
+    fn acknowledge_unwind_request(&mut self);
+    fn should_tune_controller(&self) -> bool;
+    fn acknowledge_tuning_request(&mut self);
+    fn get_command(&self, input: OfflineEstimatorInput) -> OfflineEstimatorCommand;
+}
+
+impl EstimatesMotorParams for OfflineMotorEstimator {
+    fn new(config: OfflineEstimatorConfig, num_pole_pairs: u8) -> Self {
+        OfflineMotorEstimator::new(config, num_pole_pairs)
+    }
+
+    fn start(&mut self, num_pole_pairs: u8) {
+        OfflineMotorEstimator::start(self, num_pole_pairs)
+    }
+
+    fn get_fault(&self) -> Option<EstimationStepFault> {
+        OfflineMotorEstimator::get_fault(self)
+    }
+
+    fn estimation_done(&self) -> bool {
+        OfflineMotorEstimator::estimation_done(self)
+    }
+
+    fn should_unwind_controller(&self) -> bool {
+        OfflineMotorEstimator::should_unwind_controller(self)
+    }
+
+    fn acknowledge_unwind_request(&mut self) {
+        OfflineMotorEstimator::acknowledge_unwind_request(self)
+    }
+
+    fn should_tune_controller(&self) -> bool {
+        OfflineMotorEstimator::should_tune_controller(self)
+    }
+
+    fn acknowledge_tuning_request(&mut self) {
+        OfflineMotorEstimator::acknowledge_tuning_request(self)
+    }
+
+    fn get_command(&self, input: OfflineEstimatorInput) -> OfflineEstimatorCommand {
+        OfflineMotorEstimator::get_command(self, input)
+    }
+}
+
+/// Trait to enable test mocking
+pub trait Calibrator {
+    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, dt_s: f32) -> Self where Self: Sized;
+    fn resume(&mut self);
+    fn phase(&self) -> CalibrationPhase;
+    fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>);
+    fn get_estimator(&mut self) -> &mut dyn MotorParamEstimator;
+}
+
+impl<H: HallCalibrates, E: EstimatesMotorParams> Calibrator for CalibrationRunner<H, E> {
+    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, dt_s: f32) -> Self {
+        CalibrationRunner::new(num_pole_pairs, max_rotor_mech_rpm, dt_s)
+    }
+
+    fn resume(&mut self) {
+        CalibrationRunner::resume(self)
+    }
+
+    fn phase(&self) -> CalibrationPhase {
+        self.phase
+    }
+
+    fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>) {
+        CalibrationRunner::step(self, inputs)
+    }
+
+    fn get_estimator(&mut self) -> &mut dyn MotorParamEstimator {
+        &mut self.motor_estimator
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::FaultCause;
-    use field_oriented::{AlphaBeta, FocResult, PhaseValues};
+    use field_oriented::FocResult;
 
     const POLE_PAIRS: u8 = 7;
     const MAX_RPM: f32 = 3000.0;
@@ -277,6 +390,112 @@ mod tests {
     const TARGET_CURRENT_A: f32 = 1.5;
 
     fn runner_at(phase: CalibrationPhase) -> CalibrationRunner {
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, DT_S);
+        runner.phase = phase;
+        runner
+    }
+
+    struct MockHall {
+        done: bool,
+        fault: Option<HallCalibrationFault>,
+        table: HallCalibration,
+    }
+
+    impl HallCalibrates for MockHall {
+        fn new(_initial_settle_time_s: f32, _dt_s: f32) -> Self {
+            Self { done: false, fault: None, table: [0.0; 6] }
+        }
+
+        fn start(&mut self) {}
+
+        fn check_calibration_done(&self) -> bool {
+            self.done
+        }
+
+        fn calibration_step(&mut self, _hall_pattern: u8, _target_omega: f32) -> Result<f32, HallCalibrationFault> {
+            match self.fault {
+                Some(fault) => Err(fault),
+                None => Ok(0.0),
+            }
+        }
+
+        fn angle_table(&self) -> HallCalibration {
+            self.table
+        }
+    }
+
+    struct MockEstimator {
+        fault: Option<EstimationStepFault>,
+        done: bool,
+        unwind: bool,
+        unwind_acks: usize,
+        tune: bool,
+        estimate: MotorParamsEstimate,
+        command_output: fn() -> OfflineEstimatorOutput,
+        command_theta: f32,
+    }
+
+    impl MotorParamEstimator for MockEstimator {
+        fn after_foc_iteration(&mut self, _data: FocResult) {}
+
+        fn get_estimate(&self) -> MotorParamsEstimate {
+            self.estimate
+        }
+    }
+
+    impl EstimatesMotorParams for MockEstimator {
+        fn new(_config: OfflineEstimatorConfig, _num_pole_pairs: u8) -> Self {
+            Self {
+                fault: None,
+                done: false,
+                unwind: false,
+                unwind_acks: 0,
+                tune: false,
+                estimate: MotorParamsEstimate {
+                    num_pole_pairs: None,
+                    stator_resistance: None,
+                    d_inductance: None,
+                    q_inductance: None,
+                    pm_flux_linkage: None,
+                },
+                command_output: || OfflineEstimatorOutput::CalibrationVoltage(ClarkParkValue { d: 0.0, q: 0.0 }),
+                command_theta: 0.0,
+            }
+        }
+
+        fn start(&mut self, _num_pole_pairs: u8) {}
+
+        fn get_fault(&self) -> Option<EstimationStepFault> {
+            self.fault
+        }
+
+        fn estimation_done(&self) -> bool {
+            self.done
+        }
+
+        fn should_unwind_controller(&self) -> bool {
+            self.unwind
+        }
+
+        fn acknowledge_unwind_request(&mut self) {
+            self.unwind = false;
+            self.unwind_acks += 1;
+        }
+
+        fn should_tune_controller(&self) -> bool {
+            self.tune
+        }
+
+        fn acknowledge_tuning_request(&mut self) {
+            self.tune = false;
+        }
+
+        fn get_command(&self, _input: OfflineEstimatorInput) -> OfflineEstimatorCommand {
+            OfflineEstimatorCommand { output: (self.command_output)(), theta: self.command_theta }
+        }
+    }
+
+    fn mock_runner_at(phase: CalibrationPhase) -> CalibrationRunner<MockHall, MockEstimator> {
         let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, DT_S);
         runner.phase = phase;
         runner
@@ -294,18 +513,6 @@ mod tests {
         }
     }
 
-    fn foc_result() -> FocResult {
-        FocResult {
-            omega_e: 0.0,
-            duty_cycles: PhaseValues::zero(),
-            voltage_hexagon_sector: 0,
-            measured_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
-            target_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
-            u_dq: ClarkParkValue { d: 0.0, q: 0.0 },
-            u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
-        }
-    }
-
     fn phase_name(phase: &CalibrationPhase) -> &'static str {
         match phase {
             CalibrationPhase::WaitingEncoderZeroing { .. } => "WaitingEncoderZeroing",
@@ -317,9 +524,9 @@ mod tests {
         }
     }
 
-    fn zero_voltage_command(output: &CalibrationOutput) {
+    fn assert_zero_voltage_command(output: &CalibrationOutput) {
         let FocInputType::CalibrationVoltage(u_dq) = output.foc_command else {
-            panic!("the motor is still being driven");
+            panic!("not a calibration voltage command");
         };
         assert_eq!(u_dq.d, 0.0);
         assert_eq!(u_dq.q, 0.0);
@@ -373,7 +580,7 @@ mod tests {
         assert!(matches!(result, Some(StageResult::Failure { cause: CalibrationFailureCause::Timeout })));
     }
 
-    /// Hall calibration drives at the configured calibration current.
+    /// Hall calibration commands the configured calibration current.
     #[test]
     fn hall_calibration_uses_the_configured_target_current() {
         let mut runner = runner_at(CalibrationPhase::HallCalibration { time_passed_s: 0.0 });
@@ -386,7 +593,7 @@ mod tests {
         assert_eq!(i_dq.q, 0.0);
     }
 
-    /// Wait phases hold the inverter at zero voltage.
+    /// Wait phases command zero voltage.
     #[test]
     fn wait_phases_command_zero_voltage() {
         let phases = [
@@ -399,26 +606,25 @@ mod tests {
             let mut runner = runner_at(phase);
             let (output, result) = runner.step(inputs());
             assert!(result.is_none());
-            zero_voltage_command(&output);
+            assert_zero_voltage_command(&output);
         }
     }
 
-    /// A failed stage stops driving the motor.
+    /// A failed stage commands zero voltage.
     #[test]
-    fn stage_failure_stops_driving_the_motor() {
+    fn stage_failure_commands_zero_voltage() {
         let mut runner = runner_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });
 
         let (output, result) = runner.step(inputs());
         assert!(matches!(result, Some(StageResult::Failure { .. })));
-        zero_voltage_command(&output);
+        assert_zero_voltage_command(&output);
     }
 
     /// An estimator fault ends calibration with the mapped fault cause.
     #[test]
     fn estimator_fault_ends_calibration_with_mapped_cause() {
-        let mut runner = runner_at(CalibrationPhase::MotorEstimation);
-        runner.get_estimator().reset();
-        runner.get_estimator().after_foc_iteration(foc_result());
+        let mut runner = mock_runner_at(CalibrationPhase::MotorEstimation);
+        runner.motor_estimator.fault = Some(EstimationStepFault::MissingParameter);
 
         let (output, result) = runner.step(inputs());
         let Some(StageResult::Failure { cause }) = result else {
@@ -426,6 +632,108 @@ mod tests {
         };
         assert_eq!(FaultCause::from(cause), FaultCause::MissingMotorParams);
         assert_eq!(phase_name(&runner.phase), "Done");
-        zero_voltage_command(&output);
+        assert_zero_voltage_command(&output);
+    }
+
+    /// Hall completion delivers the angle table and enters the wait phase.
+    #[test]
+    fn hall_completion_delivers_the_angle_table() {
+        let mut runner = mock_runner_at(CalibrationPhase::HallCalibration { time_passed_s: 0.0 });
+        runner.hall_calibrator.done = true;
+        runner.hall_calibrator.table = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+
+        let (output, result) = runner.step(inputs());
+        let Some(StageResult::HallCalibration { angle_table }) = result else {
+            panic!("completed hall calibration produced no table");
+        };
+        assert_eq!(angle_table, runner.hall_calibrator.table);
+        assert_eq!(phase_name(&runner.phase), "WaitingHallCompletion");
+        assert_zero_voltage_command(&output);
+    }
+
+    /// A hall calibration step fault fails the stage.
+    #[test]
+    fn hall_step_fault_fails_the_stage() {
+        let mut runner = mock_runner_at(CalibrationPhase::HallCalibration { time_passed_s: 0.0 });
+        runner.hall_calibrator.fault = Some(HallCalibrationFault::EdgeDisagreement);
+
+        let (output, result) = runner.step(inputs());
+        assert!(matches!(
+            result,
+            Some(StageResult::Failure { cause: CalibrationFailureCause::HallCalibration { .. } })
+        ));
+        assert_zero_voltage_command(&output);
+    }
+
+    /// Finished estimation delivers the estimate and ends calibration.
+    #[test]
+    fn estimation_done_delivers_the_estimate() {
+        let mut runner = mock_runner_at(CalibrationPhase::MotorEstimation);
+        runner.motor_estimator.done = true;
+        runner.motor_estimator.estimate.stator_resistance = Some(1.25);
+
+        let (output, result) = runner.step(inputs());
+        let Some(StageResult::MotorParameters { motor_params }) = result else {
+            panic!("finished estimation produced no parameters");
+        };
+        assert_eq!(motor_params.stator_resistance, Some(1.25));
+        assert_eq!(phase_name(&runner.phase), "Done");
+        assert_zero_voltage_command(&output);
+    }
+
+    /// An unwind request passes through, acknowledged, without leaving the stage.
+    #[test]
+    fn unwind_request_is_acknowledged_and_delivered() {
+        let mut runner = mock_runner_at(CalibrationPhase::MotorEstimation);
+        runner.motor_estimator.unwind = true;
+
+        let (output, result) = runner.step(inputs());
+        assert!(matches!(result, Some(StageResult::UnwindRequest)));
+        assert_eq!(runner.motor_estimator.unwind_acks, 1);
+        assert_eq!(phase_name(&runner.phase), "MotorEstimation");
+        assert_zero_voltage_command(&output);
+    }
+
+    /// A tuning request delivers the current estimate and waits for new gains.
+    #[test]
+    fn tuning_request_waits_with_the_current_estimate() {
+        let mut runner = mock_runner_at(CalibrationPhase::MotorEstimation);
+        runner.motor_estimator.tune = true;
+        runner.motor_estimator.estimate.stator_resistance = Some(1.25);
+
+        let (output, result) = runner.step(inputs());
+        let Some(StageResult::TuningRequest { params_estimate }) = result else {
+            panic!("tuning request did not pass through");
+        };
+        assert_eq!(params_estimate.stator_resistance, Some(1.25));
+        assert_eq!(phase_name(&runner.phase), "WaitingTuning");
+        assert_zero_voltage_command(&output);
+    }
+
+    /// Estimator outputs map one to one onto FOC commands, with the estimator's theta.
+    #[test]
+    fn estimator_commands_map_onto_foc_commands() {
+        let cases: [(fn() -> OfflineEstimatorOutput, &str); 3] = [
+            (|| OfflineEstimatorOutput::CalibrationCurrent(ClarkParkValue { d: 1.0, q: 2.0 }), "CalibrationCurrents"),
+            (|| OfflineEstimatorOutput::CalibrationVoltage(ClarkParkValue { d: 1.0, q: 2.0 }), "CalibrationVoltage"),
+            (|| OfflineEstimatorOutput::Current(ClarkParkValue { d: 1.0, q: 2.0 }), "TargetCurrents"),
+        ];
+
+        for (command_output, expected) in cases {
+            let mut runner = mock_runner_at(CalibrationPhase::MotorEstimation);
+            runner.motor_estimator.command_output = command_output;
+            runner.motor_estimator.command_theta = 0.77;
+
+            let (output, result) = runner.step(inputs());
+            assert!(result.is_none());
+            assert_eq!(output.theta, 0.77);
+            let mapped = match output.foc_command {
+                FocInputType::CalibrationCurrents(i_dq) => { assert_eq!((i_dq.d, i_dq.q), (1.0, 2.0)); "CalibrationCurrents" }
+                FocInputType::CalibrationVoltage(u_dq) => { assert_eq!((u_dq.d, u_dq.q), (1.0, 2.0)); "CalibrationVoltage" }
+                FocInputType::TargetCurrents(i_dq) => { assert_eq!((i_dq.d, i_dq.q), (1.0, 2.0)); "TargetCurrents" }
+                _ => "unexpected",
+            };
+            assert_eq!(mapped, expected);
+        }
     }
 }

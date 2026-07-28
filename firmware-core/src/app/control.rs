@@ -3,7 +3,7 @@ use core::f32::consts::PI;
 use crate::FocStepOutcome::NonConducting;
 use crate::SafeControlStrategy;
 use crate::app::safe_strategy::{SafeCommand, SafeControlStrategyInput};
-use super::calibration::{CalibrationInputs, StageResult};
+use super::calibration::{CalibrationInputs, Calibrator, StageResult};
 use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
 use field_oriented::{
@@ -42,6 +42,7 @@ pub struct FocStepInputs {
     pub safety_deceleration_cutoff_omega: f32,
     pub safety_deceleration_ramp_per_ms: f32,
     pub braking_current_limit_a: f32,
+
     pub dc_bus_min_v: f32,
     pub dc_bus_max_v: f32,
     pub tick_dt_ms: f32
@@ -60,6 +61,7 @@ pub enum FocStepOutcome {
     NonConducting
 }
 
+/// Trait to enable test mocking
 pub trait CurrentController {
     fn compute<A>(&mut self,
         input: FocInput,
@@ -88,15 +90,32 @@ impl CurrentController for FOC {
 
 /// One iteration of the current control loop.
 /// Failure stage results assert the fault here, other stage results propagate through the output.
+/// Any outcome other than normal modulation clears controller windup.
 #[inline]
-pub fn foc_step<A, C>(
-    mode: &mut OperatingMode,
+pub fn foc_step<A, C, M>(
+    mode: &mut OperatingMode<M>,
     params: &mut ConstantMotorParameters,
     foc: &mut C,
     acceleration: &mut A,
     inputs: FocStepInputs,
-) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController {
-    // Fault transitions:
+) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator {
+    let (outcome, stage_result) = foc_step_inner(mode, params, foc, acceleration, inputs);
+    if !matches!(outcome, FocStepOutcome::Normal { .. }) {
+        foc.clear_windup();
+    }
+    (outcome, stage_result)
+}
+
+#[inline]
+fn foc_step_inner<A, C, M>(
+    mode: &mut OperatingMode<M>,
+    params: &mut ConstantMotorParameters,
+    foc: &mut C,
+    acceleration: &mut A,
+    inputs: FocStepInputs,
+) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator {
+
+    // Fault diagnostics:
     if inputs.watchdog_fault {
         mode.on_command(Command::AssertFault { cause: FaultCause::RealtimeViolated });
     }
@@ -114,9 +133,7 @@ pub fn foc_step<A, C>(
     if rotor_feedback_fault {
         mode.on_command(Command::AssertFault { cause: FaultCause::InvalidRotorFeedback });
     }
-
     let Some(dc_bus_voltage_v) = inputs.dc_bus_reading_v else {
-        foc.clear_windup();
         return (FocStepOutcome::NonConducting, None)
     };
 
@@ -125,91 +142,115 @@ pub fn foc_step<A, C>(
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
-    let num_poles = params.get_estimate().num_pole_pairs;
-    const RPM_TO_RADS: f32 = PI / 30.0;
-    let mut max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS;
-    if matches!(angle_type, AngleType::Electrical) {
-        max_omega *= num_poles.unwrap_or(0) as f32;
-    }
-    if omega.abs() > max_omega {
-        mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
+    // Rotor overspeed checked only with valid feedback:
+    if !rotor_feedback_fault {
+        const RPM_TO_RADS: f32 = PI / 30.0;
+        let mut max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS;
+        if matches!(angle_type, AngleType::Electrical) {
+            if let Some(pole_pairs) = params.get_estimate().num_pole_pairs {
+                max_omega *= pole_pairs as f32;
+            } else {
+                mode.on_command(Command::AssertFault { cause: FaultCause::MissingMotorParams });
+            }
+        }
+        if omega.abs() > max_omega {
+            mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
+        }
     }
 
     let torque_constant = params.get_estimate().torque_constant().unwrap_or(0.0);
     let max_braking_torque = torque_constant * inputs.braking_current_limit_a;
+    let mut stage_result = None;
+    let mut calibration_output = None;
 
-    // Safe outputs for idle / fault:
+    // Calibration / estimation, only active modulation stages step the state machine:
+    if mode.foc_gate().active {
+        if let OperatingMode::Calibration { calibrator } = mode {
+            let (output, result) = calibrator.step(CalibrationInputs {
+                dc_bus_voltage_v,
+                angle_type,
+                theta,
+                hall_pattern: inputs.hall_pattern,
+                target_voltage_v: inputs.calibration_voltage_v,
+                target_current_a: inputs.calibration_current_a,
+                target_omega_rads: inputs.calibration_omega,
+            });
+            stage_result = result;
+            calibration_output = Some(output);
+        }
+    }
+    if let Some(StageResult::Failure { cause }) = &stage_result {
+        mode.on_command(Command::AssertFault { cause: (*cause).into() });
+    }
+
+    // Determine safe outputs for idle / fault:
     gate = mode.foc_gate();
     let safety_foc_command = if gate.use_safety_command {
+        let estimate = params.get_estimate();
+        let pole_pairs = estimate.num_pole_pairs.map(|pp| pp as f32);
+        let (back_emf_constant, deceleration_cutoff_omega) = match angle_type {
+            AngleType::Electrical => (
+                estimate.pm_flux_linkage,
+                pole_pairs.map(|pp| pp * inputs.safety_deceleration_cutoff_omega),
+            ),
+            AngleType::Mechanical => (
+                estimate.pm_flux_linkage.zip(pole_pairs).map(|(pmf, pp)| pmf * pp),
+                Some(inputs.safety_deceleration_cutoff_omega),
+            ),
+        };
+
         let safe_strategy = match mode {
             OperatingMode::Idle { safe_strategy } => safe_strategy,
             OperatingMode::Fault { safe_strategy, .. } => safe_strategy,
             _ => {
-                foc.clear_windup();
-                return (FocStepOutcome::NonConducting, None)
+                return (FocStepOutcome::NonConducting, stage_result)
             }
         };
         let safety_input = SafeControlStrategyInput {
             omega,
             rotor_feedback_valid: inputs.rotor_feedback.is_ok(),
+            back_emf_constant,
             dc_bus_v: dc_bus_voltage_v,
             dc_bus_max_v: inputs.dc_bus_max_v,
             max_braking_torque,
             deceleration_duration_ms: inputs.safety_deceleration_duration_ms,
-            deceleration_cutoff_omega: inputs.safety_deceleration_cutoff_omega,
+            deceleration_cutoff_omega: deceleration_cutoff_omega,
             deceleration_ramp_per_ms: inputs.safety_deceleration_ramp_per_ms,
             tick_dt_ms: inputs.tick_dt_ms,
         };
         let safe_command = safe_strategy.foc_tick(safety_input);
         match safe_command {
-            SafeCommand::NonConducting => {
-                foc.clear_windup();
-                return (FocStepOutcome::NonConducting, None)
-            },
-            SafeCommand::ActiveShort => {
-                foc.clear_windup();
-                return (FocStepOutcome::ActiveShort, None)
-            },
+            SafeCommand::NonConducting => return (FocStepOutcome::NonConducting, stage_result),
+            SafeCommand::ActiveShort => return (FocStepOutcome::ActiveShort, stage_result),
             SafeCommand::FOC(command) => Some(command)
         }
     } else if !gate.active {
-        foc.clear_windup();
-        return (FocStepOutcome::NonConducting, None)
+        return (FocStepOutcome::NonConducting, stage_result)
     } else {
         None
     };
 
+    // Determine the FOC inputs "source":
     let mut estimator: &mut dyn MotorParamEstimator = params;
-    let mut stage_result = None;
-    // Calibration / estimation:
-    let (angle_type, theta, foc_command) = if let OperatingMode::Calibration { calibrator } = mode {
-        let (output, result) = calibrator.step(CalibrationInputs {
-            dc_bus_voltage_v,
-            angle_type,
-            theta,
-            hall_pattern: inputs.hall_pattern,
-            target_voltage_v: inputs.calibration_voltage_v,
-            target_current_a: inputs.calibration_current_a,
-            target_omega_rads: inputs.calibration_omega,
-        });
-        estimator = calibrator.get_estimator();
-        stage_result = result;
+    let (angle_type, theta, foc_command) = if let Some(safety_command) = safety_foc_command {
+        // Safety braking / deceleration:
+        (angle_type, theta, safety_command)
+    } else if let Some(output) = calibration_output {
+        // Calibration / estimation:
+        if let OperatingMode::Calibration { calibrator } = mode {
+            estimator = calibrator.get_estimator();
+        }
         (output.angle_type, output.theta, output.foc_command)
     } else {
-        // Safety braking / deceleration:
-        if let Some(safety_command) = safety_foc_command {
-            (angle_type, theta, safety_command)
         // Normal torque control:
-        } else {
-            let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
-            if omega > inputs.stationary_omega_threshold && torque_demand < -max_braking_torque {
-                torque_demand = -max_braking_torque;
-            } else if omega < -inputs.stationary_omega_threshold && torque_demand > max_braking_torque {
-                torque_demand = max_braking_torque;
-            }
-
-            (angle_type, theta, FocInputType::TargetTorque(torque_demand))
+        let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
+        if omega > inputs.stationary_omega_threshold && torque_demand < -max_braking_torque {
+            torque_demand = -max_braking_torque;
+        } else if omega < -inputs.stationary_omega_threshold && torque_demand > max_braking_torque {
+            torque_demand = max_braking_torque;
         }
+
+        (angle_type, theta, FocInputType::TargetTorque(torque_demand))
     };
 
     let foc_input = FocInput {
@@ -222,14 +263,12 @@ pub fn foc_step<A, C>(
         current_limit_a: inputs.active_current_limit_a
     };
 
+    // Do FOC computations and process the results:
     let outcome = match foc.compute(foc_input, estimator.get_estimate(), acceleration, true) {
         Ok(foc_result) => {
             if let Some(result) = &stage_result {
                 if result.clears_windup() {
                     foc.clear_windup();
-                }
-                if let StageResult::Failure { cause } = result {
-                    mode.on_command(Command::AssertFault { cause: (*cause).into() });
                 }
             } else {
                 estimator.after_foc_iteration(foc_result);
@@ -255,18 +294,10 @@ pub fn foc_step<A, C>(
                     SafeControlStrategy::ASC { .. } => FocStepOutcome::ActiveShort,
                 }
             } else {
-                foc.clear_windup();
                 FocStepOutcome::NonConducting
             }
         }
-    };   
-    
-    if let Some(result) = &stage_result {
-        if let StageResult::Failure { cause } = result {
-            foc.clear_windup();
-            mode.on_command(Command::AssertFault { cause: (*cause).into() });
-        }
-    }
+    };
 
     (outcome, stage_result)
 }
@@ -274,10 +305,10 @@ pub fn foc_step<A, C>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::calibration::{CalibrationPhase, CalibrationRunner};
-    use crate::{Debounced, HALL_CALIBRATION_TIMEOUT_S, STO_ASC_DEBOUNCE_TICKS};
+    use super::super::calibration::{CalibrationOutput, CalibrationPhase, CalibrationRunner};
+    use crate::HALL_CALIBRATION_TIMEOUT_S;
     use field_oriented::{
-        BangBangBrake, ControllerParameters, FocConfig, MotorParams, MotorParamsEstimate,
+        ControllerParameters, FocConfig, MotorParams, MotorParamsEstimate,
         RotorFeedbackFault, SinCosResult, compute_current_pi_controller_gains
     };
 
@@ -289,9 +320,9 @@ mod tests {
     const BRAKING_LIMIT_A: f32 = 4.0;
     const STATIONARY_OMEGA: f32 = 5.0;
 
-    struct Math;
+    struct DummyAccelerator;
 
-    impl DoesFocMath for Math {
+    impl DoesFocMath for DummyAccelerator {
         fn sin_cos(&mut self, angle_rad: f32) -> SinCosResult {
             SinCosResult { sin: angle_rad.sin(), cos: angle_rad.cos() }
         }
@@ -305,10 +336,10 @@ mod tests {
         }
     }
 
-    /// Delegates to the real controller while recording state clear calls.
     struct SpyFoc {
         inner: FOC,
         clear_windup_calls: usize,
+        last_estimate: Option<MotorParamsEstimate>,
     }
 
     impl SpyFoc {
@@ -326,6 +357,7 @@ mod tests {
             accelerator: &mut A,
             field_weakening: bool
         ) -> Result<FocResult, FocFault> where A: DoesFocMath {
+            self.last_estimate = Some(motor_params);
             self.inner.compute(input, motor_params, accelerator, field_weakening)
         }
 
@@ -335,13 +367,13 @@ mod tests {
         }
     }
 
-    struct Rig {
+    struct TestHarness {
         params: ConstantMotorParameters,
         foc: SpyFoc,
-        math: Math,
+        acceleration: DummyAccelerator,
     }
 
-    impl Rig {
+    impl TestHarness {
         fn new() -> Self {
             let mut foc = FOC::new(FocConfig {
                 pwm_frequency_hz: PWM_FREQ_HZ,
@@ -352,18 +384,71 @@ mod tests {
                 overmodulation_threshold_ratio: 0.95,
                 field_weakening_bandwidth: 1000.0
             });
-            foc.set_pi_gains(Some(
+            let _ = foc.set_pi_gains(Some(
                 compute_current_pi_controller_gains(motor_params(), PWM_FREQ_HZ, 1.0, 0.001).unwrap(),
             ));
             Self {
                 params: ConstantMotorParameters::from_other(motor_params()),
-                foc: SpyFoc { inner: foc, clear_windup_calls: 0 },
-                math: Math,
+                foc: SpyFoc { inner: foc, clear_windup_calls: 0, last_estimate: None },
+                acceleration: DummyAccelerator,
             }
         }
 
         fn step(&mut self, mode: &mut OperatingMode, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
-            foc_step(mode, &mut self.params, &mut self.foc, &mut self.math, inputs)
+            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, inputs)
+        }
+
+        fn step_mock(&mut self, mode: &mut OperatingMode<MockCalibrator>, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
+            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, inputs)
+        }
+    }
+
+    struct MockCalibrator {
+        phase: CalibrationPhase,
+        next_phase: Option<CalibrationPhase>,
+        result: Option<StageResult>,
+        step_calls: usize,
+        estimator: ConstantMotorParameters,
+    }
+
+    impl MockCalibrator {
+        fn at(phase: CalibrationPhase) -> Self {
+            Self {
+                phase,
+                next_phase: None,
+                result: None,
+                step_calls: 0,
+                estimator: ConstantMotorParameters::new(),
+            }
+        }
+    }
+
+    impl Calibrator for MockCalibrator {
+        fn new(_num_pole_pairs: u8, _max_rotor_mech_rpm: f32, _dt_s: f32) -> Self {
+            Self::at(CalibrationPhase::MotorEstimation)
+        }
+
+        fn resume(&mut self) {}
+
+        fn phase(&self) -> CalibrationPhase {
+            self.phase
+        }
+
+        fn step(&mut self, _inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>) {
+            self.step_calls += 1;
+            if let Some(phase) = self.next_phase.take() {
+                self.phase = phase;
+            }
+            let output = CalibrationOutput {
+                angle_type: AngleType::Electrical,
+                theta: 0.0,
+                foc_command: FocInputType::TargetTorque(0.0),
+            };
+            (output, self.result.take())
+        }
+
+        fn get_estimator(&mut self) -> &mut dyn MotorParamEstimator {
+            &mut self.estimator
         }
     }
 
@@ -377,14 +462,14 @@ mod tests {
         })
     }
 
-    fn inputs() -> FocStepInputs {
+    fn nominal_inputs() -> FocStepInputs {
         FocStepInputs {
             phase_currents: PhaseValues::zero(),
             watchdog_fault: false,
             overcurrent: false,
             braking_limit_exceeded: false,
             dc_bus_reading_v: Some(DC_BUS_V),
-            rotor_feedback: Ok(feedback(AngleType::Electrical, 0.0)),
+            rotor_feedback: Ok(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 }),
             hall_pattern: 1,
             stationary_omega_threshold: STATIONARY_OMEGA,
             calibration_voltage_v: 1.0,
@@ -403,12 +488,8 @@ mod tests {
         }
     }
 
-    fn feedback(angle_type: AngleType, omega: f32) -> RotorFeedback {
-        RotorFeedback { angle_type, theta: 0.0, omega }
-    }
-
-    fn idle() -> OperatingMode {
-        OperatingMode::Idle { safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) } }
+    fn overcurrent_torque(limit_a: f32) -> f32 {
+        2.0 * limit_a * motor_params().torque_constant().unwrap()
     }
 
     fn faulted_with(safe_strategy: SafeControlStrategy) -> OperatingMode {
@@ -421,11 +502,11 @@ mod tests {
         OperatingMode::Calibration { calibrator }
     }
 
-    fn raised(mode: &OperatingMode, cause: FaultCause) -> bool {
+    fn raised_fault(mode: &OperatingMode, cause: FaultCause) -> bool {
         mode.fault_trace().is_some_and(|trace| trace.contains(&cause))
     }
 
-    fn target_current(outcome: FocStepOutcome) -> Option<f32> {
+    fn iq_target(outcome: FocStepOutcome) -> Option<f32> {
         match outcome {
             FocStepOutcome::Normal { snapshot, .. } => Some(snapshot.iq_target_a),
             _ => None,
@@ -437,27 +518,29 @@ mod tests {
     fn demand_clamped_to_active_current_limit() {
         for sign in [1.0, -1.0] {
             let mut mode = OperatingMode::TorqueControl;
-            let mut demanding = inputs();
-            demanding.target_torque = Some(sign * 100.0);
+            let mut demanding = nominal_inputs();
+            demanding.target_torque = Some(sign * overcurrent_torque(CURRENT_LIMIT_A));
 
-            let (outcome, _) = Rig::new().step(&mut mode, demanding);
-            let iq = target_current(outcome).expect("the inverter stopped modulating");
-            assert!((iq - sign * CURRENT_LIMIT_A).abs() < 1e-3, "iq target {iq}");
+            let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
+            let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
+            let expected_iq = sign * CURRENT_LIMIT_A;
+            assert!((iq - expected_iq).abs() < 1e-3, "iq {iq}, expected {expected_iq}");
         }
     }
 
     /// Demand opposing rotation is clamped to the regenerative braking limit.
     #[test]
-    fn regen_demand_clamped_to_braking_limit() {
-        for omega in [50.0, -50.0] {
+    fn braking_demand_clamped_to_braking_limit() {
+        for omega in [10.0 * STATIONARY_OMEGA, -10.0 * STATIONARY_OMEGA] {
             let mut mode = OperatingMode::TorqueControl;
-            let mut demanding = inputs();
-            demanding.rotor_feedback = Ok(feedback(AngleType::Electrical, omega));
-            demanding.target_torque = Some(-omega.signum() * 100.0);
+            let mut demanding = nominal_inputs();
+            demanding.rotor_feedback = Ok(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega });
+            demanding.target_torque = Some(-omega.signum() * overcurrent_torque(BRAKING_LIMIT_A));
 
-            let (outcome, _) = Rig::new().step(&mut mode, demanding);
-            let iq = target_current(outcome).expect("the inverter stopped modulating");
-            assert!((iq + omega.signum() * BRAKING_LIMIT_A).abs() < 1e-3, "iq target {iq} at omega {omega}");
+            let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
+            let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
+            let expected_iq = -omega.signum() * BRAKING_LIMIT_A;
+            assert!((iq - expected_iq).abs() < 1e-3, "iq {iq}, expected {expected_iq} at omega {omega}");
         }
     }
 
@@ -465,82 +548,67 @@ mod tests {
     #[test]
     fn braking_clamp_inactive_below_stationary_threshold() {
         let mut mode = OperatingMode::TorqueControl;
-        let mut demanding = inputs();
-        demanding.rotor_feedback = Ok(feedback(AngleType::Electrical, 0.5 * STATIONARY_OMEGA));
-        demanding.target_torque = Some(-100.0);
+        let mut demanding = nominal_inputs();
+        demanding.rotor_feedback = Ok(RotorFeedback {
+            angle_type: AngleType::Electrical, theta: 0.0, omega: 0.5 * STATIONARY_OMEGA
+        });
+        demanding.target_torque = Some(-overcurrent_torque(CURRENT_LIMIT_A));
 
-        let (outcome, _) = Rig::new().step(&mut mode, demanding);
-        let iq = target_current(outcome).expect("the inverter stopped modulating");
-        assert!((iq + CURRENT_LIMIT_A).abs() < 1e-3, "iq target {iq}");
+        let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
+        let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
+        let expected_iq = -CURRENT_LIMIT_A;
+        assert!((iq - expected_iq).abs() < 1e-3, "iq {iq}, expected {expected_iq}");
     }
 
-    /// A missed control loop deadline raises a real-time violation and stops conduction.
+    /// Each fault input raises its cause and leaves torque control on the same tick.
     #[test]
-    fn watchdog_fault_raises_realtime_violation() {
-        let mut mode = OperatingMode::TorqueControl;
-        let mut faulting = inputs();
-        faulting.watchdog_fault = true;
+    fn fault_inputs_raise_their_cause() {
+        let cases: [(&str, fn(&mut FocStepInputs), FaultCause); 4] = [
+            ("watchdog", |i| i.watchdog_fault = true, FaultCause::RealtimeViolated),
+            ("overcurrent", |i| i.overcurrent = true, FaultCause::Overcurrent),
+            ("regen limit", |i| i.braking_limit_exceeded = true, FaultCause::RegenLimitExceeded),
+            ("missing setpoint", |i| i.target_torque = None, FaultCause::SetpointTimeout),
+        ];
+        for (label, set, cause) in cases {
+            let mut mode = OperatingMode::TorqueControl;
+            let mut faulting = nominal_inputs();
+            set(&mut faulting);
 
-        let (outcome, _) = Rig::new().step(&mut mode, faulting);
-        assert!(raised(&mode, FaultCause::RealtimeViolated));
-        assert!(matches!(outcome, FocStepOutcome::NonConducting));
-    }
-
-    /// An overcurrent event raises a fault and stops conduction.
-    #[test]
-    fn overcurrent_input_faults_and_stops_conduction() {
-        let mut mode = OperatingMode::TorqueControl;
-        let mut faulting = inputs();
-        faulting.overcurrent = true;
-
-        let (outcome, _) = Rig::new().step(&mut mode, faulting);
-        assert!(raised(&mode, FaultCause::Overcurrent));
-        assert!(matches!(outcome, FocStepOutcome::NonConducting));
-    }
-
-    /// Exceeding the regenerative braking fault threshold raises a fault.
-    #[test]
-    fn regen_overcurrent_input_faults() {
-        let mut mode = OperatingMode::TorqueControl;
-        let mut faulting = inputs();
-        faulting.braking_limit_exceeded = true;
-
-        let (_, _) = Rig::new().step(&mut mode, faulting);
-        assert!(raised(&mode, FaultCause::RegenLimitExceeded));
-    }
-
-    /// A stale torque setpoint faults in torque control only.
-    #[test]
-    fn missing_setpoint_faults_only_in_torque_control() {
-        let mut mode = OperatingMode::TorqueControl;
-        let mut stale = inputs();
-        stale.target_torque = None;
-        Rig::new().step(&mut mode, stale);
-        assert!(raised(&mode, FaultCause::SetpointTimeout));
-
-        for mut mode in [idle(), calibrating_at(CalibrationPhase::MotorEstimation)] {
-            let mut stale = inputs();
-            stale.target_torque = None;
-            Rig::new().step(&mut mode, stale);
-            assert!(!raised(&mode, FaultCause::SetpointTimeout));
+            TestHarness::new().step(&mut mode, faulting);
+            assert!(raised_fault(&mode, cause), "{label}");
         }
     }
 
-    /// Lost rotor feedback faults only where the mode relies on it.
+    /// A stale torque setpoint does not fault outside torque control.
+    #[test]
+    fn missing_setpoint_tolerated_outside_torque_control() {
+        let tolerant = [
+            OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() },
+            calibrating_at(CalibrationPhase::MotorEstimation),
+        ];
+        for mut mode in tolerant {
+            let mut stale = nominal_inputs();
+            stale.target_torque = None;
+            TestHarness::new().step(&mut mode, stale);
+            assert!(!raised_fault(&mode, FaultCause::SetpointTimeout));
+        }
+    }
+
+    /// Lost rotor feedback faults exactly when the mode's gate requires feedback.
     #[test]
     fn invalid_feedback_faults_only_when_required() {
-        let mut mode = OperatingMode::TorqueControl;
-        let mut lost = inputs();
-        lost.rotor_feedback = Err(RotorFeedbackFault::NoResponse);
-        Rig::new().step(&mut mode, lost);
-        assert!(raised(&mode, FaultCause::InvalidRotorFeedback));
-
-        let tolerant = [idle(), calibrating_at(CalibrationPhase::HallCalibration { time_passed_s: 0.0 })];
-        for mut mode in tolerant {
-            let mut lost = inputs();
+        let modes = [
+            ("torque control", OperatingMode::TorqueControl),
+            ("idle", OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }),
+            ("hall calibration", calibrating_at(CalibrationPhase::HallCalibration { time_passed_s: 0.0 })),
+            ("motor estimation", calibrating_at(CalibrationPhase::MotorEstimation)),
+        ];
+        for (label, mut mode) in modes {
+            let expect_fault = !mode.foc_gate().feedback_optional;
+            let mut lost = nominal_inputs();
             lost.rotor_feedback = Err(RotorFeedbackFault::NoResponse);
-            Rig::new().step(&mut mode, lost);
-            assert!(!raised(&mode, FaultCause::InvalidRotorFeedback));
+            TestHarness::new().step(&mut mode, lost);
+            assert_eq!(raised_fault(&mode, FaultCause::InvalidRotorFeedback), expect_fault, "{label}");
         }
     }
 
@@ -550,40 +618,28 @@ mod tests {
         let limit_omega = MAX_RPM as f32 * PI / 30.0;
         for (omega, expected) in [(0.9 * limit_omega, false), (1.1 * limit_omega, true)] {
             let mut mode = OperatingMode::TorqueControl;
-            let mut spinning = inputs();
-            spinning.rotor_feedback = Ok(feedback(AngleType::Mechanical, omega));
+            let mut spinning = nominal_inputs();
+            spinning.rotor_feedback = Ok(RotorFeedback { angle_type: AngleType::Mechanical, theta: 0.0, omega });
 
-            Rig::new().step(&mut mode, spinning);
-            assert_eq!(raised(&mode, FaultCause::Overspeed), expected, "omega {omega}");
+            TestHarness::new().step(&mut mode, spinning);
+            assert_eq!(raised_fault(&mode, FaultCause::Overspeed), expected, "omega {omega}");
         }
-    }
-
-    /// The overspeed limit holds for the full configurable speed and pole pair range.
-    #[test]
-    fn overspeed_limit_survives_high_rpm_and_pole_count() {
-        let mut mode = OperatingMode::TorqueControl;
-        let mut spinning = inputs();
-        spinning.max_rotor_speed_mech_rpm = 10_000;
-        spinning.rotor_feedback = Ok(feedback(AngleType::Mechanical, 100.0));
-
-        Rig::new().step(&mut mode, spinning);
-        assert!(!raised(&mode, FaultCause::Overspeed));
     }
 
     /// Without a DC bus reading no mode conducts.
     #[test]
     fn missing_dc_bus_reading_is_non_conducting() {
         let modes = [
-            idle(),
+            OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() },
             OperatingMode::TorqueControl,
-            faulted_with(SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: true }),
+            faulted_with(SafeControlStrategy::asc()),
             calibrating_at(CalibrationPhase::MotorEstimation),
         ];
         for mut mode in modes {
-            let mut blind = inputs();
+            let mut blind = nominal_inputs();
             blind.dc_bus_reading_v = None;
 
-            let (outcome, _) = Rig::new().step(&mut mode, blind);
+            let (outcome, _) = TestHarness::new().step(&mut mode, blind);
             assert!(matches!(outcome, FocStepOutcome::NonConducting));
         }
     }
@@ -591,137 +647,128 @@ mod tests {
     /// Idle and fault outputs come from the safe control strategy, not from the torque setpoint.
     #[test]
     fn idle_and_fault_outputs_follow_the_safe_strategy() {
-        let mut mode = idle();
-        let (outcome, _) = Rig::new().step(&mut mode, inputs());
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
+        let (outcome, _) = TestHarness::new().step(&mut mode, nominal_inputs());
         assert!(matches!(outcome, FocStepOutcome::NonConducting), "STO conducted");
 
-        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::ASC { should_switch: Debounced::new(false), feedback_valid: true } };
-        let (outcome, _) = Rig::new().step(&mut mode, inputs());
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::asc() };
+        let (outcome, _) = TestHarness::new().step(&mut mode, nominal_inputs());
         assert!(matches!(outcome, FocStepOutcome::ActiveShort), "ASC did not short the phases");
 
         let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } };
-        let mut demanding = inputs();
+        let mut demanding = nominal_inputs();
         demanding.target_torque = Some(0.5);
-        let (outcome, _) = Rig::new().step(&mut mode, demanding);
-        assert_eq!(target_current(outcome), Some(0.0), "rampdown followed the setpoint");
+        let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
+        assert_eq!(iq_target(outcome), Some(0.0), "rampdown followed the setpoint");
 
-        let mut mode = faulted_with(SafeControlStrategy::SS1t {
-            brake: BangBangBrake::new(),
-            done: Debounced::new(false),
-        });
-        let mut demanding = inputs();
+        let mut mode = faulted_with(SafeControlStrategy::ss1t());
+        let mut demanding = nominal_inputs();
         demanding.target_torque = Some(0.5);
-        demanding.rotor_feedback = Ok(feedback(AngleType::Electrical, 50.0));
-        let (outcome, _) = Rig::new().step(&mut mode, demanding);
-        let iq = target_current(outcome).expect("the inverter stopped modulating");
+        demanding.rotor_feedback = Ok(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 50.0 });
+        let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
+        let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
         assert!(iq <= 0.0, "SS1-t followed the setpoint instead of braking");
-    }
 
-    /// A sustained overvoltage in idle hands STO over to an active short.
-    #[test]
-    fn idle_sto_hands_over_to_active_short() {
-        let mut rig = Rig::new();
-        let mut mode = idle();
-
-        for tick in 1..STO_ASC_DEBOUNCE_TICKS {
-            let mut rising = inputs();
-            rising.dc_bus_reading_v = Some(0.96 * rising.dc_bus_max_v);
-            let (outcome, _) = rig.step(&mut mode, rising);
-            assert!(matches!(outcome, FocStepOutcome::NonConducting), "switched after {tick} samples");
+        // A stage failure hands the same tick over to the fault reaction, not the stage command:
+        let mut mode = calibrating_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });
+        let (outcome, _) = TestHarness::new().step(&mut mode, nominal_inputs());
+        if let FocStepOutcome::Normal { snapshot, .. } = outcome {
+            assert!(snapshot.id_target_a.abs() < 1e-3, "followed the stage command, id {}", snapshot.id_target_a);
+            assert!(snapshot.iq_target_a.abs() < 1e-3, "followed the stage command, iq {}", snapshot.iq_target_a);
         }
-
-        let mut rising = inputs();
-        rising.dc_bus_reading_v = Some(0.96 * rising.dc_bus_max_v);
-        let (outcome, _) = rig.step(&mut mode, rising);
-        assert!(matches!(outcome, FocStepOutcome::ActiveShort), "STO never handed over to ASC");
     }
 
-    /// Calibration wait phases leave the inverter non-conducting.
+    /// Calibration wait phases neither conduct nor step the state machine.
     #[test]
-    fn calibration_wait_phases_do_not_conduct() {
+    fn calibration_wait_phases_do_not_conduct_or_step() {
         for phase in [CalibrationPhase::WaitingHallCompletion, CalibrationPhase::WaitingTuning] {
-            let mut mode = calibrating_at(phase);
-            let (outcome, _) = Rig::new().step(&mut mode, inputs());
+            let mut mode = OperatingMode::Calibration { calibrator: MockCalibrator::at(phase) };
+            let (outcome, _) = TestHarness::new().step_mock(&mut mode, nominal_inputs());
             assert!(matches!(outcome, FocStepOutcome::NonConducting));
+
+            let OperatingMode::Calibration { calibrator } = &mode else { panic!("left calibration") };
+            assert_eq!(calibrator.step_calls, 0, "wait phase stepped the calibrator");
         }
     }
 
-    /// Controller state from a previous session is cleared by the time torque control resumes,
-    /// whatever the exit path.
+    /// The tick that ends a stage still delivers the stage result to the caller.
     #[test]
-    fn controller_state_cleared_before_reentering_torque_control() {
-        let exit_paths: [(&str, fn(&mut Rig, &mut OperatingMode, &mut FocStepInputs)); 8] = [
-            ("idle command", |_, mode, _| mode.on_command(Command::Idle {
-                safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) }
-            })),
-            ("watchdog fault", |_, _, inputs| inputs.watchdog_fault = true),
-            ("overcurrent fault", |_, _, inputs| inputs.overcurrent = true),
-            ("regen limit fault", |_, _, inputs| inputs.braking_limit_exceeded = true),
-            ("setpoint timeout fault", |_, _, inputs| inputs.target_torque = None),
-            ("rotor feedback fault", |_, _, inputs| inputs.rotor_feedback = Err(RotorFeedbackFault::NoResponse)),
-            ("overspeed fault", |_, _, inputs| inputs.rotor_feedback = Ok(feedback(AngleType::Electrical, 10_000.0))),
-            ("controller fault", |rig, _, _| { let _ = rig.foc.set_pi_gains(None); }),
-        ];
+    fn stage_result_survives_entering_a_wait_phase() {
+        let mut calibrator = MockCalibrator::at(CalibrationPhase::MotorEstimation);
+        calibrator.result = Some(StageResult::TuningRequest { params_estimate: motor_params() });
+        calibrator.next_phase = Some(CalibrationPhase::WaitingTuning);
+        let mut mode = OperatingMode::Calibration { calibrator };
 
-        for (label, leave) in exit_paths {
-            let mut rig = Rig::new();
-            let mut mode = OperatingMode::TorqueControl;
-            for _ in 0..200 {
-                let mut demanding = inputs();
-                demanding.target_torque = Some(1.0);
-                rig.step(&mut mode, demanding);
-            }
-            let cleared_before = rig.foc.clear_windup_calls;
+        let (outcome, result) = TestHarness::new().step_mock(&mut mode, nominal_inputs());
+        assert!(matches!(result, Some(StageResult::TuningRequest { .. })), "stage result was dropped");
+        assert!(matches!(outcome, FocStepOutcome::NonConducting));
+    }
 
-            let mut leaving = inputs();
-            leave(&mut rig, &mut mode, &mut leaving);
-            rig.step(&mut mode, leaving);
-            assert!(!matches!(mode, OperatingMode::TorqueControl), "{label} did not leave torque control");
+    /// FOC computes with the calibrator's estimate during calibration, the stored params otherwise.
+    #[test]
+    fn compute_estimate_follows_the_mode() {
+        let mut rig = TestHarness::new();
+        let mut mode = OperatingMode::TorqueControl;
+        rig.step(&mut mode, nominal_inputs());
+        assert_eq!(rig.foc.last_estimate.unwrap().stator_resistance, Some(0.66));
 
-            // Recovering from the gains fault needs working gains back; set_pi_gains
-            // clearing windup on the way is part of the contract under test:
-            if label == "controller fault" {
-                let _ = rig.foc.set_pi_gains(Some(
-                    compute_current_pi_controller_gains(motor_params(), PWM_FREQ_HZ, 1.0, 0.001).unwrap(),
-                ));
-            }
+        let mut rig = TestHarness::new();
+        let mut calibrator = MockCalibrator::at(CalibrationPhase::MotorEstimation);
+        let mut calibrating_estimate = motor_params();
+        calibrating_estimate.stator_resistance = Some(1.25);
+        calibrator.estimator = ConstantMotorParameters::from_other(calibrating_estimate);
+        let mut mode = OperatingMode::Calibration { calibrator };
+        rig.step_mock(&mut mode, nominal_inputs());
+        assert_eq!(rig.foc.last_estimate.unwrap().stator_resistance, Some(1.25));
+    }
 
-            // Let the safety reaction run its course, then re-enter:
-            let mut ticks = 0;
-            loop {
-                mode.on_command(Command::ClearFault);
-                mode.on_command(Command::EnableTorqueControl);
-                if matches!(mode, OperatingMode::TorqueControl) {
-                    break;
-                }
-                rig.step(&mut mode, inputs());
-                ticks += 1;
-                assert!(ticks < 50_000, "{label}: reaction never released for re-entry");
-            }
+    /// Any tick that does not modulate normally clears controller windup.
+    #[test]
+    fn non_modulating_ticks_clear_windup() {
+        let mut rig = TestHarness::new();
+        let mut mode = OperatingMode::TorqueControl;
+        rig.step(&mut mode, nominal_inputs());
+        assert_eq!(rig.foc.clear_windup_calls, 0, "normal modulation cleared windup");
 
-            rig.step(&mut mode, inputs());
-            assert!(rig.foc.clear_windup_calls > cleared_before, "{label}: stale controller state on re-entry");
-        }
+        let mut rig = TestHarness::new();
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
+        rig.step(&mut mode, nominal_inputs());
+        assert!(rig.foc.clear_windup_calls > 0, "non-conducting tick kept windup");
+
+        let mut rig = TestHarness::new();
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::asc() };
+        rig.step(&mut mode, nominal_inputs());
+        assert!(rig.foc.clear_windup_calls > 0, "active short tick kept windup");
     }
 
     /// A controller fault enters fault mode with a safe output.
     #[test]
     fn foc_faults_map_to_fault_mode_with_a_safe_output() {
-        let mut rig = Rig::new();
+        let mut rig = TestHarness::new();
         rig.params = ConstantMotorParameters::new();
         let mut mode = OperatingMode::TorqueControl;
-        let (outcome, _) = rig.step(&mut mode, inputs());
-        assert!(raised(&mode, FaultCause::MissingMotorParams));
-        assert!(matches!(outcome, FocStepOutcome::NonConducting));
+        let (outcome, _) = rig.step(&mut mode, nominal_inputs());
+        assert!(raised_fault(&mode, FaultCause::MissingMotorParams));
+        assert!(!matches!(outcome, FocStepOutcome::Normal { .. }), "still modulating on the faulting tick");
 
-        let mut rig = Rig::new();
+        let mut rig = TestHarness::new();
         let _ = rig.foc.set_pi_gains(None);
         let mut mode = OperatingMode::TorqueControl;
-        let mut demanding = inputs();
+        let mut demanding = nominal_inputs();
         demanding.target_torque = Some(0.1);
         let (outcome, _) = rig.step(&mut mode, demanding);
-        assert!(raised(&mode, FaultCause::MissingControllerGains));
-        assert!(matches!(outcome, FocStepOutcome::NonConducting));
+        assert!(raised_fault(&mode, FaultCause::MissingControllerGains));
+        assert!(!matches!(outcome, FocStepOutcome::Normal { .. }), "still modulating on the faulting tick");
+    }
+
+    /// A failed calibration stage propagates the failure and raises its cause.
+    #[test]
+    fn calibration_stage_failure_faults() {
+        let mut mode = calibrating_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });
+
+        let (_, result) = TestHarness::new().step(&mut mode, nominal_inputs());
+        assert!(matches!(result, Some(StageResult::Failure { .. })));
+        assert!(raised_fault(&mode, FaultCause::CalibrationTimeout));
     }
 
     /// A failed calibration stage records its cause once.
@@ -729,7 +776,7 @@ mod tests {
     fn calibration_stage_failure_asserts_its_fault_once() {
         let mut mode = calibrating_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });
 
-        let (_, result) = Rig::new().step(&mut mode, inputs());
+        let (_, result) = TestHarness::new().step(&mut mode, nominal_inputs());
         assert!(matches!(result, Some(StageResult::Failure { .. })));
 
         let trace = mode.fault_trace().expect("calibration failure did not fault");

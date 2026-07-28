@@ -1,7 +1,7 @@
 mod integrity;
-mod qualify;
+mod debounce;
 mod stamped;
 
 pub use integrity::{FrameIntegrity, FrameIntegrityFault};
-pub use qualify::{Debounced, LeakyBucket};
+pub use debounce::{Debounced, LeakyBucket};
 pub use stamped::Stamped;
