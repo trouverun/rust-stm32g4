@@ -2,6 +2,7 @@
 #![no_std]
 #![feature(type_alias_impl_trait)]
 #![feature(sync_unsafe_cell)]
+#![feature(core_intrinsics)]
 
 use servo_firmware as _;
 mod boards;
@@ -14,6 +15,26 @@ mod types;
 pub mod pac {
     pub use embassy_stm32::pac::Interrupt as interrupt;
     pub use embassy_stm32::pac::*;
+}
+
+/// Copy `.ccmram` code from its flash load address into CCM SRAM.
+/// Must run before the first call into anything placed there.
+fn init_ccmram() {
+    extern "C" {
+        static mut __sccmram: u32;
+        static mut __eccmram: u32;
+        static __siccmram: u32;
+    }
+    unsafe {
+        let mut dst = core::ptr::addr_of_mut!(__sccmram);
+        let mut src = core::ptr::addr_of!(__siccmram);
+        let end = core::ptr::addr_of!(__eccmram) as *const u32;
+        while (dst as *const u32) < end {
+            dst.write_volatile(src.read_volatile());
+            dst = dst.add(1);
+            src = src.add(1);
+        }
+    }
 }
 
 #[rtic::app(device = crate::pac, peripherals = false, dispatchers = [SPI2, SPI3, UART5])]
@@ -37,7 +58,7 @@ mod app {
     use crate::types::*;
     use field_oriented::{
         AlphaBeta, ClarkParkValue, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator, 
-        FocConfig, HallCalibration, HasRotorFeedback, MotorParamsEstimate, OrtegaPralyEstimator, PhaseCurrentFilter
+        FocConfig, HallCalibration, MotorParamsEstimate, OrtegaPralyEstimator, PhaseCurrentFilter
     };
     use crate::tasks::*;
 
@@ -71,6 +92,7 @@ mod app {
 
     #[init]
     fn init(_cx: init::Context) -> (Shared, Local) {
+        crate::init_ccmram();
         const _: () = {
             assert!(BOARD.mosfet_deadtime_ns > 0, "MOSFET deadtime needs to be positive");
             assert!(BOARD.mosfet_on_delay_ns > 0, "MOSFET on delay needs to be positive");
@@ -201,7 +223,6 @@ mod app {
         })
     }
 
-    /// Watchdog for tracking FOC ISR loop cycle time. Latches la_d for scope triggering.
     #[task(priority = 6, binds = TIM7_DAC, shared = [software_watchdog, debug_mappings])]
     fn watchdog_isr(mut cx: watchdog_isr::Context) {
         cx.shared.debug_mappings.lock(|dm| dm.la_d.set_high());
