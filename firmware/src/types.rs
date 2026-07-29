@@ -1,6 +1,5 @@
 use firmware_core::Stamped;
 use rtic_monotonics::{stm32::Tim2, Monotonic};
-
 use crate::boards::BOARD;
 use crate::constants::*;
 

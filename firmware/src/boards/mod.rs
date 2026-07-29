@@ -1,41 +1,30 @@
 #[cfg(feature = "board-zest1")]
 mod zest1;
-#[cfg(feature = "spi-encoder")]
-use embassy_stm32::timer::GeneralInstance4Channel;
 #[cfg(feature = "board-zest1")]
 pub use zest1::*;
-
-#[cfg(feature = "spi-encoder")]
 pub mod spi_encoder;
-#[cfg(feature = "spi-encoder")]
 pub use spi_encoder::*;
 
 use embassy_stm32::adc::AnyAdcChannel;
 use embassy_stm32::can::CanConfigurator;
 use embassy_stm32::comp::Comp;
 use embassy_stm32::dac::Dac;
-#[cfg(feature = "spi-encoder")]
-use embassy_stm32::gpio::Output;
 use embassy_stm32::mode::Blocking;
-#[cfg(feature = "mcu-opamps")]
-use embassy_stm32::opamp::OpAmpOutput;
 use embassy_stm32::peripherals::{CORDIC, FLASH, IWDG};
-#[cfg(feature = "spi-encoder")]
-use embassy_stm32::spi::{DmaDrivenSpi, Instance};
-#[cfg(feature = "spi-encoder")]
-use embassy_stm32::dma::{Channel, DmaRequestSource};
-use embassy_stm32::time::Hertz;
-#[cfg(feature = "hall-feedback")]
-use embassy_stm32::timer::hall::HallSensor;
 use embassy_stm32::timer::pwm::{NotRunning, PwmDeadtime, PWM};
 use embassy_stm32::timer::{trigger_output::BasicTrgoOutput, CountingMode};
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::Peri;
+use embassy_stm32::gpio::Output;
+use embassy_stm32::spi::{DmaDrivenSpi, Instance};
 
-pub const PWM_FREQ: Hertz = Hertz(20_000);
-pub const BOARD_SAMPLE_FREQ: Hertz = Hertz(1);
+#[cfg(feature = "hall-feedback")]
+use embassy_stm32::timer::hall::HallSensor;
+
+#[cfg(feature = "mcu-opamps")]
+use embassy_stm32::opamp::OpAmpOutput;
+
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
-pub const IWDG_TIMEOUT_US: u32 = 10_000;
 
 pub struct ThermistorLinearScale {
     pub slope_c_per_v: f32,
@@ -78,25 +67,12 @@ pub struct AdcFeedbackMappings {
 
 #[cfg(feature = "hall-feedback")]
 pub struct HallFeedbackMappings {
-    pub sensor: HallSensor<'static, HallFeedbackTimer>,
-    pub read_timer: Timer<'static, HallReadTimer>
+    pub hall_timer: HallSensor<'static, HallFeedbackTimer>,
 }
 
-#[cfg(feature = "spi-encoder")]
-pub struct SPIEncoderMappings<A: Instance, B: GeneralInstance4Channel> {
+pub struct SPIMappings<A: Instance> {
     pub spi: DmaDrivenSpi<'static, A>,
-    pub cs: Output<'static>,
-    pub dma_timer: Timer<'static, B>,
-    pub cs_low_trigger: DmaRequestSource,
-    pub tx1_trigger: DmaRequestSource,
-    pub tx2_trigger: DmaRequestSource,
-    pub rx_trigger: DmaRequestSource,
-    pub cs_high_trigger: DmaRequestSource,
-    pub cs_low_dma: Channel<'static>,
-    pub tx1_dma: Channel<'static>,
-    pub tx2_dma: Channel<'static>,
-    pub rx_dma: Channel<'static>,
-    pub cs_high_dma: Channel<'static>
+    pub cs: Output<'static>
 }
 
 #[cfg(feature = "overcurrent-comparators")]

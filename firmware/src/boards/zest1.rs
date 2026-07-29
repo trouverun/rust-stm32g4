@@ -1,24 +1,18 @@
 use embassy_stm32::adc::{
-    Adc, Adc12RegularTrigger, Adc345InjectedTrigger, Adc345RegularTrigger, AdcChannel, AdcConfig,
-    AnyAdcChannel, EocInterruptEnabled, Exten, ExternalTriggeredADC, JeosInterruptEnabled,
-    NotQueued, Resolution, Running, SampleTime,
+    Adc345InjectedTrigger, Adc345RegularTrigger, AdcChannel,
 };
-
 use embassy_stm32::{rcc::*};
 use embassy_stm32::Config as RccConfig;
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::{comp::*};
 use embassy_stm32::dac::Dac;
-use embassy_stm32::exti::{ExtiInput, TriggerEdge};
-use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::mode::Blocking;
+use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::opamp::{OpAmp, OpAmpSpeed};
 use embassy_stm32::pac::timer::vals::{Bkinp, Bkp};
 use embassy_stm32::peripherals::{
-    ADC1, ADC3, ADC4, COMP5, COMP6, COMP7, DAC4, FDCAN1, OPAMP3, OPAMP4, OPAMP5, TIM3, TIM4,
-    TIM6, TIM8, SPI1, DAC1, DAC2, TIM5, TIM7
+    ADC3, ADC4, COMP5, COMP6, COMP7, DAC4, OPAMP3, OPAMP4, 
+    OPAMP5, TIM3, TIM6, TIM8, SPI1, TIM7
 };
-use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::hall::{Config as HallConfig, HallSensor};
 use embassy_stm32::timer::{
     low_level::FilterValue,
@@ -27,8 +21,7 @@ use embassy_stm32::timer::{
 };
 use embassy_stm32::can::CanConfigurator;
 
-use crate::boards::encoder_mappings;
-use crate::constants::DAC_REF_V;
+use crate::boards::spi_mappings;
 
 // Adc feedback:
 pub type OpAmpU = OPAMP3;
@@ -43,14 +36,11 @@ pub const BOARD_FEEDBACK_TRIGGER: Adc345RegularTrigger = Adc345RegularTrigger::T
 
 // Hall feedback:
 pub type HallFeedbackTimer = TIM3;
-pub type HallReadTimer = TIM5;
 
 // Encoder feedback:
-pub type EncoderDMATimer = TIM4;
 pub type EncoderSpi = SPI1;
 
 // PWM output:
-// Comparators watch the filtered opamp outputs (PD11/PD12/PD14)
 pub type CompU = COMP6;
 pub type CompV = COMP5;
 pub type CompW = COMP7;
@@ -59,6 +49,9 @@ pub type PwmTimer = TIM8;
 
 // Watchdog
 pub type WatchdogTimer = TIM7;
+
+pub const ADC_REF_V: f32 = 3.3;
+pub const DAC_REF_V: f32 = 3.3;
 
 pub const BOARD: super::BoardInfo = super::BoardInfo {
     shunt_resistance_mohm: 15.0,
@@ -103,15 +96,13 @@ fn rcc_init() -> embassy_stm32::Peripherals {
     rcc_config.rcc.mux.adc12sel = mux::Adcsel::PLL1_P;
     rcc_config.rcc.mux.adc345sel = mux::Adcsel::PLL1_P;
     rcc_config.rcc.mux.fdcansel = mux::Fdcansel::PLL1_Q;
-    // Leave the DMA IRQ priority to RTIC; embassy must not set it.
-    rcc_config.bdma_interrupt_priority = None;
     embassy_stm32::init(rcc_config)
 }
 
 pub fn map_peripherals() -> (
     super::AdcFeedbackMappings,
     super::HallFeedbackMappings,
-    super::SPIEncoderMappings<EncoderSpi, EncoderDMATimer>,
+    super::SPIMappings<EncoderSpi>,
     super::PwmOutputMappings,
     super::AccelerationMappings,
     super::MemoryMappings,
@@ -133,17 +124,14 @@ pub fn map_peripherals() -> (
         w_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PD14),
         vbus_channel: AdcChannel::<FeedbackAdcA>::degrade_adc(p.PB13),
         tboard_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PE15),
-        sample_trigger: BasicTrgoOutput::new(p.TIM6, super::BOARD_SAMPLE_FREQ),
+        sample_trigger: BasicTrgoOutput::new(p.TIM6, crate::constants::BOARD_STATUS_FREQUENCY_HZ),
     };
 
     let hall_feedback = super::HallFeedbackMappings {
-        sensor: HallSensor::new(p.TIM3, p.PE2, p.PE3, p.PE4, HallConfig::default()),
-        read_timer: Timer::new(p.TIM5)
+        hall_timer: HallSensor::new(p.TIM3, p.PE2, p.PE3, p.PE4, HallConfig::default()),
     };
-    let amt_encoder = encoder_mappings(
+    let spi = spi_mappings(
         p.SPI1, p.PG2,  p.PG4, p.PG3, p.PG5,
-        p.TIM4, p.DMA1_CH1, p.DMA1_CH2, 
-        p.DMA1_CH3, p.DMA1_CH4, p.DMA1_CH5
     );
 
     let pwm = super::PwmOutputMappings {
@@ -168,7 +156,7 @@ pub fn map_peripherals() -> (
                 Comp7BlankSel::None,
             ),
         },
-        pwm: PWM::new(p.TIM8, super::PWM_FREQ, super::COUNTING_MODE)
+        pwm: PWM::new(p.TIM8, crate::constants::PWM_FREQUENCY_HZ, super::COUNTING_MODE)
             .with_ch1(p.PC6)
             .with_ch1n(p.PC10)
             .with_ch2(p.PC7)
@@ -206,7 +194,7 @@ pub fn map_peripherals() -> (
     (
         adc_feedback,
         hall_feedback,
-        amt_encoder,
+        spi,
         pwm,
         acceleration,
         storage,

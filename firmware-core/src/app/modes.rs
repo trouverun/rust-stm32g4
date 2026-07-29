@@ -13,7 +13,13 @@ pub struct FocGate {
 #[derive(Clone, defmt::Format)]
 pub enum Command {
     Idle { safe_strategy: SafeControlStrategy },
-    StartCalibration { num_pole_pairs: u8, max_rotor_rpm_mech: f32, dt_s: f32 },
+    StartCalibration { 
+        num_pole_pairs: u8, 
+        max_rotor_rpm_mech: f32, 
+        has_hall: bool,
+        has_encoder: bool, 
+        dt_s: f32 
+    },
     ResumeCalibration,
     FinishCalibration,
     CancelCalibration,
@@ -79,8 +85,8 @@ impl<C: Calibrator> OperatingMode<C> {
                 trace[0] = cause;
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
-            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, dt_s }) => {
-                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, max_rotor_rpm_mech, dt_s) }
+            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, has_hall, has_encoder, dt_s }) => {
+                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, max_rotor_rpm_mech, has_hall, has_encoder, dt_s) }
             }
             (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
@@ -162,7 +168,7 @@ mod tests {
     }
 
     fn calibrating() -> OperatingMode {
-        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, MAX_RPM, DT_S) }
+        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, true, DT_S) }
     }
 
     fn faulted(cause: FaultCause) -> OperatingMode {
@@ -172,7 +178,7 @@ mod tests {
     }
 
     fn start_calibration() -> Command {
-        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, max_rotor_rpm_mech: MAX_RPM, dt_s: DT_S }
+        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, max_rotor_rpm_mech: MAX_RPM, has_hall: true, has_encoder: true, dt_s: DT_S }
     }
 
     /// Calibration can be entered from idle and from nowhere else.

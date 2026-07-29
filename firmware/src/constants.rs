@@ -1,6 +1,14 @@
+use embassy_stm32::time::Hertz;
 use crate::boards::BOARD;
 
 // Main:
+
+/// The frequency of the PWM carrier and the frequency at which the FOC ISR fires at
+pub const PWM_FREQUENCY_HZ: Hertz = Hertz(20_000);
+/// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
+pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
+/// Timeout of the hardware watchdog (5 missed FOC ISR ticks before board reset)
+pub const IWDG_TIMEOUT_US: u32 = 5 * 1_000_000 / PWM_FREQUENCY_HZ.0;
 
 /// Bitrate of the CAN bus (bit/s)
 pub const CAN_BIT_RATE: u32 = 1_000_000;
@@ -62,8 +70,6 @@ pub const SS1T_VELOCITY_THRESHOLD_MAX: f32 = 1000.0;
 
 // BSP:
 
-pub const ADC_REF_V: f32 = 3.3;
-pub const DAC_REF_V: f32 = 3.3;
 /// Number of ADC samples to collect when calibrating the OPAMP offset voltages during init
 pub const OPAMP_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 

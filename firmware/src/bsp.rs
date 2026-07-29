@@ -1,16 +1,10 @@
-use core::cell::SyncUnsafeCell;
-use core::f32::consts::{PI, TAU};
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::f32::consts::{PI};
 use embassy_stm32::flash::{Blocking as BlockingFlash, Flash, WRITE_SIZE};
-use embassy_stm32::pac::gpio::regs::Bsrr;
-use embassy_stm32::gpio::Output;
 use embassy_stm32::pac::timer::vals::Bkp;
-use embassy_stm32::spi::DmaDrivenSpi;
 use embassy_stm32::timer::{
     Channel, hall::HallSensor, low_level::{Timer, FilterValue}, trigger_output::BasicTrgoOutput
 };
 use embassy_stm32::timer::pwm::{Running as PwmRunning, PWM};
-use embassy_stm32::dma::StreamingChannel;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::peripherals::{CORDIC, IWDG};
 use embassy_stm32::wdg::IndependentWatchdog;
@@ -19,7 +13,7 @@ use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
 use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin, Sqrt, SqrtScale};
 
 use crate::boards::*;
-use crate::constants::{ADC_REF_V, OPAMP_CALIBRATION_SAMPLE_COUNT};
+use crate::constants::{OPAMP_CALIBRATION_SAMPLE_COUNT};
 use crate::memory::{sector_offset, Stored, SECTOR_SIZE};
 use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES};
 use embassy_stm32::adc::{
@@ -347,8 +341,7 @@ impl AdcFeedback {
 
 #[cfg(feature = "hall-feedback")]
 pub struct HallFeedback {
-    sensor: HallSensor<'static, HallFeedbackTimer>,
-    read_timer: Timer<'static, HallReadTimer>,
+    hall_timer: HallSensor<'static, HallFeedbackTimer>,
     estimator: HallEstimator,
     filter: LowPassFilter,
 }
@@ -356,24 +349,15 @@ pub struct HallFeedback {
 #[cfg(feature = "hall-feedback")]
 impl HallFeedback {
     pub fn new(mappings: HallFeedbackMappings, sample_rate_hz: u32, cutoff_hz: f32) -> Self {
-        use embassy_stm32::timer::low_level::RoundTo;
-
-        let read_timer = mappings.read_timer;
-        read_timer.set_frequency(Hertz(sample_rate_hz), RoundTo::Faster);
-        read_timer.enable_update_interrupt(true);
-        read_timer.generate_update_event();
-        read_timer.start();
-
         Self {
-            sensor: mappings.sensor,
-            read_timer,
+            hall_timer: mappings.hall_timer,
             estimator: HallEstimator::new(),
             filter: LowPassFilter::new(sample_rate_hz as f32, cutoff_hz),
         }
     }
 
     pub fn get_pattern(&self) -> u8 {
-        self.sensor.read_hall_pattern()
+        self.hall_timer.read_hall_pattern()
     }
 
     pub fn set_calibration(&mut self, calibrations: HallCalibration) {
@@ -381,25 +365,21 @@ impl HallFeedback {
     }
 
     pub fn on_hall_interrupt(&mut self) {
-        self.sensor.on_interrupt();
-    }
-
-    pub fn on_read_interrupt(&self) {
-        self.read_timer.clear_update_interrupt();
+        self.hall_timer.on_interrupt();
     }
 }
 
 #[cfg(feature = "hall-feedback")]
 impl HasRotorFeedback for HallFeedback {
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
-        let raw_state = self.sensor.read_state();
+        let raw_state = self.hall_timer.read_state();
 
         let estimator_input = HallEstimatorInput {
             prev_hall_pattern: raw_state.prev_pattern,
             hall_pattern: raw_state.pattern,
             tick_counter: raw_state.extended_counter,
             previous_period_reciprocal: raw_state.hall_period_reciprocal_count,
-            tick_frequency_hz: self.sensor.get_tick_frequency_hz()  
+            tick_frequency_hz: self.hall_timer.get_tick_frequency_hz()  
         };
         let estimate = self.estimator.get_estimate(estimator_input)?;
         let filtered_omega = self.filter.update(estimate.omega);
@@ -615,189 +595,6 @@ impl CanBus {
 
     pub fn send(&mut self, frame: Frame) {
         let _ = self.can.send(frame);
-    }
-}
-
-/// Where the Encoder SPI RX DMA channel circularly deposits the two response bytes
-static RX_BUF: SyncUnsafeCell<[u8; 2]> = SyncUnsafeCell::new([0xDE, 0xAD]);
-/// AMT22 command bytes for the Encoder SPI TX DMA channels
-static TX1_BYTE: AtomicU8 = AtomicU8::new(0x00);
-static TX2_BYTE: AtomicU8 = AtomicU8::new(0x00);
-const AMT_READ_FREQ_HZ : f32 = 10_000.0;
-
-pub struct AmtEncoder {
-    _spi: DmaDrivenSpi<'static, EncoderSpi>,
-    _cs: Output<'static>,
-    _dma_timer: Timer<'static, EncoderDMATimer>,
-    _cs_low_channel: StreamingChannel,
-    _tx1_channel: StreamingChannel,
-    _tx2_channel: StreamingChannel,
-    rx_channel: StreamingChannel,
-    _cs_high_channel: StreamingChannel,
-    theta: Option<f32>,
-    omega: Option<f32>,
-    omega_lowpass: LowPassFilter,
-}
-
-impl AmtEncoder {
-    pub fn new(
-        mappings: SPIEncoderMappings<EncoderSpi, EncoderDMATimer>, lowpass_cutoff_hz: f32
-    ) -> Self {
-        let mut dma_timer = mappings.dma_timer;
-        // 10MHz tick rate = 0.01 us resolution:
-        dma_timer.set_tick_freq(Hertz(10_000_000));
-        // 100 us = ~10kHz read rate
-        dma_timer.set_autoreload_value(1000); 
-        // 0.1 us -> dma request to set cs low
-        dma_timer.set_compare_value(Channel::Ch1, 1); 
-        dma_timer.set_cc_dma_enable_state(Channel::Ch1, true);
-        // 5 us -> dma request to fill spi tx buffer byte 1
-        dma_timer.set_compare_value(Channel::Ch2, 50); 
-        dma_timer.set_cc_dma_enable_state(Channel::Ch2, true);
-        // 15 us -> dma request to fill spi tx buffer byte 2
-        dma_timer.set_compare_value(Channel::Ch3, 150); 
-        dma_timer.set_cc_dma_enable_state(Channel::Ch3, true);
-        // 20 us -> (DMA RX complete ISR) and dma request to set cs high
-        dma_timer.set_compare_value(Channel::Ch4, 250);  
-        dma_timer.set_cc_dma_enable_state(Channel::Ch4, true);
-        dma_timer.generate_update_event();
-
-        let mut spi = mappings.spi;
-        let cs = mappings.cs;
-
-        // Create BSSR values for set and unset CS pin:
-        let bssr_reset = {
-            let mut b = Bsrr::default();
-            b.set_br(cs.pin() as usize, true);
-            b.0
-        };
-        let bssr_set = {
-            let mut b = Bsrr::default();
-            b.set_bs(cs.pin() as usize, true);
-            b.0
-        };
-        static CS_LOW: AtomicU32 = AtomicU32::new(0);
-        static CS_HIGH: AtomicU32 = AtomicU32::new(0);
-        CS_LOW.store(bssr_reset, Ordering::Relaxed);
-        CS_HIGH.store(bssr_set, Ordering::Relaxed);
-
-        // SAFETY: DMA not running yet
-        let cs_low: &'static u32 = unsafe { &*CS_LOW.as_ptr() };
-        let cs_high: &'static u32 = unsafe { &*CS_HIGH.as_ptr() };
-
-        // SAFETY: DMA not running yet
-        let rx_buf: &'static mut [u8] = unsafe { &mut *RX_BUF.get() };
-        let tx1_byte: &'static u8 = unsafe { &*TX1_BYTE.as_ptr() };
-        let tx2_byte: &'static u8 = unsafe { &*TX2_BYTE.as_ptr() };
-
-        let cs_low_channel = StreamingChannel::new_write_repeating(
-            mappings.cs_low_dma, mappings.cs_low_trigger, cs_low, cs.bsrr_dma_addr(), false
-        );
-        let tx1_channel = StreamingChannel::new_write_repeating(
-            mappings.tx1_dma, mappings.tx1_trigger, tx1_byte, spi.tx_addr(), false,
-        );
-        let tx2_channel = StreamingChannel::new_write_repeating(
-            mappings.tx2_dma, mappings.tx2_trigger, tx2_byte, spi.tx_addr(), false,
-        );
-        let rx_channel = StreamingChannel::new_read_circular(
-            mappings.rx_dma, mappings.rx_trigger, spi.rx_addr(), rx_buf, true,
-        );
-        let cs_high_channel = StreamingChannel::new_write_repeating(
-            mappings.cs_high_dma, mappings.cs_high_trigger, cs_high, cs.bsrr_dma_addr(), false
-        );
-
-        spi.start();
-        dma_timer.start();
-
-        Self {
-            _spi: spi,
-            _cs: cs,
-            _dma_timer: dma_timer,
-            _cs_low_channel: cs_low_channel,
-            _tx1_channel: tx1_channel, 
-            _tx2_channel: tx2_channel, 
-            rx_channel,
-            _cs_high_channel: cs_high_channel,
-            theta: None,
-            omega: None,
-            omega_lowpass: LowPassFilter::new(AMT_READ_FREQ_HZ, lowpass_cutoff_hz),
-        }
-    }
-
-    pub fn update(&mut self, raw_reading: u16) {
-        const SCALE: f32 = TAU / (1 << 12) as f32;
-        let count = (0xFFF - (raw_reading >> 2)) & 0xFFF;
-        let theta = count as f32 * SCALE;
-        if let Some(theta_prev) = self.theta {
-            let delta_theta = wrap_to_pi(theta - theta_prev).clamp(-PI, PI);
-            let omega_raw = delta_theta * AMT_READ_FREQ_HZ;
-            let filtered = self.omega_lowpass.update(omega_raw);
-            self.omega = Some(filtered);
-        }
-        self.theta = Some(theta);
-    }
-
-    pub fn invalidate(&mut self) {
-        self.theta = None;
-        self.omega = None;
-    }
-
-    pub fn on_transaction_complete(&mut self) {
-        self.rx_channel.clear_complete_flag();
-
-        let (b0, b1) = unsafe {
-            let p = RX_BUF.get() as *const u8;
-            (core::ptr::read_volatile(p), core::ptr::read_volatile(p.add(1)))
-        };
-        let raw = (u16::from(b0) << 8) | u16::from(b1);
-
-        if amt22_checksum_ok(raw) {
-            self.update(raw & 0x3FFF);
-        } else {
-            self.invalidate();
-        }
-    }   
-    
-    pub fn stop(&mut self) {
-        self._dma_timer.stop();
-        self._dma_timer.reset();
-    }
-
-    pub fn send_zero_request(&mut self) {
-        self.stop();
-        TX2_BYTE.store(0x70, Ordering::Relaxed);
-        self._dma_timer.set_one_pulse_mode(true);
-        self.start();
-    }
-
-    pub fn normal_mode(&mut self) {
-        self.stop();
-        self._dma_timer.set_one_pulse_mode(false);
-        TX2_BYTE.store(0x00, Ordering::Relaxed);
-        self.start();
-    }
-
-    pub fn start(&mut self) {
-        self.invalidate();
-        self._dma_timer.start();
-    }
-}
-
-fn amt22_checksum_ok(raw: u16) -> bool {
-    let k1 = (raw >> 15) & 1;
-    let k0 = (raw >> 14) & 1;
-    let odd_parity  = (raw & 0x2AAA).count_ones() as u16 & 1;
-    let even_parity = (raw & 0x1555).count_ones() as u16 & 1;
-    k1 != odd_parity && k0 != even_parity
-}
-
-impl HasRotorFeedback for AmtEncoder {
-    fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
-        if let (Some(theta), Some(omega)) = (self.theta, self.omega) {
-            Ok(RotorFeedback { angle_type: AngleType::Mechanical, theta, omega })
-        } else {
-            Err(RotorFeedbackFault::ErroneousValue)
-        }
     }
 }
 

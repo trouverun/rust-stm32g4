@@ -424,7 +424,7 @@ mod tests {
     }
 
     impl Calibrator for MockCalibrator {
-        fn new(_num_pole_pairs: u8, _max_rotor_mech_rpm: f32, _dt_s: f32) -> Self {
+        fn new(_num_pole_pairs: u8, _max_rotor_mech_rpm: f32, _has_hall: bool, _has_encoder: bool, _dt_s: f32) -> Self {
             Self::at(CalibrationPhase::MotorEstimation)
         }
 
@@ -497,7 +497,7 @@ mod tests {
     }
 
     fn calibrating_at(phase: CalibrationPhase) -> OperatingMode {
-        let mut calibrator = CalibrationRunner::new(POLE_PAIRS, MAX_RPM as f32, 1.0 / PWM_FREQ_HZ);
+        let mut calibrator = CalibrationRunner::new(POLE_PAIRS, MAX_RPM as f32, true, true, 1.0 / PWM_FREQ_HZ);
         calibrator.phase = phase;
         OperatingMode::Calibration { calibrator }
     }

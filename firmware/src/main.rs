@@ -27,7 +27,7 @@ mod app {
     use crate::constants::*;
     use crate::boards::*;
     use crate::bsp::{
-        self, Acceleration, AdcFeedback, AmtEncoder, CanBus, HallFeedback, Memory,
+        self, Acceleration, AdcFeedback, CanBus, HallFeedback, Memory,
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
     };
     use firmware_core::{
@@ -48,7 +48,6 @@ mod app {
         config: FirmwareConfig,
         runtime_values: RuntimeValues,
         hall_feedback: HallFeedback,
-        amt_encoder: AmtEncoder,
         pwm_output: PwmOutput,
         memory: Memory,
         foc: FOC,
@@ -83,7 +82,7 @@ mod app {
         let (
             adc_mappings,
             hall_mappings,
-            encoder_mappings,
+            _spi_mappings,
             pwm_mappings,
             accel_mappings,
             memory_mappings,
@@ -100,10 +99,9 @@ mod app {
         let mut hall_feedback = bsp::HallFeedback::new(
             hall_mappings, HALL_ASYNC_SAMPLE_RATE_HZ, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
         );
-        let amt_encoder = bsp::AmtEncoder::new(encoder_mappings, 1000.0);
         let acceleration = bsp::Acceleration::new(accel_mappings);
         let mut memory = bsp::Memory::new(memory_mappings);
-        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::STO { should_switch: Debounced::new(false) } };
+        let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
 
         if HardwareWatchdog::caused_reset() {
             mode.on_command(Command::AssertFault { cause: FaultCause::WatchdogReboot });
@@ -121,15 +119,15 @@ mod app {
         pwm_output.set_comparator_current_limit(config.overcurrent_limit_a());
 
         let phase_current_filter = PhaseCurrentFilter::new(
-            PWM_FREQ.0 as f32, PHASE_CURRENT_FILTER_LOWPASS_CUTOFF_HZ,
+            PWM_FREQUENCY_HZ.0 as f32, PHASE_CURRENT_FILTER_LOWPASS_CUTOFF_HZ,
             config.overcurrent_limit_a()
         );
         let braking_current_filter = CurrentFilter::new(
-            PWM_FREQ.0 as f32, BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ,
+            PWM_FREQUENCY_HZ.0 as f32, BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ,
             config.braking_current_fault_a()
         );
         let foc_cfg = FocConfig {
-            pwm_frequency_hz: PWM_FREQ.0 as f32, 
+            pwm_frequency_hz: PWM_FREQUENCY_HZ.0 as f32, 
             mosfet_deadtime_ns: BOARD.mosfet_deadtime_ns as f32, 
             mosfet_on_delay_ns: BOARD.mosfet_on_delay_ns as f32,
             mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
@@ -180,7 +178,6 @@ mod app {
             config,
             runtime_values: RuntimeValues::default(),
             hall_feedback,
-            amt_encoder,
             pwm_output,
             memory,
             foc,
@@ -192,7 +189,7 @@ mod app {
             braking_current_filter,
             software_watchdog: SoftwareWatchdog::new(
                 watchdog_mappings.timer,
-                Hertz((FOC_ISR_WATCHDOG_SLACK_FACTOR*PWM_FREQ.0 as f32) as u32)
+                Hertz((FOC_ISR_WATCHDOG_SLACK_FACTOR*PWM_FREQUENCY_HZ.0 as f32) as u32)
             ),
             can,
         },
@@ -239,32 +236,6 @@ mod app {
         });
     }
 
-    #[task(priority = 5, binds = TIM5, shared = [hall_feedback, feedback_arbitrator, debug_mappings])]
-    fn on_tim5(mut cx: on_tim5::Context) {
-        cx.shared.debug_mappings.lock(|dm| dm.la_b.toggle());
-        let (hall_feedback, hall_pattern) = cx.shared.hall_feedback.lock(|hall_feedback| {
-            hall_feedback.on_read_interrupt();
-            (hall_feedback.read(), hall_feedback.get_pattern())
-        });
-        cx.shared.feedback_arbitrator.lock(|fa| {
-            fa.update_hall(hall_feedback, hall_pattern);
-        });
-        cx.shared.debug_mappings.lock(|dm| dm.la_b.toggle());
-    }
-
-    #[task(priority = 4, binds = DMA1_CHANNEL4, shared=[amt_encoder, feedback_arbitrator, debug_mappings])]
-    fn on_amt22_receive(mut cx: on_amt22_receive::Context) {
-        cx.shared.debug_mappings.lock(|dm| dm.la_c.toggle());
-        let amt_feedback = cx.shared.amt_encoder.lock(|ae| {
-            ae.on_transaction_complete();
-            ae.read()
-        });
-        cx.shared.debug_mappings.lock(|dm| dm.la_c.toggle());
-        cx.shared.feedback_arbitrator.lock(|fa| {
-            fa.update_encoder(amt_feedback);
-        })
-    }
-
     extern "Rust" {
         #[task(
             priority = 6, binds = ADC3,
@@ -281,13 +252,10 @@ mod app {
                 pwm_output, foc, motor_parameters, feedback_arbitrator,
                 mode, board_status, config, runtime_values, debug_mappings,
                 current_loop_snapshot, phase_current_filter, software_watchdog,
-                braking_current_filter
+                braking_current_filter, hall_feedback
             ]
         )]
         fn shared_adc_isr(_: shared_adc_isr::Context);
-
-        #[task(priority = 1, shared = [amt_encoder, mode])]
-        async fn zero_encoder(_: zero_encoder::Context);
 
         #[task(priority = 1, shared = [mode, hall_feedback, memory])]
         async fn update_hall_table(_: update_hall_table::Context, angle_table: HallCalibration);
