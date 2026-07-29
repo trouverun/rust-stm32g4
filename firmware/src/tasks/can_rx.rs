@@ -3,7 +3,7 @@ use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
 use embedded_can::Id;
 
 use crate::app;
-use crate::boards::PWM_FREQ;
+use crate::constants::PWM_FREQUENCY_HZ;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
@@ -29,10 +29,15 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }
                     },
                     OperatingModeRequestRequestedMode::Calibration => {
-                        const DT_S: f32 = 1.0 / PWM_FREQ.0 as f32;
+                        const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
                         let max_rotor_rpm_mech = cx.shared.config.lock(|cfg| cfg.rotor_speed_limit_mech_rpm()) as f32;
                         match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
-                            Some(num_pole_pairs) => Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, dt_s: DT_S },
+                            Some(num_pole_pairs) => {
+                                Command::StartCalibration { 
+                                    num_pole_pairs, max_rotor_rpm_mech, 
+                                    has_hall: true, has_encoder: false, 
+                                    dt_s: DT_S }
+                            },
                             None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
                         }
                     }
