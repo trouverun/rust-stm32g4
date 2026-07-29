@@ -503,7 +503,8 @@ impl DoesFocMath for Acceleration {
     }
     
     fn atan2(&mut self, y: f32, x: f32) -> f32 {
-        let m = y.abs().max(x.abs());
+        let (ya, xa) = (y.abs(), x.abs());
+        let m = if ya > xa { ya } else { xa };
         if !m.is_normal() {
             return 0.0
         }

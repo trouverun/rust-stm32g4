@@ -10,7 +10,7 @@ overcurrent-comparators = []
 board-zest1 = ["mcu-opamps", "overcurrent-comparators"]
 
 [dependencies]
-cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m = { version = "0.7", features = ["critical-section-single-core", "inline-asm"] }
 defmt = { version = "1", features = ["encoding-rzcobs"] }
 panic-probe = { version = "1", features = ["print-defmt"] }
 rtic = { version = "2.0.0", features = ["thumbv7-backend"] }
