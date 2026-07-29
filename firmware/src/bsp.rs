@@ -107,6 +107,7 @@ impl AdcFeedback {
             );
 
         Self {
+            #[cfg(feature = "mcu-opamps")]
             _opamps: opamps,
             u_channel,
             v_channel,
@@ -119,13 +120,7 @@ impl AdcFeedback {
         .calibrate_opamp_offset()
     }
 
-    #[cfg(not(feature = "mcu-opamps"))]
-    fn calibrate_opamp_offset(self) -> Self {
-        self
-    }
-
     /// Finds the opamp offsets from N samples for each motor phase, and configures the ADC(s) to negate them
-    #[cfg(feature = "mcu-opamps")]
     fn calibrate_opamp_offset(self) -> Self {
         let mut val_u = 0i32;
         let mut val_va = 0i32;
@@ -198,6 +193,7 @@ impl AdcFeedback {
             );
 
         Self {
+            #[cfg(feature = "mcu-opamps")]
             _opamps: self._opamps,
             u_channel: self.u_channel,
             v_channel: self.v_channel,
@@ -328,14 +324,12 @@ impl AdcFeedback {
     }
 }
 
-#[cfg(feature = "hall-feedback")]
 pub struct HallFeedback {
     hall_timer: HallSensor<'static, HallFeedbackTimer>,
     estimator: HallEstimator,
     filter: LowPassFilter,
 }
 
-#[cfg(feature = "hall-feedback")]
 impl HallFeedback {
     pub fn new(mappings: HallFeedbackMappings, sample_rate_hz: u32, cutoff_hz: f32) -> Self {
         Self {
@@ -358,7 +352,6 @@ impl HallFeedback {
     }
 }
 
-#[cfg(feature = "hall-feedback")]
 impl HasRotorFeedback for HallFeedback {
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
         let raw_state = self.hall_timer.read_state();
@@ -417,6 +410,7 @@ impl PwmOutput {
         }
 
         Self {
+            #[cfg(feature = "overcurrent-comparators")]
             comparators: mappings.comparators,
             pwm: tmp.start(),
         }
@@ -456,6 +450,10 @@ impl PwmOutput {
         );
     }
 
+    #[cfg(not(feature = "overcurrent-comparators"))]
+    pub fn set_comparator_current_limit(&self, comparator_current_limit_a: f32) {}
+    
+    #[cfg(feature = "overcurrent-comparators")]
     pub fn set_comparator_current_limit(&self, comparator_current_limit_a: f32) {
         let voltage_threshold = limit_a_to_v(comparator_current_limit_a);
         self.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
