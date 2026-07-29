@@ -50,7 +50,8 @@ impl FieldWeakening {
         } else {
             0.0
         };
-        (-current_limit_a).max(-i_ch)
+        let bound = -0.9*current_limit_a;
+        if bound > -i_ch { bound } else { -i_ch }
     }
 
     pub fn compute(&mut self, input: FieldWeakeningInput) -> Result<f32, FocFault> {
