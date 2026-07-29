@@ -3,7 +3,7 @@
 // IEEE Transactions on power electronics, 25(2), 290-297.
 
 use crate::{
-    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, PhaseValues, RotorFeedback, RotorFeedbackFault, forward_clarke, math::wrap_to_2pi, wrap_to_pi, wrapped_diff
+    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, PhaseValues, RotorFeedback, RotorFeedbackFault, math::{forward_clarke, wrap_to_2pi, wrapped_diff}, wrap_to_pi
 };
 
 pub struct OrtegaPralyEstimatorInput {

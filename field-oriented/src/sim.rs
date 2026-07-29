@@ -237,7 +237,7 @@ impl PMSMSim {
             v: cfg.dc_bus_voltage * duties.v,
             w: cfg.dc_bus_voltage * duties.w,
         };
-        let v = crate::forward_clark_park(voltages, sc);
+        let v = crate::math::forward_clark_park(voltages, sc);
 
         // Euler integration of dq current dynamics:
         //   di_d/dt = v_d/L - R*i_d/L + omega_e*i_q
@@ -271,7 +271,7 @@ impl PMSMSim {
         SimSnapshot {
             theta,
             omega,
-            currents: crate::inverse_clark_park(i_dq, sc),
+            currents: crate::math::inverse_clark_park(i_dq, sc),
             i_dq,
             torque,
             hall_pattern: self.hall_encoder.map(|e| e.read(theta, cfg.num_pole_pairs)),
@@ -290,7 +290,7 @@ impl PMSMSim {
             let theta_e = self.config.num_pole_pairs * snapshot.theta;
             let sc = crate::SinCosResult { sin: sinf32(theta_e), cos: cosf32(theta_e) };
             snapshot.currents = noise.apply(snapshot.currents);
-            snapshot.i_dq = crate::forward_clark_park(snapshot.currents, sc);
+            snapshot.i_dq = crate::math::forward_clark_park(snapshot.currents, sc);
         }
         snapshot
     }
