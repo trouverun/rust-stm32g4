@@ -75,9 +75,11 @@ pub(crate) fn voltage_sector(ab: &AlphaBeta) -> u8 {
 }
 
 pub(crate) fn min3(a: f32, b: f32, c: f32) -> f32 {
-    a.min(b).min(c)
+    let m = if a < b { a } else { b };
+    if m < c { m } else { c }
 }
 
 pub(crate) fn max3(a: f32, b: f32, c: f32) -> f32 {
-    a.max(b).max(c)
+    let m = if a > b { a } else { b };
+    if m > c { m } else { c }
 }
