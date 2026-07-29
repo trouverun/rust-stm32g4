@@ -45,6 +45,18 @@ pub enum StageResult {
     Failure { cause: CalibrationFailureCause },
 }
 
+impl StageResult {
+    pub fn clears_windup(&self) -> bool {
+        matches!(
+            self,
+            StageResult::HallCalibration { .. }
+                | StageResult::UnwindRequest
+                | StageResult::MotorParameters { .. }
+                | StageResult::Failure { .. }
+        )
+    }
+}
+
 #[derive(Clone, Copy, defmt::Format)]
 pub enum CalibrationPhase {
     WaitingEncoderZeroing { duration_waited_s: f32, reset_sent: bool },
@@ -88,32 +100,35 @@ pub struct CalibrationRunner<H = HallCalibrator, E = OfflineMotorEstimator> {
     pub num_pole_pairs: u8,
     pub hall_calibrator: H,
     pub motor_estimator: E,
+    pub has_hall: bool,
+    pub has_encoder: bool,
     pub phase: CalibrationPhase,
     config: CalibrationConfig,
 }
 
-impl StageResult {
-    pub fn clears_windup(&self) -> bool {
-        matches!(
-            self,
-            StageResult::HallCalibration { .. }
-                | StageResult::UnwindRequest
-                | StageResult::MotorParameters { .. }
-                | StageResult::Failure { .. }
-        )
-    }
-}
-
 impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
-    pub fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, dt_s: f32) -> Self {
+    pub fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, has_hall: bool, has_encoder: bool, dt_s: f32) -> Self {
         let config = CalibrationConfig::new(max_rotor_mech_rpm, dt_s);
-        let hall_calibrator = H::new(config.hall_align_s, dt_s);
-        let motor_estimator = E::new(config.estimator, num_pole_pairs);
+        let mut hall_calibrator = H::new(config.hall_align_s, dt_s);
+        let mut motor_estimator = E::new(config.estimator, num_pole_pairs);
+
+        let start_phase = if has_encoder {
+            CalibrationPhase::WaitingEncoderZeroing { duration_waited_s: 0.0, reset_sent: false }
+        } else if has_hall {
+            hall_calibrator.start();
+            CalibrationPhase::HallCalibration { time_passed_s: 0.0 }
+        } else {
+            motor_estimator.start(num_pole_pairs);
+            CalibrationPhase::MotorEstimation
+        };
+
         Self {
             num_pole_pairs,
             hall_calibrator,
             motor_estimator,
-            phase: CalibrationPhase::WaitingEncoderZeroing { duration_waited_s: 0.0, reset_sent: false },
+            has_hall,
+            has_encoder,
+            phase: start_phase,
             config,
         }
     }
@@ -249,8 +264,13 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
     pub fn resume(&mut self) {
         match &self.phase {
             CalibrationPhase::WaitingEncoderZeroing { .. } => {
-                self.phase = CalibrationPhase::HallCalibration { time_passed_s: 0.0 };
-                self.hall_calibrator.start();
+                if self.has_hall {
+                    self.phase = CalibrationPhase::HallCalibration { time_passed_s: 0.0 };
+                    self.hall_calibrator.start();
+                } else {
+                    self.motor_estimator.start(self.num_pole_pairs);
+                    self.phase = CalibrationPhase::MotorEstimation;
+                }
             }
             CalibrationPhase::WaitingHallCompletion => {
                 self.motor_estimator.start(self.num_pole_pairs);
@@ -349,7 +369,7 @@ impl EstimatesMotorParams for OfflineMotorEstimator {
 
 /// Trait to enable test mocking
 pub trait Calibrator {
-    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, dt_s: f32) -> Self where Self: Sized;
+    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, has_hall: bool, has_encoder: bool, dt_s: f32) -> Self where Self: Sized;
     fn resume(&mut self);
     fn phase(&self) -> CalibrationPhase;
     fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>);
@@ -357,8 +377,8 @@ pub trait Calibrator {
 }
 
 impl<H: HallCalibrates, E: EstimatesMotorParams> Calibrator for CalibrationRunner<H, E> {
-    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, dt_s: f32) -> Self {
-        CalibrationRunner::new(num_pole_pairs, max_rotor_mech_rpm, dt_s)
+    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, has_hall: bool, has_encoder: bool, dt_s: f32) -> Self {
+        CalibrationRunner::new(num_pole_pairs, max_rotor_mech_rpm, has_hall, has_encoder, dt_s)
     }
 
     fn resume(&mut self) {
@@ -390,23 +410,26 @@ mod tests {
     const TARGET_CURRENT_A: f32 = 1.5;
 
     fn runner_at(phase: CalibrationPhase) -> CalibrationRunner {
-        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, DT_S);
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, true, DT_S);
         runner.phase = phase;
         runner
     }
 
     struct MockHall {
         done: bool,
+        started: bool,
         fault: Option<HallCalibrationFault>,
         table: HallCalibration,
     }
 
     impl HallCalibrates for MockHall {
         fn new(_initial_settle_time_s: f32, _dt_s: f32) -> Self {
-            Self { done: false, fault: None, table: [0.0; 6] }
+            Self { done: false, started: false, fault: None, table: [0.0; 6] }
         }
 
-        fn start(&mut self) {}
+        fn start(&mut self) {
+            self.started = true;
+        }
 
         fn check_calibration_done(&self) -> bool {
             self.done
@@ -427,6 +450,7 @@ mod tests {
     struct MockEstimator {
         fault: Option<EstimationStepFault>,
         done: bool,
+        started: bool,
         unwind: bool,
         unwind_acks: usize,
         tune: bool,
@@ -448,6 +472,7 @@ mod tests {
             Self {
                 fault: None,
                 done: false,
+                started: false,
                 unwind: false,
                 unwind_acks: 0,
                 tune: false,
@@ -463,7 +488,9 @@ mod tests {
             }
         }
 
-        fn start(&mut self, _num_pole_pairs: u8) {}
+        fn start(&mut self, _num_pole_pairs: u8) {
+            self.started = true;
+        }
 
         fn get_fault(&self) -> Option<EstimationStepFault> {
             self.fault
@@ -496,7 +523,7 @@ mod tests {
     }
 
     fn mock_runner_at(phase: CalibrationPhase) -> CalibrationRunner<MockHall, MockEstimator> {
-        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, DT_S);
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, true, DT_S);
         runner.phase = phase;
         runner
     }
@@ -530,6 +557,45 @@ mod tests {
         };
         assert_eq!(u_dq.d, 0.0);
         assert_eq!(u_dq.q, 0.0);
+    }
+
+    /// The encoder zeroing stage runs only when an encoder is present.
+    #[test]
+    fn encoder_stage_only_runs_when_encoder_present() {
+        let runner: CalibrationRunner<MockHall, MockEstimator> =
+            CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, true, DT_S);
+        assert_eq!(phase_name(&runner.phase), "WaitingEncoderZeroing");
+
+        let mut runner: CalibrationRunner<MockHall, MockEstimator> =
+            CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, false, DT_S);
+        assert_eq!(phase_name(&runner.phase), "HallCalibration");
+
+        // Step past the encoder zero request and timeout times: no encoder stage results
+        let steps = (6.0 / DT_S) as usize;
+        for _ in 0..steps {
+            let (_, result) = runner.step(inputs());
+            assert!(result.is_none());
+        }
+        assert_eq!(phase_name(&runner.phase), "HallCalibration");
+    }
+
+    /// The hall stage runs only when hall sensors are present.
+    #[test]
+    fn hall_stage_only_runs_when_hall_present() {
+        let runner: CalibrationRunner<MockHall, MockEstimator> =
+            CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, false, DT_S);
+        assert_eq!(phase_name(&runner.phase), "HallCalibration");
+        assert!(runner.hall_calibrator.started);
+
+        let mut runner: CalibrationRunner<MockHall, MockEstimator> =
+            CalibrationRunner::new(POLE_PAIRS, MAX_RPM, false, false, DT_S);
+        assert_eq!(phase_name(&runner.phase), "MotorEstimation");
+        assert!(runner.motor_estimator.started);
+        assert!(!runner.hall_calibrator.started);
+
+        let (_, result) = runner.step(inputs());
+        assert!(result.is_none());
+        assert_eq!(phase_name(&runner.phase), "MotorEstimation");
     }
 
     /// Wait phases advance on resume and never on their own.

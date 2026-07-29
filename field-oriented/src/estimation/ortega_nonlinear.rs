@@ -51,7 +51,7 @@ impl OrtegaPralyEstimator {
         let pm_flux_linkage_opt = input.params.pm_flux_linkage;
 
         if let (Some(R), Some(L), Some(pm_flux_linkage)) = (R_opt, L_opt, pm_flux_linkage_opt) {
-            if pm_flux_linkage.abs() < 1e-3 {
+            if pm_flux_linkage.abs() < 1e-4 {
                 self.fault = Some(RotorFeedbackFault::Unobservable);
                 self.prev_voltages = input.voltages;
                 return

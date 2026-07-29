@@ -4,7 +4,7 @@ use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
 use defmt::info;
 
 use crate::app;
-use crate::boards::{PWM_FREQ};
+use crate::constants::PWM_FREQUENCY_HZ;
 use crate::constants::*;
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
 use field_oriented::{
@@ -51,10 +51,13 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
         });
-        const DT_S: f32 = 1.0 / PWM_FREQ.0 as f32;    
-        const DT_MS: f32 = 1000.0 / PWM_FREQ.0 as f32;  
+        const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;    
+        const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         
         let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
+        let (hall_feedback, hall_pattern) = cx.shared.hall_feedback.lock(|hall_feedback| {
+            (hall_feedback.read(), hall_feedback.get_pattern())
+        });
         let sensorless_input = OrtegaPralyEstimatorInput {
             currents: phase_currents,
             voltages: *cx.local.prev_u_ab,
@@ -63,6 +66,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         };
         cx.local.sensorless_estimator.update(sensorless_input, cx.local.acceleration);
         let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
+            fa.update_hall(hall_feedback, hall_pattern);
             fa.update_sensorless(cx.local.sensorless_estimator.read());
             (fa.read(), fa.get_hall_pattern())
         });
@@ -140,8 +144,9 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         // Do flash writes and tuning outside this ISR:
         match stage_result {
             Some(StageResult::ZeroEncoderRequest) => {
-                let _ = app::zero_encoder::spawn();
-            }
+                // Placeholder:
+                cx.shared.mode.lock(|mode| mode.on_command(Command::ResumeCalibration));
+            }   
             Some(StageResult::HallCalibration { angle_table }) => {
                 let _ = app::update_hall_table::spawn(angle_table);
             }
@@ -184,30 +189,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     }
 }
 
-pub async fn zero_encoder(mut cx: app::zero_encoder::Context<'_>) {
-    cx.shared.amt_encoder.lock(|ae| {
-        ae.stop();
-    });
-
-    // After 100ms there can no longer be an active dma request,
-    // and we can safely change the DMA source buffer values:
-    Mono::delay(100.millis()).await;
-    cx.shared.amt_encoder.lock(|ae| {
-        ae.send_zero_request();
-    });
-
-    // After 300ms the encoder will be ready to respond again,
-    // and we can safely revert the DMA source buffer values:
-    Mono::delay(300.millis()).await;
-    cx.shared.amt_encoder.lock(|ae| {
-        ae.normal_mode();
-    });
-
-    cx.shared.mode.lock(|mode| {
-        mode.on_command(Command::ResumeCalibration);
-    });
-}
-
 pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angle_table: HallCalibration) {
     info!("Angle table {}", angle_table);
     cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
@@ -224,7 +205,7 @@ pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angl
 
 pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEstimate) {
     let result = compute_current_pi_controller_gains(
-        estimate, PWM_FREQ.0 as f32, PI_OVERSHOOT_PCT, PI_SETTLING_TIME_S
+        estimate, PWM_FREQUENCY_HZ.0 as f32, PI_OVERSHOOT_PCT, PI_SETTLING_TIME_S
     );
     info!("PI gains {}", result);
     match result {
