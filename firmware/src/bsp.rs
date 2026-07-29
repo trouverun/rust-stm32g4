@@ -33,18 +33,7 @@ use field_oriented::{
     HallCalibration, HallEstimator, HallEstimatorInput, LowPassFilter, wrap_to_pi
 };
 
-const OPAMP_GAIN_RECIPROCAL: f32 = 1.0 / BOARD.opamp_gain;
-const SHUNT_CONDUCTANCE_SIEMENS: f32 = 1000.0 / BOARD.shunt_resistance_mohm;
 const ADC_SCALER: f32 = ADC_REF_V / ((1 << 12) - 1) as f32;
-const CURRENT_READING_SCALER: f32 = -ADC_SCALER * OPAMP_GAIN_RECIPROCAL * SHUNT_CONDUCTANCE_SIEMENS;
-const VBUS_READING_SCLAER: f32 = ADC_SCALER * BOARD.vbus_divide_factor;
-const TBOARD_READING_SCLAER: f32 = ADC_SCALER * BOARD.thermistor_scaling.slope_c_per_v;
-
-/// Opamp output voltage at the given phase current magnitude
-#[cfg(feature = "overcurrent-comparators")]
-fn comparator_threshold_v(current_limit_a: f32) -> f32 {
-    BOARD.opamp_gain * BOARD.shunt_resistance_mohm / 1000.0 * current_limit_a + BOARD.opamp_bias_v
-}
 
 pub type BusVoltage = f32;
 pub type BoardTemperature = f32;
@@ -226,8 +215,8 @@ impl AdcFeedback {
             let result_a = self.adc_a.read_injected::<1>()[0];
             // V or W:
             let result_b = self.adc_b.read_injected::<1>()[0];
-            let amps_a = result_a as f32 * CURRENT_READING_SCALER;
-            let amps_b = result_b as f32 * CURRENT_READING_SCALER;
+            let amps_a = measurement_v_to_a(result_a as f32 * ADC_SCALER);
+            let amps_b = measurement_v_to_a(result_b as f32 * ADC_SCALER);
             let amps_c = -(amps_a + amps_b);
             match self.sampled_sector {
                 // 1 0 0, sampled VW:
@@ -333,8 +322,8 @@ impl AdcFeedback {
             let _ = self.adc_a.read();
             return None;
         }
-        let vbus = self.adc_a.read() as f32 * VBUS_READING_SCLAER;
-        let tboard = self.adc_b.read() as f32 * TBOARD_READING_SCLAER + BOARD.thermistor_scaling.bias_c;
+        let vbus = vbus_measurement_v_to_v(self.adc_a.read() as f32 * ADC_SCALER);
+        let tboard = v_to_c(self.adc_b.read() as f32 * ADC_SCALER);
         Some((vbus, tboard))
     }
 }
@@ -407,7 +396,7 @@ impl PwmOutput {
 
         #[cfg(feature = "overcurrent-comparators")]
         {
-            let voltage_threshold = comparator_threshold_v(comparator_current_limit_a);
+            let voltage_threshold = limit_a_to_v(comparator_current_limit_a);
             mappings.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
             tmp = tmp
                 .with_break1_comp(
@@ -468,7 +457,7 @@ impl PwmOutput {
     }
 
     pub fn set_comparator_current_limit(&self, comparator_current_limit_a: f32) {
-        let voltage_threshold = comparator_threshold_v(comparator_current_limit_a);
+        let voltage_threshold = limit_a_to_v(comparator_current_limit_a);
         self.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
     }
 

@@ -26,17 +26,7 @@ use embassy_stm32::opamp::OpAmpOutput;
 
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
 
-pub struct ThermistorLinearScale {
-    pub slope_c_per_v: f32,
-    pub bias_c: f32,
-}
-
 pub struct BoardInfo {
-    pub shunt_resistance_mohm: f32,
-    pub opamp_gain: f32,
-    pub opamp_bias_v: f32,
-    pub vbus_divide_factor: f32,
-    pub thermistor_scaling: ThermistorLinearScale,
     pub current_limit_a: f32,
     pub dc_voltage_limit_v: f32,
     pub mosfet_deadtime_ns: u32,
