@@ -53,15 +53,35 @@ pub type WatchdogTimer = TIM7;
 pub const ADC_REF_V: f32 = 3.3;
 pub const DAC_REF_V: f32 = 3.3;
 
+// Inverting shunt opamps biased to mid-rail; the ADC offset registers null the bias for readings
+const SHUNT_RESISTANCE_MOHM: f32 = 15.0;
+const OPAMP_GAIN: f32 = 15.0;
+const OPAMP_BIAS_V: f32 = 1.65;
+const VBUS_DIVIDE_FACTOR: f32 = 25.3589743589744;
+const TBOARD_SLOPE_C_PER_V: f32 = 45.7;
+const TBOARD_BIAS_C: f32 = 23.6;
+
+/// Phase current from the shunt opamp output voltage
+pub fn measurement_v_to_a(v: f32) -> f32 {
+    -v / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
+}
+
+/// Opamp output voltage at the given phase current magnitude
+pub fn limit_a_to_v(current_limit_a: f32) -> f32 {
+    OPAMP_GAIN * SHUNT_RESISTANCE_MOHM / 1000.0 * current_limit_a + OPAMP_BIAS_V
+}
+
+/// Board temperature from the thermistor measurement voltage
+pub fn v_to_c(v: f32) -> f32 {
+    v * TBOARD_SLOPE_C_PER_V + TBOARD_BIAS_C
+}
+
+/// DC bus voltage from the divider measurement voltage
+pub fn vbus_measurement_v_to_v(v: f32) -> f32 {
+    v * VBUS_DIVIDE_FACTOR
+}
+
 pub const BOARD: super::BoardInfo = super::BoardInfo {
-    shunt_resistance_mohm: 15.0,
-    opamp_gain: 15.0,
-    opamp_bias_v: 1.65,
-    vbus_divide_factor: 25.3589743589744,
-    thermistor_scaling: super::ThermistorLinearScale {
-        slope_c_per_v: 45.7,
-        bias_c: 23.6,
-    },
     current_limit_a: 5.0,
     dc_voltage_limit_v: 25.5,
     mosfet_deadtime_ns: 300,
