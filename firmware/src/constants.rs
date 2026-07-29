@@ -4,7 +4,7 @@ use crate::boards::BOARD;
 // Main:
 
 /// The frequency of the PWM carrier and the frequency at which the FOC ISR fires at
-pub const PWM_FREQUENCY_HZ: Hertz = Hertz(30_000);
+pub const PWM_FREQUENCY_HZ: Hertz = Hertz(40_000);
 /// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
 pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
 /// Timeout of the hardware watchdog (5 missed FOC ISR ticks before board reset)
@@ -21,17 +21,17 @@ pub const PHASE_CURRENT_FILTER_LOWPASS_CUTOFF_HZ: f32 = 2500.0;
 /// Cutoff frequency for the lowpass filter used on the regenerative braking current (to detect excess regen current from SW)
 pub const BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ: f32 = 100.0;
 /// Multiplier which multiplies the PWM rate to give the minimum rate at which the FOC ISR must run at
-pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.95;
+pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.9;
 
 /// The electrical angular rotor velocity required before sensorless feedback is considered valid (enough back-EMF) 
-pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 150.0;
+pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 25.0;
 /// Gain of the ortega praly sensorless estimator
 pub const ORTEGA_PRALY_GAIN: f32 = 1000.0;
 /// Bandwidth of the PLL omega estimator for the ortega praly sensorless estimator
 pub const ORTEGA_PRALY_BANDWIDTH: f32 = 1500.0;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
-pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
+pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.9;
 // The design bandwidth of the field weakening controller
 pub const FIELD_WEAKENING_BANDWIDTH: f32 = 300.0;
 

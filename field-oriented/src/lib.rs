@@ -237,7 +237,7 @@ impl FOC {
         })
     }
 
-    fn compute_voltages(&mut self, 
+    fn compute_voltages(&mut self,
         target_i_dq: ClarkParkValue, measured_i_dq: ClarkParkValue, 
         omega_e: f32, pm_flux_linkage: f32, motor_params: MotorParamsEstimate
     ) -> Result<(ClarkParkValue, ClarkParkValue), FocFault> {
