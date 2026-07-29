@@ -6,9 +6,8 @@ version = "0.0.1"
 [features]
 default = ["board-zest1"]
 mcu-opamps = []
-hall-feedback = []
 overcurrent-comparators = []
-board-zest1 = ["mcu-opamps", "hall-feedback", "overcurrent-comparators"]
+board-zest1 = ["mcu-opamps", "overcurrent-comparators"]
 
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }

@@ -17,8 +17,6 @@ use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::Peri;
 use embassy_stm32::gpio::Output;
 use embassy_stm32::spi::{DmaDrivenSpi, Instance};
-
-#[cfg(feature = "hall-feedback")]
 use embassy_stm32::timer::hall::HallSensor;
 
 #[cfg(feature = "mcu-opamps")]
@@ -55,7 +53,6 @@ pub struct AdcFeedbackMappings {
     pub sample_trigger: BasicTrgoOutput<'static, AdcFeedbackTimer>,
 }
 
-#[cfg(feature = "hall-feedback")]
 pub struct HallFeedbackMappings {
     pub hall_timer: HallSensor<'static, HallFeedbackTimer>,
 }
