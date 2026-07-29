@@ -53,7 +53,6 @@ pub type WatchdogTimer = TIM7;
 pub const ADC_REF_V: f32 = 3.3;
 pub const DAC_REF_V: f32 = 3.3;
 
-// Inverting shunt opamps biased to mid-rail; the ADC offset registers null the bias for readings
 const SHUNT_RESISTANCE_MOHM: f32 = 15.0;
 const OPAMP_GAIN: f32 = 15.0;
 const OPAMP_BIAS_V: f32 = 1.65;
