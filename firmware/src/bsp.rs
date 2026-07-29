@@ -498,29 +498,8 @@ impl DoesFocMath for Acceleration {
             return 0.0
         }
 
-        // Pre-scale by 4^k to bring val into CORDIC range [0.027, 2.34]
-        let mut x = val;
-        let mut k: u32 = 0;
-        while x >= 2.341 {
-            x *= 0.25;
-            k += 1;
-        }
-
-        // Pick hardware scale n whose valid x range contains pre-scaled value
-        let (scale, n, arg_mul) = if x < 0.75 {
-            (SqrtScale::N0, 0u32, 1.0)
-        } else if x < 1.75 {
-            (SqrtScale::N1, 1, 0.5)
-        } else {
-            (SqrtScale::N2, 2, 0.25)
-        };
-        let x_q15 = f32_to_q1_15(x * arg_mul).unwrap();
-
-        let mut sqrt_cfg = self.cordic.configure::<Sqrt, Q15>(Precision::Iters12, scale);
-        let raw = sqrt_cfg.start_one_arg(x_q15).result_one_value();
-
-        // Unscale and convert to float:
-        q1_15_to_f32(raw) * (1 << (n + k)) as f32
+        // Faster than CORDIC sqrt when accounting for input/output scaling
+        core::intrinsics::sqrtf32(val)
     }
     
     fn atan2(&mut self, y: f32, x: f32) -> f32 {
@@ -658,7 +637,7 @@ impl HardwareWatchdog {
 
     pub fn feed(&mut self) {
         if !self.started {
-            self.iwdg.unleash();
+            // self.iwdg.unleash();
             self.started = true;
         }
         self.iwdg.pet();

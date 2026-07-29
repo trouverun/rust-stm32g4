@@ -13,6 +13,8 @@ use field_oriented::{
     PhaseValues, compute_current_pi_controller_gains
 };
 
+#[link_section = ".ccmram"]
+#[inline(never)]
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
     if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
@@ -54,6 +56,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;    
         const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         
+        cx.shared.debug_mappings.lock(|dm| dm.la_c.set_high());
         let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
         let (hall_feedback, hall_pattern) = cx.shared.hall_feedback.lock(|hall_feedback| {
             (hall_feedback.read(), hall_feedback.get_pattern())
@@ -70,6 +73,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             fa.update_sensorless(cx.local.sensorless_estimator.read());
             (fa.read(), fa.get_hall_pattern())
         });
+        cx.shared.debug_mappings.lock(|dm| dm.la_c.set_low());
 
         // FOC compute:
         let inputs = FocStepInputs {
@@ -95,9 +99,11 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             dc_bus_max_v,
             tick_dt_ms: DT_MS,
         };
+        cx.shared.debug_mappings.lock(|dm| dm.la_b.set_high());
         let (outcome, stage_result) = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
             |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
         );
+        cx.shared.debug_mappings.lock(|dm| dm.la_b.set_low());
 
         // Apply outputs:
         let (sector, braking_current) = match outcome {
