@@ -16,7 +16,7 @@ use embassy_stm32::timer::{trigger_output::BasicTrgoOutput, CountingMode};
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::Peri;
 use embassy_stm32::gpio::Output;
-use embassy_stm32::spi::{DmaDrivenSpi, Instance};
+use embassy_stm32::spi::{mode::Master, Spi};
 use embassy_stm32::timer::hall::HallSensor;
 
 #[cfg(feature = "mcu-opamps")]
@@ -57,8 +57,8 @@ pub struct HallFeedbackMappings {
     pub hall_timer: HallSensor<'static, HallFeedbackTimer>,
 }
 
-pub struct SPIMappings<A: Instance> {
-    pub spi: DmaDrivenSpi<'static, A>,
+pub struct SPIMappings {
+    pub spi: Spi<'static, Blocking, Master>,
     pub cs: Output<'static>
 }
 
