@@ -11,13 +11,13 @@ use crate::estimation::{MotorParams, MotorParamsEstimate};
 
 const SQRT3_RECIPROCAL: f32 = 1.0 / 1.73205080757;
 /// Overmodulation threshold shared by the bench FOC config and the tests asserting against it
-pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
+pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.9;
 /// Field weakening loop bandwidth of the bench FOC config
 pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 50.0;
 /// PWM frequency shared by the bench FOC configs and the test
 pub const PWM_FREQUENCY_HZ: f32 = 40_000.0;
 /// Current loop bandwidth goal of the bench FOC config
-pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 0.05 * PWM_FREQUENCY_HZ;
+pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
 /// Observer gain of the bench ortega estimator
 pub const OBSERVER_GAIN: f32 = 1500.0;
 /// PLL bandwidth of the bench ortega estimator
