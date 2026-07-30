@@ -77,7 +77,7 @@ pub struct FocConfig {
     /// The ratio of the maximum linear modulation voltage which can be reached before field weakening starts 
     pub overmodulation_threshold_ratio: f32,
     /// Design bandwidth of the field weakening controller
-    pub field_weakening_bandwidth: f32
+    pub field_weakening_bandwidth_hz: f32
 }
 
 type TorqueNm = f32;

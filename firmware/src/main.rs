@@ -155,7 +155,7 @@ mod app {
             mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
             deadtime_compensation_band_a: BOARD.deadtime_compensation_band_a,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
-            field_weakening_bandwidth: FIELD_WEAKENING_BANDWIDTH
+            field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ
         };
         let mut foc = FOC::new(foc_cfg);
 
@@ -218,7 +218,7 @@ mod app {
         Local {
             adc_feedback,
             acceleration,
-            sensorless_estimator: OrtegaPralyEstimator::new(ORTEGA_PRALY_GAIN, ORTEGA_PRALY_BANDWIDTH),
+            sensorless_estimator: OrtegaPralyEstimator::new(ORTEGA_PRALY_GAIN, ORTEGA_PRALY_BANDWIDTH_HZ),
             hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
         })
     }

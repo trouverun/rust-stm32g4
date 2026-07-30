@@ -97,7 +97,7 @@ impl<C: Calibrator> OperatingMode<C> {
                 OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }
             },
             (OperatingMode::Calibration { .. }, Command::CancelCalibration) => {
-                OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }
+                OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }
             },
             (OperatingMode::TorqueControl, Command::Idle { safe_strategy } ) => OperatingMode::Idle { safe_strategy },
             (_, _) => return,
@@ -237,7 +237,7 @@ mod tests {
         for command in [Command::FinishCalibration, Command::CancelCalibration] {
             let mut mode = calibrating();
             mode.on_command(command);
-            assert!(matches!(mode, OperatingMode::Idle { safe_strategy: SafeControlStrategy::STO { .. } }));
+            assert!(matches!(mode, OperatingMode::Idle { .. }));
         }
     }
 

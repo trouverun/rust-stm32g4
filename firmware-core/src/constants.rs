@@ -20,4 +20,4 @@ pub const STO_DC_BUS_RATIO: f32 = 0.9;
 /// Ratio of dc_bus_v/max_dc_bus_v which triggers STO -> ASC transition
 pub const ASC_DC_BUS_RATIO: f32 = 0.95;
 /// How long the rampdown stage between torque control and idle/fault lasts
-pub const RAMPDOWN_DURATION_MS: f32 = 50.0;
+pub const RAMPDOWN_DURATION_MS: f32 = 1000.0;
