@@ -28,12 +28,12 @@ pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 25.0;
 /// Gain of the ortega praly sensorless estimator
 pub const ORTEGA_PRALY_GAIN: f32 = 1000.0;
 /// Bandwidth of the PLL omega estimator for the ortega praly sensorless estimator
-pub const ORTEGA_PRALY_BANDWIDTH: f32 = 1500.0;
+pub const ORTEGA_PRALY_BANDWIDTH_HZ: f32 = 250.0;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.9;
 // The design bandwidth of the field weakening controller
-pub const FIELD_WEAKENING_BANDWIDTH: f32 = 300.0;
+pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 50.0;
 
 /// How much does each setpoint Rx faulty message fill the leaky fault bucket
 pub const TORQUE_SETPOINT_FAULT_FILL_RATE: u32 = 2;
@@ -75,10 +75,8 @@ pub const OPAMP_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 
 // FOC:
 
-/// Tuning goal overshoot percentage for current control loop PI gains
-pub const PI_OVERSHOOT_PCT: f32 = 1.0;
-/// Tuning goal settling time for current control loop PI gains
-pub const PI_SETTLING_TIME_S: f32 = 0.001;
+/// Tuning goal bandwidth for the current control loop PI gains
+pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 0.05 * PWM_FREQUENCY_HZ.0 as f32;
 
 /// Number of ticks a board measurement (temperature, DC bus voltage) needs to be out of range before raising a fault
 pub const BOARD_MEASUREMENT_DEBOUNCE_TICKS: u32 = 5;

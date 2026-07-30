@@ -2,6 +2,7 @@
 // Sensorless control of surface-mount permanent-magnet synchronous motors based on a nonlinear observer. 
 // IEEE Transactions on power electronics, 25(2), 290-297.
 
+use core::f32::consts::TAU;
 use crate::{
     AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, PhaseValues, RotorFeedback, RotorFeedbackFault, math::{forward_clarke, wrap_to_2pi, wrapped_diff}, wrap_to_pi
 };
@@ -27,11 +28,12 @@ pub struct OrtegaPralyEstimator {
 }
 
 impl OrtegaPralyEstimator {
-    pub fn new(observer_gain: f32, bandwidth: f32) -> Self {
+    pub fn new(observer_gain: f32, bandwidth_hz: f32) -> Self {
+        let bandwidth_rad_s = TAU*bandwidth_hz;
         Self {
             observer_gain,
-            pll_kp: 2.0*bandwidth,
-            pll_ki: bandwidth*bandwidth,
+            pll_kp: 2.0*bandwidth_rad_s,
+            pll_ki: bandwidth_rad_s*bandwidth_rad_s,
             x1: 0.0,
             x2: 0.0,
             prev_voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
@@ -105,7 +107,7 @@ mod test {
     use core::f32::consts::TAU;
     use super::*;
     use crate::{
-        DummyAccelerator, EstimatorRecord, MOONS_R57BLB50L2, Motor, OBSERVER_GAIN, PLL_BANDWIDTH,
+        DummyAccelerator, EstimatorRecord, MOONS_R57BLB50L2, Motor, OBSERVER_GAIN, PLL_BANDWIDTH_HZ,
         PMSMSim, PWM_FREQUENCY_HZ, Recorder, TestBench, angle_error, nominal_params,
         record_interval, reference_motors
     };
@@ -187,7 +189,7 @@ mod test {
             bench.tune_pi(bench.params);
             Self {
                 bench,
-                estimator: OrtegaPralyEstimator::new(OBSERVER_GAIN, PLL_BANDWIDTH),
+                estimator: OrtegaPralyEstimator::new(OBSERVER_GAIN, PLL_BANDWIDTH_HZ),
                 observer_params,
                 recorder,
                 errors: ErrorWindows::new(dt),

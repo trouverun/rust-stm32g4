@@ -1,5 +1,4 @@
 extern crate std;
-use core::f32::consts::PI;
 use std::vec::Vec;
 use std::string::String;
 use plotly::{Plot, Scatter, Layout};
@@ -14,15 +13,15 @@ const SQRT3_RECIPROCAL: f32 = 1.0 / 1.73205080757;
 /// Overmodulation threshold shared by the bench FOC config and the tests asserting against it
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
 /// Field weakening loop bandwidth of the bench FOC config
-pub const FIELD_WEAKENING_BANDWIDTH: f32 = 300.0;
+pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 50.0;
 /// PWM frequency shared by the bench FOC configs and the test
 pub const PWM_FREQUENCY_HZ: f32 = 40_000.0;
 /// Current loop bandwidth goal of the bench FOC config
-pub const CURRENT_LOOP_BANDWIDTH: f32 = 0.05 * 2.0 * PI * PWM_FREQUENCY_HZ;
+pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 0.05 * PWM_FREQUENCY_HZ;
 /// Observer gain of the bench ortega estimator
 pub const OBSERVER_GAIN: f32 = 1500.0;
 /// PLL bandwidth of the bench ortega estimator
-pub const PLL_BANDWIDTH: f32 = 3000.0;
+pub const PLL_BANDWIDTH_HZ: f32 = 500.0;
 
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {
@@ -299,7 +298,7 @@ impl TestBench {
             mosfet_off_delay_ns: 0.0,
             deadtime_compensation_band_a: 1.0,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
-            field_weakening_bandwidth: FIELD_WEAKENING_BANDWIDTH,
+            field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,
         });
         let out = sim.state();
         Self {
@@ -317,7 +316,7 @@ impl TestBench {
 
     /// Tune the current loop for the given params with the bandwidth goal the tests share
     pub fn tune_pi(&mut self, params: MotorParamsEstimate) {
-        let gains = compute_current_pi_controller_gains(params, 1.0 / self.dt, CURRENT_LOOP_BANDWIDTH)
+        let gains = compute_current_pi_controller_gains(params, 1.0 / self.dt, CURRENT_LOOP_BANDWIDTH_HZ)
             .expect("Failed to tune PI controller");
         self.foc.set_pi_gains(Some(gains)).unwrap();
     }

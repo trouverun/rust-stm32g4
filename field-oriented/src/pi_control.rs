@@ -1,4 +1,4 @@
-use core::f32::consts::PI;
+use core::f32::consts::{PI, TAU};
 use crate::{FocFault, MotorParamsEstimate};
 use libm::{cosf, expf, sinf, sqrtf};
 use num_complex::{Complex32};
@@ -28,7 +28,7 @@ pub struct PIGains {
 pub struct ControllerParameters {
     pub d_pi: PIGains,
     pub q_pi: PIGains,
-    pub closed_loop_bandwidth: Option<f32>
+    pub closed_loop_bandwidth_hz: Option<f32>
 }
 
 pub struct PIController {
@@ -86,7 +86,7 @@ impl PIController {
 
 // PI autotuning for a closed loop bandwidth goal using discrete-time pole-placement
 pub fn compute_current_pi_controller_gains(
-    params: MotorParamsEstimate, pwm_freq_hz: f32, bandwidth: f32
+    params: MotorParamsEstimate, pwm_freq_hz: f32, bandwidth_hz: f32
 ) -> Result<ControllerParameters, PITuningFault> {
     let R = params.stator_resistance.ok_or(PITuningFault::MissingMotorParameters)?;
     let L = params.q_inductance.ok_or(PITuningFault::MissingMotorParameters)?;
@@ -95,7 +95,7 @@ pub fn compute_current_pi_controller_gains(
     if R <= 0.0 || L <= 0.0 || T <= 0.0 {
         return Err(PITuningFault::InfeasibleMotorParameters)
     }
-    if !(bandwidth > 0.0) {
+    if !(bandwidth_hz > 0.0) {
         return Err(PITuningFault::InvalidTuningGoals)
     }
 
@@ -107,8 +107,8 @@ pub fn compute_current_pi_controller_gains(
     // Fixed damping ratio: makes the -3 dB bandwidth equal omega_n exactly (~4% ideal overshoot)
     let zeta = 0.70710678;
     // Goal slower than the plant pole R/L would demand negative kp
-    let omega_n = bandwidth.max(R/L);
-    let closed_loop_bandwidth = omega_n * sqrtf( 1.0 - 2.0*zeta*zeta + sqrtf(4.0*zeta*zeta*zeta*zeta - 4.0*zeta*zeta + 2.0) );
+    let omega_n = (TAU*bandwidth_hz).max(R/L);
+    let closed_loop_bandwidth_hz = omega_n * sqrtf( 1.0 - 2.0*zeta*zeta + sqrtf(4.0*zeta*zeta*zeta*zeta - 4.0*zeta*zeta + 2.0) ) / TAU;
 
     // Polar form of the complex pole pair which creates the desired 2nd order system:
     // - placed complex pole pair magnitude:
@@ -155,7 +155,7 @@ pub fn compute_current_pi_controller_gains(
     let gains = ControllerParameters {
         d_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp },
         q_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp },
-        closed_loop_bandwidth: Some(closed_loop_bandwidth)
+        closed_loop_bandwidth_hz: Some(closed_loop_bandwidth_hz)
     };
 
     // 20c to 120c temperature change causes roughly 40% resistive gain in copper
@@ -289,15 +289,15 @@ mod tests {
     /// Closed-loop acceptance of the tuned gains against simulation for every reference motor:
     /// flat passband, the -3 dB point at the bandwidth the tuner reports, d-axis regulated
     #[test]
-    fn reference_motors_meet_the_bandwidth_goal() {
+    fn pi_tuning_meets_the_bandwidth_goal() {
         for motor in reference_motors() {
-            let gains = compute_current_pi_controller_gains(motor.params(), PWM_FREQUENCY_HZ, CURRENT_LOOP_BANDWIDTH)
+            let gains = compute_current_pi_controller_gains(motor.params(), PWM_FREQUENCY_HZ, CURRENT_LOOP_BANDWIDTH_HZ)
                 .unwrap_or_else(|fault| panic!("{} failed to tune: {:?}", motor.name, fault));
             // The plant cutoff clamp can legitimately raise the achieved bandwidth above the goal:
-            let bandwidth = gains.closed_loop_bandwidth.unwrap();
+            let bandwidth_rad_s = TAU*gains.closed_loop_bandwidth_hz.unwrap();
 
             let omegas: Vec<f32> = (0..SWEEP_POINTS)
-                .map(|i| bandwidth * powf(10.0, -1.0 + 1.5*i as f32/(SWEEP_POINTS - 1) as f32))
+                .map(|i| bandwidth_rad_s * powf(10.0, -1.0 + 1.5*i as f32/(SWEEP_POINTS - 1) as f32))
                 .collect();
             let sweep = run_sine_sweep(
                 &motor, gains, &omegas, &std::format!("pmsm_sine_sweep_{}.html", motor.name)
@@ -317,8 +317,8 @@ mod tests {
             let fraction = logf(crossing[0].gain/target)/logf(crossing[0].gain/crossing[1].gain);
             let measured = crossing[0].omega*powf(crossing[1].omega/crossing[0].omega, fraction);
             assert!(
-                (measured/bandwidth - 1.0).abs() <= 0.1,
-                "{}: -3 dB point at {measured:.0} rad/s, not within 10% of the {bandwidth:.0} rad/s design",
+                (measured/bandwidth_rad_s - 1.0).abs() <= 0.1,
+                "{}: -3 dB point at {measured:.0} rad/s, not within 10% of the {bandwidth_rad_s:.0} rad/s design",
                 motor.name
             );
 
