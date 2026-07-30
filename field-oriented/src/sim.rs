@@ -107,19 +107,6 @@ pub struct PMSMConfig {
     pub rotor_inertia: f32,
 }
 
-impl Default for PMSMConfig {
-    fn default() -> Self {
-        PMSMConfig {
-            dc_bus_voltage: 24.0,
-            num_pole_pairs: 2.0,
-            stator_resistance: 0.66,
-            inductance: 0.00184,
-            pm_flux_linkage: 0.0167,
-            rotor_inertia: 6.7e-6,
-        }
-    }
-}
-
 /// Gaussian measurement noise
 struct CurrentNoise {
     distribution: Normal<f32>,
