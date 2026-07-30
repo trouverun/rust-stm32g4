@@ -413,10 +413,9 @@ mod test {
     use core::f32::consts::TAU;
     use crate::{
         AngleType, EstimatorRecord, FocInputType, HallEncoder, HallEstimator, Motor, PMSMSim,
-        Recorder, SimulatedHallTimer, TestBench, ideal_hall_table, record_interval, reference_motors
+        PWM_FREQUENCY_HZ, Recorder, SimulatedHallTimer, TestBench, ideal_hall_table,
+        record_interval, reference_motors
     };
-
-    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
 
     /// Run the estimation routine against a motor, using noisy current measurements and
     /// imperfect hall feedback

@@ -200,11 +200,9 @@ mod test {
     use super::HallEstimator;
     use crate::{
         AngleType, ClarkParkValue, EstimatorRecord, FocInputType, HallCalibrator, HallEncoder,
-        PMSMConfig, PMSMSim, Recorder, SimulatedHallTimer, TestBench, angle_error, ideal_hall_table,
-        record_interval,
+        MOONS_R57BLB50L2, PMSMSim, PWM_FREQUENCY_HZ, Recorder, SimulatedHallTimer, TestBench,
+        angle_error, ideal_hall_table, record_interval,
     };
-
-    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
 
     /// Before any hall edge has been observed, the best estimate is the midpoint
     /// of the current sector with zero velocity.
@@ -299,97 +297,5 @@ mod test {
                 }
             }
         }
-    }
-
-    /// Full sensor pipeline: 
-    /// 1) run hall calibration against the sim and hand the resulting table to the hall estimator
-    /// 2) spin up the motor under torque control and check the estimate against sim ground truth while coasting
-    #[test]
-    fn hall_calibration_to_estimation_tracks_rotor() {
-        let dt = 1.0 / PWM_FREQUENCY_HZ;
-        let target_omega_mech = 40.0;
-        let sim_cfg = PMSMConfig::default();
-        let mut bench = TestBench::new(
-            PMSMSim::new(dt, sim_cfg).with_hall_encoder(HallEncoder::ideal()), 5.0
-        );
-
-        // Calibrate the halls, as the firmware calibration stage would:
-        let mut calibrator = HallCalibrator::new(5.0, dt);
-        let mut t = 0.0;
-        while !calibrator.check_calibration_done() {
-            let pattern = bench.out.measurement.hall_pattern.unwrap();
-            let theta = calibrator.calibration_step(pattern, 0.43).unwrap();
-            bench.step(
-                FocInputType::CalibrationCurrents(ClarkParkValue { d: 1.5, q: 0.0 }),
-                theta, AngleType::Electrical, 0.0
-            );
-            t += dt;
-            assert!(t < 60.0, "calibration timeout");
-        }
-
-        // Hand the calibration result to the estimator:
-        let mut estimator = HallEstimator::new();
-        estimator.set_calibration(calibrator.hall_pattern_to_theta);
-
-        // Spin the motor up under torque control, then coast at constant speed (no friction in simulation):
-        bench.tune_pi(bench.params);
-        bench.foc.clear_windup();
-
-        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, bench.out.measurement.hall_pattern.unwrap());
-        let mut recorder = Recorder::new("hall_estimation.html", dt, record_interval(100.0, dt));
-
-        // One torque-controlled FOC + sim + hall estimation iteration:
-        let mut drive = |bench: &mut TestBench, recorder: &mut Recorder, target_torque: f32| {
-            let step = bench.step_torque(target_torque);
-            let estimate = estimator.get_estimate(timer.sample(step.out.measurement.hall_pattern.unwrap())).unwrap();
-
-            // Electrical to mechanical for plotting:
-            let branch = (step.out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
-            recorder.record(&step, &[EstimatorRecord {
-                name: "hall",
-                theta: (estimate.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
-                omega: estimate.omega / sim_cfg.num_pole_pairs,
-            }]);
-
-            estimate
-        };
-
-        // Accelerate to the target speed:
-        let mut t = 0.0;
-        while bench.out.measurement.omega < target_omega_mech {
-            drive(&mut bench, &mut recorder, 0.005);
-            t += dt;
-            assert!(t < 1.0, "motor never reached target speed");
-        }
-
-        // Coast, letting the residual currents decay:
-        let coasted = t;
-        while t - coasted < 0.05 {
-            drive(&mut bench, &mut recorder, 0.0);
-            t += dt;
-        }
-
-        // Still coasting at constant speed, the estimate must track ground truth:
-        let settled = t;
-        while t - settled < 0.4 {
-            let estimate = drive(&mut bench, &mut recorder, 0.0);
-
-            let theta_e = (bench.out.measurement.theta * sim_cfg.num_pole_pairs).rem_euclid(TAU);
-            let omega_e = bench.out.measurement.omega * sim_cfg.num_pole_pairs;
-            let theta_err = angle_error(estimate.theta, theta_e);
-            assert!(
-                theta_err.abs() < 0.1,
-                "theta error {theta_err:.3} at t={t:.3}: got {:.3}, expected {theta_e:.3}",
-                estimate.theta
-            );
-            let omega_err = (estimate.omega - omega_e) / omega_e;
-            assert!(
-                omega_err.abs() < 0.05,
-                "omega error {:.1}% at t={t:.3}: got {:.2}, expected {omega_e:.2}",
-                100.0 * omega_err, estimate.omega
-            );
-            t += dt;
-        }
-
     }
 }

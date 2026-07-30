@@ -143,10 +143,9 @@ impl HallCalibrator {
 mod test {
     use super::HallCalibrator;
     use crate::{
-        AngleType, ClarkParkValue, FocInputType, HallEncoder, PMSMConfig, PMSMSim, Recorder, TestBench, record_interval
+        AngleType, ClarkParkValue, FocInputType, HallEncoder, MOONS_R57BLB50L2, PMSMSim,
+        PWM_FREQUENCY_HZ, Recorder, TestBench, record_interval
     };
-
-    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
 
     /// Run the calibrator against a simulator and check that the 
     /// calibrated Hall edges match those configured to the simulator
@@ -155,7 +154,7 @@ mod test {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
         let timeout_s = 60.0;
         let mut bench = TestBench::new(
-            PMSMSim::new(dt, PMSMConfig::default()).with_hall_encoder(HallEncoder::ideal()), 5.0
+            PMSMSim::new(dt, MOONS_R57BLB50L2).with_hall_encoder(HallEncoder::ideal()), 5.0
         );
         let mut calibrator = HallCalibrator::new(5.0, dt);
 
