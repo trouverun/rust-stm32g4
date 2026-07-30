@@ -382,10 +382,10 @@ mod tests {
                 mosfet_off_delay_ns: 0.0,
                 deadtime_compensation_band_a: 1.0,
                 overmodulation_threshold_ratio: 0.95,
-                field_weakening_bandwidth: 1000.0
+                field_weakening_bandwidth_hz: 150.0
             });
             let _ = foc.set_pi_gains(Some(
-                compute_current_pi_controller_gains(motor_params(), PWM_FREQ_HZ, 1.0, 0.001).unwrap(),
+                compute_current_pi_controller_gains(motor_params(), PWM_FREQ_HZ, 0.05*PWM_FREQ_HZ).unwrap(),
             ));
             Self {
                 params: ConstantMotorParameters::from_other(motor_params()),

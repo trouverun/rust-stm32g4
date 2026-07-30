@@ -211,7 +211,7 @@ pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angl
 
 pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEstimate) {
     let result = compute_current_pi_controller_gains(
-        estimate, PWM_FREQUENCY_HZ.0 as f32, PI_OVERSHOOT_PCT, PI_SETTLING_TIME_S
+        estimate, PWM_FREQUENCY_HZ.0 as f32, CURRENT_LOOP_BANDWIDTH_HZ
     );
     info!("PI gains {}", result);
     match result {

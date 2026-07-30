@@ -3,6 +3,7 @@
 // IEEE Transactions on Industry Applications, 56(1), 301-313.
 // (applied for SPM case of Ld == Lq)
 
+use core::f32::consts::TAU;
 use libm::{expf, logf};
 use crate::FocFault;
 
@@ -20,7 +21,7 @@ pub(crate) struct FieldWeakeningInput {
 }
 
 pub(crate) struct FieldWeakening {
-    target_bandwidth: f32,
+    target_bandwidth_rad_s: f32,
     sampling_time_s: f32,
     k_p: f32,
     k_i: f32,
@@ -30,14 +31,15 @@ pub(crate) struct FieldWeakening {
 }
 
 impl FieldWeakening {
-    pub fn new(target_bandwidth: f32, sampling_time_s: f32) -> Self {
-        let integral_decay_rate = if target_bandwidth > 0.0 {
-            expf(logf(0.1)*sampling_time_s/(1.0/target_bandwidth))
+    pub fn new(target_bandwidth_hz: f32, sampling_time_s: f32) -> Self {
+        let target_bandwidth_rad_s = TAU*target_bandwidth_hz;
+        let integral_decay_rate = if target_bandwidth_rad_s > 0.0 {
+            expf(logf(0.1)*sampling_time_s/(1.0/target_bandwidth_rad_s))
         } else {
             0.0
         };
-        Self { 
-            target_bandwidth,
+        Self {
+            target_bandwidth_rad_s,
             sampling_time_s,
             k_p: 0.0,
             k_i: 0.0,
@@ -96,21 +98,22 @@ impl FieldWeakening {
     /// Assume the current control loop (plant for this controller) behaves like a 1st order low pass filter,
     /// and derive PI gains which cancel the plant pole using a zero
     /// -> freedom to assign field weakening bandwidth
-    pub fn derive_gains(&mut self, current_control_bandwidth: f32) -> Result<(), FocFault> {
-        if current_control_bandwidth <= 0.0 {
+    pub fn derive_gains(&mut self, current_control_bandwidth_hz: f32) -> Result<(), FocFault> {
+        if current_control_bandwidth_hz <= 0.0 {
             return Err(FocFault::NumericalError)
         }
-        if self.target_bandwidth <= 0.0 {
+        if self.target_bandwidth_rad_s <= 0.0 {
             return Err(FocFault::InvalidParameter)
         }
-        let mut bandwidth = self.target_bandwidth;
+        let current_control_bandwidth_rad_s = TAU*current_control_bandwidth_hz;
+        let mut bandwidth_rad_s = self.target_bandwidth_rad_s;
         // Stay well below the current control loop bandwidth:
-        if self.target_bandwidth > 0.33*current_control_bandwidth {
-            bandwidth = 0.33*current_control_bandwidth;
+        if self.target_bandwidth_rad_s > 0.33*current_control_bandwidth_rad_s {
+            bandwidth_rad_s = 0.33*current_control_bandwidth_rad_s;
         }
-        self.k_p = bandwidth / current_control_bandwidth;
-        self.k_i = bandwidth;
-        self.integral_decay_rate = expf(logf(0.1)*self.sampling_time_s/(1.0/bandwidth));
+        self.k_p = bandwidth_rad_s / current_control_bandwidth_rad_s;
+        self.k_i = bandwidth_rad_s;
+        self.integral_decay_rate = expf(logf(0.1)*self.sampling_time_s/(1.0/bandwidth_rad_s));
         Ok(())
     }
 
@@ -123,13 +126,13 @@ impl FieldWeakening {
 mod test {
     use super::*;
     use crate::{
-        FIELD_WEAKENING_BANDWIDTH, Motor, OVERMODULATION_THRESHOLD_RATIO, PMSMSim, PWM_FREQUENCY_HZ,
+        FIELD_WEAKENING_BANDWIDTH_HZ, Motor, OVERMODULATION_THRESHOLD_RATIO, PMSMSim, PWM_FREQUENCY_HZ,
         Recorder, TestBench, Windowed, record_interval, reference_motors
     };
     use crate::sim::PMSMConfig;
     use std::vec::Vec;
 
-    const SETTLING_S: f32 = 3.0/FIELD_WEAKENING_BANDWIDTH;
+    const SETTLING_S: f32 = 3.0/(TAU*FIELD_WEAKENING_BANDWIDTH_HZ);
     const TORQUE_WINDOW_S: f32 = 0.001;
 
     /// No field weakening baseline torque at the given speed, linearly interpolated
@@ -325,7 +328,7 @@ mod test {
             let command = motor.torque_at_current_limit();
             let mut config = motor.config;
             // Reach base speed in tens of weakening loop time constants:
-            let ramp_s = 50.0 / FIELD_WEAKENING_BANDWIDTH;
+            let ramp_s = 50.0 / (TAU*FIELD_WEAKENING_BANDWIDTH_HZ);
             config.rotor_inertia = config.rotor_inertia.max(command * ramp_s / motor.base_omega());
 
             let (baseline, baseline_recorder) = no_weakening_baseline(&motor, config);

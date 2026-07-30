@@ -36,7 +36,7 @@ pub struct FOC {
     deadtime_ratio: f32,
     deadtime_band_reciprocal: f32,
     prev_values: PrevIterValues,
-    current_control_bandwidth: Option<f32>
+    current_control_bandwidth_hz: Option<f32>
 }
 
 impl FOC {
@@ -51,7 +51,7 @@ impl FOC {
         // Normal use:
         let d_pi = PIController::new(None, sampling_time_s);
         let q_pi = PIController::new(None, sampling_time_s);
-        let field_weakening = FieldWeakening::new(config.field_weakening_bandwidth, sampling_time_s);
+        let field_weakening = FieldWeakening::new(config.field_weakening_bandwidth_hz, sampling_time_s);
 
         let deadtime_ratio = if config.pwm_frequency_hz != 0.0 {
             let pwm_period_ns = 1e9 / config.pwm_frequency_hz;
@@ -69,7 +69,7 @@ impl FOC {
             deadtime_ratio,
             deadtime_band_reciprocal,
             prev_values: PrevIterValues::default(),
-            current_control_bandwidth: None
+            current_control_bandwidth_hz: None
         }
     }
 
@@ -228,11 +228,11 @@ impl FOC {
 
     pub fn set_pi_gains(&mut self, gains: Option<ControllerParameters>) -> Result<(), FocFault> {
         self.clear_windup();
-        if let Some(ControllerParameters { d_pi, q_pi , closed_loop_bandwidth }) = gains {
+        if let Some(ControllerParameters { d_pi, q_pi , closed_loop_bandwidth_hz }) = gains {
             self.d_pi.set_gains(Some(d_pi));
             self.q_pi.set_gains(Some(q_pi));
-            if let Some(bandwidth) = closed_loop_bandwidth {
-                self.field_weakening.derive_gains(bandwidth)?;
+            if let Some(bandwidth_hz) = closed_loop_bandwidth_hz {
+                self.field_weakening.derive_gains(bandwidth_hz)?;
             }
         } else {
             self.d_pi.set_gains(None);
@@ -246,7 +246,7 @@ impl FOC {
             Some(ControllerParameters {
                 d_pi,
                 q_pi,
-                closed_loop_bandwidth: self.current_control_bandwidth
+                closed_loop_bandwidth_hz: self.current_control_bandwidth_hz
             })
         } else {
             None
