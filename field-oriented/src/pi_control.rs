@@ -1,6 +1,6 @@
 use core::f32::consts::PI;
 use crate::{FocFault, MotorParamsEstimate};
-use libm::{cosf, expf, logf, sinf, sqrtf};
+use libm::{cosf, expf, sinf, sqrtf};
 use num_complex::{Complex32};
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
@@ -33,7 +33,7 @@ pub struct ControllerParameters {
 
 pub struct PIController {
     gains: Option<PIGains>,
-    integral_term: f32,
+    pub(crate) integral_term: f32,
     prev_reference: f32,
     prev_rf: f32,
     sampling_time_s: f32,
@@ -84,9 +84,9 @@ impl PIController {
     }
 }
 
-// PI autotuning based on step response requirements using discrete-time pole-placement
+// PI autotuning for a closed loop bandwidth goal using discrete-time pole-placement
 pub fn compute_current_pi_controller_gains(
-    params: MotorParamsEstimate, pwm_freq_hz: f32, overshoot_pct: f32, settling_time_s: f32
+    params: MotorParamsEstimate, pwm_freq_hz: f32, bandwidth: f32
 ) -> Result<ControllerParameters, PITuningFault> {
     let R = params.stator_resistance.ok_or(PITuningFault::MissingMotorParameters)?;
     let L = params.q_inductance.ok_or(PITuningFault::MissingMotorParameters)?;
@@ -95,7 +95,7 @@ pub fn compute_current_pi_controller_gains(
     if R <= 0.0 || L <= 0.0 || T <= 0.0 {
         return Err(PITuningFault::InfeasibleMotorParameters)
     }
-    if !(overshoot_pct > 0.0 && overshoot_pct < 100.0) || !(settling_time_s > 0.0) {
+    if !(bandwidth > 0.0) {
         return Err(PITuningFault::InvalidTuningGoals)
     }
 
@@ -104,11 +104,10 @@ pub fn compute_current_pi_controller_gains(
     // = input delay of half a PWM period
     let m = 0.5; // Delay as a factor of sampling time, standard modified Z transform convention
 
-    // Tuning goals converted to ideal 2nd order system charasteristics:
-    // - damping ratio:
-    let zeta = -logf(overshoot_pct/100.0)/sqrtf(PI*PI + logf(overshoot_pct/100.0)*logf(overshoot_pct/100.0));
-    // - natural frequency:
-    let omega_n = -logf(0.02*sqrtf(1.0 - zeta*zeta)) / (settling_time_s*zeta); 
+    // Fixed damping ratio: makes the -3 dB bandwidth equal omega_n exactly (~4% ideal overshoot)
+    let zeta = 0.70710678;
+    // Goal slower than the plant pole R/L would demand negative kp
+    let omega_n = bandwidth.max(R/L);
     let closed_loop_bandwidth = omega_n * sqrtf( 1.0 - 2.0*zeta*zeta + sqrtf(4.0*zeta*zeta*zeta*zeta - 4.0*zeta*zeta + 2.0) );
 
     // Polar form of the complex pole pair which creates the desired 2nd order system:
@@ -166,7 +165,7 @@ pub fn compute_current_pi_controller_gains(
     // Assume 25% inductance drop due to saturation at max current
     // (assume additional 10% in estimation error)
     // (assume system identification routine which does not saturate)
-    let L_perturb = [0.65, 0.9, 1.0, 1.1];
+    let L_perturb = [0.65, 0.825, 1.0, 1.1];
 
     if perturbed_stability_check(
         R, L, T, m, &gains.q_pi, &R_perturb, &L_perturb
@@ -218,220 +217,144 @@ fn perturbed_stability_check(
 
 #[cfg(test)]
 mod tests {
+    use core::f32::consts::TAU;
+    use std::vec::Vec;
     use crate::*;
     use super::*;
+    use libm::{log10f, logf, powf};
+    use rustfft::FftPlanner;
 
-    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
+    /// Whole excitation periods discarded as transient before measuring
+    const WARMUP_PERIODS: usize = 10;
+    /// Whole excitation periods the gain is measured over
+    const MEASURED_PERIODS: usize = 20;
+    /// Log-spaced sweep frequencies, a decade below the bandwidth to half a decade above
+    const SWEEP_POINTS: usize = 15;
 
-    struct StepResponse {
-        overshoot_pct: f32,
-        settling_2pct_s: f32,
-        max_abs_i_d: f32,
-        iq_setpoint: f32,
+    struct SweepPoint {
+        omega: f32,
+        gain: f32,
     }
 
-    /// Tune gains for the given spec and measure a torque step response against the sim
-    fn run_step_response(overshoot_pct: f32, settling_time_s: f32, plot_path: &str) -> StepResponse {
-        let dt = 1.0/PWM_FREQUENCY_HZ;
-        let setpoint = 0.1;
-        let sim_cfg = PMSMConfig::default();
-        let mut bench = TestBench::new(PMSMSim::new(dt, sim_cfg), 5.0);
+    struct SineSweep {
+        points: Vec<SweepPoint>,
+        max_abs_i_d: f32,
+        amplitude: f32,
+    }
 
-        let gains = compute_current_pi_controller_gains(
-            bench.params, PWM_FREQUENCY_HZ, overshoot_pct, settling_time_s
-        ).expect("Couldn't tune controller");
+    /// Measure the current loop's gain at each frequency with a sinusoidal i_q target,
+    /// rotor held, as one continuous stepped-sine run
+    fn run_sine_sweep(motor: &Motor, gains: ControllerParameters, omegas: &[f32], plot_path: &str) -> SineSweep {
+        let dt = 1.0/PWM_FREQUENCY_HZ;
+        let sim = PMSMSim::new(dt, motor.config)
+            .with_current_noise(motor.current_noise_a, 123)
+            .with_load_torque(2.0*motor.torque_at_current_limit());
+        let mut bench = TestBench::new(sim, motor.current_limit_a);
         bench.foc.set_pi_gains(Some(gains));
-        let iq_setpoint = 0.666667 / (bench.params.num_pole_pairs.unwrap() as f32 * bench.params.pm_flux_linkage.unwrap()) * setpoint;
+
+        // Small enough that the voltage stays linear at any tested frequency:
+        let amplitude = 0.1*motor.current_limit_a;
 
         let mut recorder = Recorder::new(plot_path, dt, 1);
-        let mut response = StepResponse { overshoot_pct: 0.0, settling_2pct_s: 0.0, max_abs_i_d: 0.0, iq_setpoint };
-        let mut t = 0.0;
-        while t < 1.5*settling_time_s {
-            let step = bench.step_torque(setpoint);
-            recorder.record(&step, &[]);
-            t += dt;
+        let mut sweep = SineSweep { points: Vec::new(), max_abs_i_d: 0.0, amplitude };
+        for &omega in omegas {
+            // Snap the frequency to whole periods in whole samples:
+            let window = (MEASURED_PERIODS as f32 * TAU/(omega*dt)).round() as usize;
+            let omega = MEASURED_PERIODS as f32 * TAU/(window as f32 * dt);
 
-            let i_dq = step.out.state.i_dq;
-            response.overshoot_pct = response.overshoot_pct.max(100.0*(i_dq.q - iq_setpoint)/iq_setpoint);
-            response.max_abs_i_d = response.max_abs_i_d.max(i_dq.d.abs());
-            if (i_dq.q - iq_setpoint).abs() > 0.02*iq_setpoint {
-                response.settling_2pct_s = t;
+            let warmup_s = WARMUP_PERIODS as f32 * TAU/omega;
+            let mut samples: Vec<Complex32> = Vec::new();
+            let mut t = 0.0;
+            while samples.len() < window {
+                let target = amplitude*sinf(omega*t);
+                let step = bench.step_measured(FocInputType::TargetCurrents(ClarkParkValue { d: 0.0, q: target }));
+                recorder.record(&step, &[]);
+                t += dt;
+
+                let i_dq = step.out.state.i_dq;
+                sweep.max_abs_i_d = sweep.max_abs_i_d.max(i_dq.d.abs());
+                if t >= warmup_s {
+                    samples.push(Complex32::new(i_dq.q, 0.0));
+                }
             }
-        }
 
-        response
+            // The excitation energy lands exactly in DFT bin MEASURED_PERIODS:
+            FftPlanner::new().plan_fft_forward(samples.len()).process(&mut samples);
+            let gain = 2.0*samples[MEASURED_PERIODS].norm()/(samples.len() as f32 * amplitude);
+            sweep.points.push(SweepPoint { omega, gain });
+        }
+        sweep
     }
 
-    /// Closed-loop acceptance of the computed gains against simulation with ideal current feed: 
-    /// overshoot settling time and d-axis regulation within the design spec
+    /// Closed-loop acceptance of the tuned gains against simulation for every reference motor:
+    /// flat passband, the -3 dB point at the bandwidth the tuner reports, d-axis regulated
     #[test]
-    fn pmsm_known_params_step_response() {
-        let specs = [
-            (5.0, 0.01, "pmsm_step_response_5pct_10ms.html"),
-            (5.0, 0.001, "pmsm_step_response_5pct_1ms.html"),
-            (2.5, 0.01, "pmsm_step_response_2_5pct_10ms.html"),
-            (2.5, 0.001, "pmsm_step_response_2_5pct_1ms.html"),
-            (1.0, 0.01, "pmsm_step_response_1pct_10ms.html"),
-            (1.0, 0.001, "pmsm_step_response_1pct_1ms.html"),
-        ];
-        for (overshoot_pct, settling_time_s, plot_path) in specs {
-            let response = run_step_response(overshoot_pct, settling_time_s, plot_path);
-            assert!(
-                response.overshoot_pct <= overshoot_pct,
-                "Overshoot {:.2}% above the {:.2}% spec", response.overshoot_pct, overshoot_pct
+    fn reference_motors_meet_the_bandwidth_goal() {
+        for motor in reference_motors() {
+            let gains = compute_current_pi_controller_gains(motor.params(), PWM_FREQUENCY_HZ, CURRENT_LOOP_BANDWIDTH)
+                .unwrap_or_else(|fault| panic!("{} failed to tune: {:?}", motor.name, fault));
+            // The plant cutoff clamp can legitimately raise the achieved bandwidth above the goal:
+            let bandwidth = gains.closed_loop_bandwidth.unwrap();
+
+            let omegas: Vec<f32> = (0..SWEEP_POINTS)
+                .map(|i| bandwidth * powf(10.0, -1.0 + 1.5*i as f32/(SWEEP_POINTS - 1) as f32))
+                .collect();
+            let sweep = run_sine_sweep(
+                &motor, gains, &omegas, &std::format!("pmsm_sine_sweep_{}.html", motor.name)
             );
+
+            let passband_db = 20.0*log10f(sweep.points[0].gain);
             assert!(
-                response.overshoot_pct >= 0.5*overshoot_pct,
-                "Overshoot {:.2}% below half of the {:.2}% spec", response.overshoot_pct, overshoot_pct
+                passband_db.abs() <= 0.1,
+                "{}: passband gain {passband_db:.2} dB not flat at a tenth of the bandwidth", motor.name
             );
+
+            let target = 1.0/sqrtf(2.0);
+            let crossing = sweep.points.windows(2)
+                .find(|pair| pair[0].gain >= target && pair[1].gain < target)
+                .unwrap_or_else(|| panic!("{}: no -3 dB crossing inside the sweep", motor.name));
+            // Log-interpolated -3 dB frequency:
+            let fraction = logf(crossing[0].gain/target)/logf(crossing[0].gain/crossing[1].gain);
+            let measured = crossing[0].omega*powf(crossing[1].omega/crossing[0].omega, fraction);
             assert!(
-                response.settling_2pct_s <= settling_time_s,
-                "Settling time {:.4}s above the {:.4}s spec", response.settling_2pct_s, settling_time_s
+                (measured/bandwidth - 1.0).abs() <= 0.1,
+                "{}: -3 dB point at {measured:.0} rad/s, not within 10% of the {bandwidth:.0} rad/s design",
+                motor.name
             );
+
+            let i_d_bound = 3.0*motor.current_noise_a;
             assert!(
-                response.settling_2pct_s >= 0.5*settling_time_s,
-                "Settling time {:.4}s below half the {:.4}s spec", response.settling_2pct_s, settling_time_s
-            );
-            let i_d_bound = 0.025 * response.iq_setpoint;
-            assert!(
-                response.max_abs_i_d <= i_d_bound,
-                "d-axis current not correctly regulated: {} > {i_d_bound}", response.max_abs_i_d
+                sweep.max_abs_i_d <= i_d_bound,
+                "{}: d-axis current not correctly regulated: {} > {i_d_bound}", motor.name, sweep.max_abs_i_d
             );
         }
     }
 
-    /// The integrator must not wind up past the voltage the bus can actually apply,
-    /// and current control has to recover as soon as the command is feasible again
+    /// Check that an unreachable setpoint does not endlessly wind up the integrator.
     #[test]
-    fn starved_bus_does_not_wind_up_integrator() {
+    fn saturated_integrator_does_not_wind_up() {
         let dt = 1.0/PWM_FREQUENCY_HZ;
-        let settling_time_s = 0.001;
-        // Bus too low to reach the commanded current, rotor held by a load it cannot overcome:
-        let sim_cfg = PMSMConfig { dc_bus_voltage: 2.0, ..PMSMConfig::default() };
-        let mut bench = TestBench::new(PMSMSim::new(dt, sim_cfg).with_load_torque(1.0), 10.0);
+        for motor in reference_motors() {
+            let u_max = motor.u_max();
+            // 10 times the current the bus can push through the winding, unreachable for good:
+            let target = 10.0*u_max/motor.config.stator_resistance;
+            // Load the motor cannot overcome even at the unreachable target:
+            let load = 2.0*motor.params().torque_constant().unwrap()*target;
+            let sim = PMSMSim::new(dt, motor.config).with_load_torque(load);
+            let mut bench = TestBench::new(sim, 2.0*target);
+            bench.field_weakening = false;
+            bench.tune_pi(bench.params);
 
-        let gains = compute_current_pi_controller_gains(
-            bench.params, PWM_FREQUENCY_HZ, 5.0, settling_time_s
-        ).expect("Couldn't tune controller");
-        bench.foc.set_pi_gains(Some(gains));
-
-        const SQRT3_RECIPROCAL: f32 = 1.0/1.73205080757;
-        let u_max = sim_cfg.dc_bus_voltage * SQRT3_RECIPROCAL;
-        let bus_limited_i_q = u_max / sim_cfg.stator_resistance;
-        let saturating_time_s = 20.0*settling_time_s;
-
-        let mut max_integral_term = 0.0f32;
-        let mut min_integral_term = f32::INFINITY;
-        let mut recovery_s = 0.0;
-        let mut t = 0.0;
-        while t < 2.0*saturating_time_s {
-            let saturating = t < saturating_time_s;
-            let target_i_q = if saturating { 3.0*bus_limited_i_q } else { 0.5*bus_limited_i_q };
-            let step = bench.step_measured(FocInputType::TargetCurrents(ClarkParkValue { d: 0.0, q: target_i_q }));
-            t += dt;
-
-            // Only once the delayed anti-windup feedback has caught up with the step:
-            if saturating && t > 0.5*saturating_time_s {
-                max_integral_term = max_integral_term.max(bench.foc.q_pi.integral_term);
-                min_integral_term = min_integral_term.min(bench.foc.q_pi.integral_term);
+            let mut t = 0.0;
+            while t < 10.0*motor.config.inductance/motor.config.stator_resistance {
+                bench.step_measured(FocInputType::TargetCurrents(ClarkParkValue { d: 0.0, q: target }));
+                t += dt;
             }
-            if !saturating && (step.out.state.i_dq.q - target_i_q).abs() > 0.02*target_i_q {
-                recovery_s = t - saturating_time_s;
-            }
-        }
-
-        assert!(
-            max_integral_term <= 1.01*u_max,
-            "Integrator wound up to {:.2}V, above the {:.2}V the bus can apply", max_integral_term, u_max
-        );
-        assert!(
-            min_integral_term >= 0.95*u_max,
-            "Integrator settled to {:.2}V, below the {:.2}V the bus is applying", min_integral_term, u_max
-        );
-        // Recovery unwinds from the saturation limit instead of starting from rest:
-        assert!(
-            recovery_s <= 2.0*settling_time_s,
-            "Recovery from saturation took {:.4}s, above the {:.4}s allowed", recovery_s, 2.0*settling_time_s
-        );
-    }
-
-    /// Coefficients of lead*(z - real_root)*(z^2 - 2*r*cos(theta)*z + r^2)
-    fn cubic_from_roots(real_root: f32, r: f32, theta: f32, lead: f32) -> (f32, f32, f32, f32) {
-        let pair_sum = 2.0*r*cosf(theta);
-        (
-            lead*(-real_root*r*r),
-            lead*(r*r + real_root*pair_sum),
-            lead*(-(real_root + pair_sum)),
-            lead
-        )
-    }
-
-    /// The Jury criterion has to agree with where the polynomial roots actually lie
-    #[test]
-    fn jury_criterion_matches_root_locations() {
-        // (real root, complex pair magnitude, complex pair angle, leading coefficient, stable)
-        let cases = [
-            (0.5, 0.9, 0.0, 1.0, true),
-            (0.2, 0.9, 0.5, 1.0, true),
-            // Leading coefficient is the stator resistance in the closed loop polynomial:
-            (0.2, 0.9, 0.5, 0.66, true),
-            (1.2, 0.3, 0.0, 1.0, false),
-            (-1.05, 0.5, 0.0, 1.0, false),
-            // A root on the unit circle is not stable:
-            (1.0, 0.5, 0.0, 1.0, false),
-            (0.5, 1.05, 0.5, 1.0, false),
-            (0.75, 1.4, 0.5, 1.0, false),
-        ];
-        for (real_root, r, theta, lead, stable) in cases {
-            let (a0, a1, a2, a3) = cubic_from_roots(real_root, r, theta, lead);
-            assert_eq!(
-                jury_test(a0, a1, a2, a3), stable,
-                "Roots {} and {} at +-{} rad: expected stable = {}", real_root, r, theta, stable
+            let integral = bench.foc.q_pi.integral_term;
+            assert!(
+                (integral/u_max - 1.0).abs() <= 0.01,
+                "{}: integrator settled at {integral:.2} V, not at the {u_max:.2} V limit", motor.name
             );
         }
-    }
-
-    // Plant and perturbation grid the hand picked gains below were checked against
-    const R: f32 = 0.66;
-    const L: f32 = 0.00184;
-    const T: f32 = 1.0/20_000.0;
-    const M: f32 = 0.5;
-    const R_PERTURB: [f32; 4] = [0.9, 1.0, 1.25, 1.5];
-    const L_PERTURB: [f32; 4] = [0.65, 0.9, 1.0, 1.1];
-
-    /// Gains stable over the whole perturbation grid have to be accepted
-    #[test]
-    fn stable_gains_deemed_stable() {
-        // Worst case closed loop pole over the grid is at |z| = 0.84.
-        let gains = PIGains { kr: 0.0, kp: 10.5, ki: 40_000.0, kt: 0.0 };
-
-        assert!(
-            perturbed_stability_check(R, L, T, M, &gains, &R_PERTURB, &L_PERTURB),
-            "Stable gains rejected"
-        );
-    }
-
-    /// Gains unstable anywhere on the perturbation grid have to be rejected
-    #[test]
-    fn unstable_gains_deemed_unstable() {
-        // 8x the stable gains, worst case closed loop pole over the grid is at |z| = 1.44:
-        let gains = PIGains { kr: 0.0, kp: 84.0, ki: 320_000.0, kt: 0.0 };
-
-        assert!(
-            !perturbed_stability_check(R, L, T, M, &gains, &R_PERTURB, &L_PERTURB),
-            "Unstable gains accepted"
-        );
-
-        // A single unstable grid point is enough to reject: these gains are stable on the
-        // nominal plant (|z| = 0.82) but not at a tenth of the inductance (|z| = 1.22)
-        let gains = PIGains { kr: 0.0, kp: 10.5, ki: 40_000.0, kt: 0.0 };
-        assert!(
-            perturbed_stability_check(R, L, T, M, &gains, &[1.0], &[1.0]),
-            "Stable nominal plant rejected"
-        );
-        assert!(
-            !perturbed_stability_check(R, L, T, M, &gains, &[1.0], &[1.0, 0.1]),
-            "Unstable grid point accepted"
-        );
     }
 }

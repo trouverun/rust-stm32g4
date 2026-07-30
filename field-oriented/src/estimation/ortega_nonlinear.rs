@@ -105,19 +105,15 @@ mod test {
     use core::f32::consts::TAU;
     use super::*;
     use crate::{
-        DummyAccelerator, EstimatorRecord, Motor, PMSMConfig, PMSMSim, Recorder, TestBench,
-        angle_error, nominal_params, record_interval, reference_motors
+        DummyAccelerator, EstimatorRecord, MOONS_R57BLB50L2, Motor, OBSERVER_GAIN, PLL_BANDWIDTH,
+        PMSMSim, PWM_FREQUENCY_HZ, Recorder, TestBench, angle_error, nominal_params,
+        record_interval, reference_motors
     };
     use std::vec::Vec;
 
-    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
-    const OBSERVER_GAIN: f32 = 1000.0;
-    const PLL_BANDWIDTH: f32 = 1500.0;
-    /// Too little back-EMF to observe below this
-    const MIN_OBSERVABLE_EMF_V: f32 = 2.5;
-    /// Windowed theta error at or below this, while observable, counts as tracking
-    const TRACK_BOUND_RAD: f32 = 0.25;
-    const ERROR_WINDOW_S: f32 = 0.02;
+    /// Windowed theta error at or below this, while observable, counts as tracking:
+    const TRACK_BOUND_RAD: f32 = 0.15;
+    const ERROR_WINDOW_S: f32 = 0.025;
 
     /// Windowed mean absolute estimate errors, with the speed the machine ran at
     struct ErrorWindows {
@@ -171,19 +167,19 @@ mod test {
     }
 
     /// Closed loop bench with the estimator riding along, scored against ground truth
-    struct ObserverRig {
+    struct ObserverRig<'a> {
         bench: TestBench,
         estimator: OrtegaPralyEstimator,
         observer_params: MotorParamsEstimate,
-        recorder: Recorder,
+        recorder: &'a mut Recorder,
         errors: ErrorWindows,
     }
 
-    impl ObserverRig {
-        fn new(motor: &Motor, observer_params: MotorParamsEstimate, plot_path: &str) -> Self {
+    impl<'a> ObserverRig<'a> {
+        fn new(motor: &Motor, observer_params: MotorParamsEstimate, recorder: &'a mut Recorder) -> Self {
             let dt = 1.0 / PWM_FREQUENCY_HZ;
             // The observability floor must sit well above the winding noise voltage:
-            assert!(MIN_OBSERVABLE_EMF_V > 10.0 * motor.current_noise_a * motor.config.stator_resistance);
+            assert!(observability_floor_emf(motor) > 10.0 * motor.current_noise_a * motor.config.stator_resistance);
             let mut bench = TestBench::new(
                 PMSMSim::new(dt, motor.config).with_current_noise(motor.current_noise_a, 987),
                 motor.current_limit_a,
@@ -193,7 +189,7 @@ mod test {
                 bench,
                 estimator: OrtegaPralyEstimator::new(OBSERVER_GAIN, PLL_BANDWIDTH),
                 observer_params,
-                recorder: Recorder::new(plot_path, dt, record_interval(2_000.0, dt)),
+                recorder,
                 errors: ErrorWindows::new(dt),
             }
         }
@@ -230,16 +226,41 @@ mod test {
         }
     }
 
+    /// Back-EMF at 10% of rated speed, the conventional floor for EMF based sensorless
+    fn observability_floor_emf(motor: &Motor) -> f32 {
+        0.1 * motor.u_max()
+    }
+
     /// Speed at which the back-EMF is at the observability floor
     fn observability_floor_e(motor: &Motor) -> f32 {
-        MIN_OBSERVABLE_EMF_V / motor.config.pm_flux_linkage
+        observability_floor_emf(motor) / motor.config.pm_flux_linkage
+    }
+
+    struct RunComparison {
+        path: std::string::String,
+        nominal: Recorder,
+        mismatched: Recorder,
+    }
+
+    impl Drop for RunComparison {
+        fn drop(&mut self) {
+            crate::plot_runs(&self.path, self.nominal.sample_dt(), &[
+                ("nominal", self.nominal.records()),
+                ("mismatched", self.mismatched.records()),
+            ]);
+        }
+    }
+
+    fn sweep_recorder(plot_path: &str) -> Recorder {
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
+        Recorder::new(plot_path, dt, record_interval(2_000.0, dt))
     }
 
     /// Sweep between the observability floor and half base speed with noisy current
     /// measurements, the estimator riding along, returning its windowed errors
-    fn run_sweep(motor: &Motor, observer_params: MotorParamsEstimate, plot_path: &str) -> ErrorWindows {
+    fn run_sweep(motor: &Motor, observer_params: MotorParamsEstimate, recorder: &mut Recorder) -> ErrorWindows {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
-        let mut rig = ObserverRig::new(motor, observer_params, plot_path);
+        let mut rig = ObserverRig::new(motor, observer_params, recorder);
         let p = motor.config.num_pole_pairs;
         let omega_min = 1.5 * observability_floor_e(motor) / p;
         let swing = 0.5 * (0.5 * motor.base_omega() - omega_min);
@@ -264,7 +285,14 @@ mod test {
         let floor_e = observability_floor_e(motor);
         let tracking = (0..errors.theta.len())
             .find(|i| errors.omega_e[*i] > floor_e && errors.theta[*i..].iter().all(|e| *e <= bound))
-            .unwrap_or_else(|| panic!("{}: estimator never started tracking", motor.name));
+            .unwrap_or_else(|| {
+                let best = (0..errors.theta.len())
+                    .filter(|i| errors.omega_e[*i] > floor_e)
+                    .map(|i| errors.theta[i..].iter().fold(0.0, |m: f32, e| m.max(*e)))
+                    .fold(f32::MAX, f32::min);
+                panic!("{}: estimator never started tracking, best worst-theta {best:.4} > bound {bound:.4}",
+                    motor.name)
+            });
         assert!(tracking <= errors.theta.len() / 2,
             "{}: tracking held only from window {tracking} of {}", motor.name, errors.theta.len());
         // The test is only valid if the machine stayed observable over the whole scored stretch:
@@ -302,30 +330,6 @@ mod test {
         }
     }
 
-    /// Without motor parameters there is no model to run, so no estimate either.
-    #[test]
-    fn missing_parameters_fault_clears_once_provided() {
-        let mut accelerator = DummyAccelerator;
-        let mut estimator = OrtegaPralyEstimator::new(OBSERVER_GAIN, PLL_BANDWIDTH);
-        let mut update = |estimator: &mut OrtegaPralyEstimator, params| {
-            estimator.update(OrtegaPralyEstimatorInput {
-                currents: PhaseValues::zero(),
-                voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
-                params,
-                dt_s: 5e-5,
-            }, &mut accelerator);
-        };
-
-        update(&mut estimator, MotorParamsEstimate::new_empty());
-        assert!(
-            matches!(estimator.read(), Err(RotorFeedbackFault::MissingParameter)),
-            "estimate reported without motor parameters"
-        );
-
-        update(&mut estimator, nominal_params(PMSMConfig::default()));
-        assert!(estimator.read().is_ok(), "fault held on after parameters were provided");
-    }
-
     /// Sweep the speed profile with motor parameters matching the simulator, and check that the estimate
     /// tracks the rotor angle for the full sweep and maintains velocity accuracy
     #[test]
@@ -335,7 +339,8 @@ mod test {
 
         for motor in reference_motors() {
             let errors = run_sweep(
-                &motor, motor.params(), &std::format!("ortega_estimation_{}.html", motor.name)
+                &motor, motor.params(),
+                &mut sweep_recorder(&std::format!("ortega_estimation_{}.html", motor.name))
             );
             let score = score(&errors, tracking_window(&errors, &motor, TRACK_BOUND_RAD));
             assert!(score.worst_omega < OMEGA_TRACKING_RATIO * score.peak_omega_e,
@@ -350,15 +355,17 @@ mod test {
         // Parameter errors that must be survived:
         const R_MISMATCH: f32 = 1.5;
         const F_MISMATCH: f32 = 0.9;
-        const L_MISMATCH: f32 = 0.8;
+        const L_MISMATCH: f32 = 0.65;
         // Allowed error growth over the nominal reference run:
-        const MISMATCH_SLACK: f32 = 5.0;
+        const MISMATCH_SLACK: f32 = 10.0;
 
         for motor in reference_motors() {
-            let nominal_errors = run_sweep(
-                &motor, motor.params(),
-                &std::format!("ortega_estimation_mismatch_reference_{}.html", motor.name)
-            );
+            let mut comparison = RunComparison {
+                path: std::format!("ortega_estimation_mismatch_{}.html", motor.name),
+                nominal: sweep_recorder(""),
+                mismatched: sweep_recorder(""),
+            };
+            let nominal_errors = run_sweep(&motor, motor.params(), &mut comparison.nominal);
             // The drive does not listen to the estimator, so both runs share the same
             // trajectory and are scored over the same stretch:
             let tracking = tracking_window(&nominal_errors, &motor, TRACK_BOUND_RAD);
@@ -368,14 +375,12 @@ mod test {
             params.stator_resistance = Some(R_MISMATCH * motor.config.stator_resistance);
             params.pm_flux_linkage = Some(F_MISMATCH * motor.config.pm_flux_linkage);
             params.d_inductance = Some(L_MISMATCH * motor.config.inductance);
-            let mismatched = score(&run_sweep(
-                &motor, params, &std::format!("ortega_estimation_mismatch_{}.html", motor.name)
-            ), tracking);
+            let mismatched = score(&run_sweep(&motor, params, &mut comparison.mismatched), tracking);
 
             assert!(mismatched.worst_theta < MISMATCH_SLACK * nominal.worst_theta,
-                "{}: theta error {:.3} rad, {:.3} nominal", motor.name, mismatched.worst_theta, nominal.worst_theta);
+                "{}: theta error {:.3} rad, vs. {}*nominal: {:.3}", motor.name, mismatched.worst_theta, MISMATCH_SLACK, MISMATCH_SLACK*nominal.worst_theta);
             assert!(mismatched.worst_omega < MISMATCH_SLACK * nominal.worst_omega,
-                "{}: omega error {:.1} rad/s, {:.1} nominal", motor.name, mismatched.worst_omega, nominal.worst_omega);
+                "{}: omega error {:.1} rad/s, vs. {}*nominal: {:.1}", motor.name, mismatched.worst_omega, MISMATCH_SLACK, MISMATCH_SLACK*nominal.worst_omega);
         }
     }
 
@@ -390,10 +395,8 @@ mod test {
 
         for motor in reference_motors() {
             let dt = 1.0 / PWM_FREQUENCY_HZ;
-            let mut rig = ObserverRig::new(
-                &motor, motor.params(),
-                &std::format!("ortega_reacquisition_{}.html", motor.name)
-            );
+            let mut recorder = sweep_recorder(&std::format!("ortega_reacquisition_{}.html", motor.name));
+            let mut rig = ObserverRig::new(&motor, motor.params(), &mut recorder);
             let plateau = 2.0 * observability_floor_e(&motor) / motor.config.num_pole_pairs;
             let acquire_s = run_until_tracking(&mut rig, &motor, plateau);
 

@@ -14,3 +14,4 @@ num-traits = { version = "0.2", default-features = false }
 plotly = "0.10"
 rand = "0.9"
 rand_distr = "0.5"
+rustfft = "6"

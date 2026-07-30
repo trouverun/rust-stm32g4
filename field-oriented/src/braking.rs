@@ -44,9 +44,7 @@ impl BangBangBrake {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PMSMConfig, PMSMSim, Recorder, TestBench};
-
-    const PWM_FREQUENCY_HZ: f32 = 20_000.0;
+    use crate::{MOONS_R57BLB50L2, PMSMSim, PWM_FREQUENCY_HZ, Recorder, TestBench};
 
     /// Spin the rotor up under torque control, engage the brake, and confirm the demand
     /// ramps up to full authority, and termination occurs due to velocity threshold
@@ -56,7 +54,7 @@ mod tests {
         let max_duration_ms = 500.0;
         let omega_cutoff = 10.0;
         let max_braking_torque = 0.08;
-        let mut bench = TestBench::new(PMSMSim::new(dt, PMSMConfig::default()), 5.0);
+        let mut bench = TestBench::new(PMSMSim::new(dt, MOONS_R57BLB50L2), 5.0);
         bench.tune_pi(bench.params);
         let mut recorder = Recorder::new("braking_cutoff.html", dt, 1);
 
@@ -110,7 +108,7 @@ mod tests {
         let max_duration_ms = 3.0;
         let omega_cutoff = 10.0;
         let max_braking_torque = 0.08;
-        let mut bench = TestBench::new(PMSMSim::new(dt, PMSMConfig::default()), 5.0);
+        let mut bench = TestBench::new(PMSMSim::new(dt, MOONS_R57BLB50L2), 5.0);
         bench.tune_pi(bench.params);
         let mut recorder = Recorder::new("braking_timeout.html", dt, 1);
 

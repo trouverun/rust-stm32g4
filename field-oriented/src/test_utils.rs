@@ -1,4 +1,5 @@
 extern crate std;
+use core::f32::consts::PI;
 use std::vec::Vec;
 use std::string::String;
 use plotly::{Plot, Scatter, Layout};
@@ -10,12 +11,18 @@ use crate::types::*;
 use crate::estimation::{MotorParams, MotorParamsEstimate};
 
 const SQRT3_RECIPROCAL: f32 = 1.0 / 1.73205080757;
-
 /// Overmodulation threshold shared by the bench FOC config and the tests asserting against it
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
-
-/// Field weakening loop bandwidth of the bench FOC config, in rad/s
+/// Field weakening loop bandwidth of the bench FOC config
 pub const FIELD_WEAKENING_BANDWIDTH: f32 = 300.0;
+/// PWM frequency shared by the bench FOC configs and the test
+pub const PWM_FREQUENCY_HZ: f32 = 40_000.0;
+/// Current loop bandwidth goal of the bench FOC config
+pub const CURRENT_LOOP_BANDWIDTH: f32 = 0.05 * 2.0 * PI * PWM_FREQUENCY_HZ;
+/// Observer gain of the bench ortega estimator
+pub const OBSERVER_GAIN: f32 = 1500.0;
+/// PLL bandwidth of the bench ortega estimator
+pub const PLL_BANDWIDTH: f32 = 3000.0;
 
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {
@@ -28,18 +35,17 @@ pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {
     })
 }
 
-/// A machine to run scenarios against, together with the current limit of the drive feeding it
+/// A machine to run scenarios against, together with its rated current
 #[derive(Clone, Copy)]
 pub struct Motor {
     pub name: &'static str,
     pub config: PMSMConfig,
     pub current_limit_a: f32,
+    pub current_noise_a: f32,
     /// Drive levels and spin target for the offline estimation routine
     pub calibration_current_a: f32,
     pub calibration_voltage_v: f32,
     pub calibration_omega: f32,
-    /// Measurement noise of the drive's current sense chain
-    pub current_noise_a: f32,
 }
 
 impl Motor {
@@ -309,9 +315,9 @@ impl TestBench {
         }
     }
 
-    /// Tune the current loop for the given params with the 1% / 1 ms spec the tests share
+    /// Tune the current loop for the given params with the bandwidth goal the tests share
     pub fn tune_pi(&mut self, params: MotorParamsEstimate) {
-        let gains = compute_current_pi_controller_gains(params, 1.0 / self.dt, 1.0, 0.001)
+        let gains = compute_current_pi_controller_gains(params, 1.0 / self.dt, CURRENT_LOOP_BANDWIDTH)
             .expect("Failed to tune PI controller");
         self.foc.set_pi_gains(Some(gains)).unwrap();
     }
