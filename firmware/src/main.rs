@@ -119,7 +119,7 @@ mod app {
         let mut adc_feedback = bsp::AdcFeedback::new(adc_mappings);
         adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
         let mut hall_feedback = bsp::HallFeedback::new(
-            hall_mappings, HALL_ASYNC_SAMPLE_RATE_HZ, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
+            hall_mappings, PWM_FREQUENCY_HZ.0, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
         );
         let acceleration = bsp::Acceleration::new(accel_mappings);
         let mut memory = bsp::Memory::new(memory_mappings);

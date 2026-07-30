@@ -121,7 +121,7 @@ fn rcc_init() -> embassy_stm32::Peripherals {
 pub fn map_peripherals() -> (
     super::AdcFeedbackMappings,
     super::HallFeedbackMappings,
-    super::SPIMappings<EncoderSpi>,
+    super::SPIMappings,
     super::PwmOutputMappings,
     super::AccelerationMappings,
     super::MemoryMappings,

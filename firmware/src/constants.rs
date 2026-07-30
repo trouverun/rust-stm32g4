@@ -12,8 +12,6 @@ pub const IWDG_TIMEOUT_US: u32 = 5 * 1_000_000 / PWM_FREQUENCY_HZ.0;
 
 /// Bitrate of the CAN bus (bit/s)
 pub const CAN_BIT_RATE: u32 = 1_000_000;
-/// The rate at which the hall encoder state is asynchronously sampled to the feedback arbitrator
-pub const HALL_ASYNC_SAMPLE_RATE_HZ: u32 = 10_000;
 /// Cutoff frequency for the lowpass filter used on the hall-derived rotor angular velocity
 pub const HALL_VELOCITY_LOW_PASS_CUTOFF_HZ: f32 = 1000.0;
 /// Cutoff frequency for the lowpass filter used on the phase current measurements (to detect overcurrent from SW)
@@ -26,14 +24,14 @@ pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.9;
 /// The electrical angular rotor velocity required before sensorless feedback is considered valid (enough back-EMF) 
 pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 25.0;
 /// Gain of the ortega praly sensorless estimator
-pub const ORTEGA_PRALY_GAIN: f32 = 1000.0;
+pub const ORTEGA_PRALY_GAIN: f32 = 1500.0;
 /// Bandwidth of the PLL omega estimator for the ortega praly sensorless estimator
-pub const ORTEGA_PRALY_BANDWIDTH_HZ: f32 = 250.0;
+pub const ORTEGA_PRALY_BANDWIDTH_HZ: f32 = 500.0;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.9;
 // The design bandwidth of the field weakening controller
-pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 50.0;
+pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 100.0;
 
 /// How much does each setpoint Rx faulty message fill the leaky fault bucket
 pub const TORQUE_SETPOINT_FAULT_FILL_RATE: u32 = 2;
@@ -60,7 +58,7 @@ pub const DEFAULT_BRAKING_CURRENT_LIMIT_A: f32 = 0.0;
 pub const DEFAULT_BRAKING_CURRENT_FAULT_A: f32 = 0.1;
 
 pub const DC_BUS_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
-pub const CALIBRATION_VOLTAGE_RANGE: (f32, f32) = (0.0, 60.0);
+pub const CALIBRATION_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
 pub const CALIBRATION_OMEGA_RANGE: (f32, f32) = (0.0, 1000.0);
 pub const CURRENT_LIMIT_RANGE: (f32, f32) = (0.0, BOARD.current_limit_a);
 pub const TEMP_MAX_RANGE: (f32, f32) = (-40.0, 150.0);
@@ -76,7 +74,7 @@ pub const OPAMP_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 // FOC:
 
 /// Tuning goal bandwidth for the current control loop PI gains
-pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 0.05 * PWM_FREQUENCY_HZ.0 as f32;
+pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
 
 /// Number of ticks a board measurement (temperature, DC bus voltage) needs to be out of range before raising a fault
 pub const BOARD_MEASUREMENT_DEBOUNCE_TICKS: u32 = 5;

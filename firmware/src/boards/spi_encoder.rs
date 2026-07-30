@@ -1,5 +1,5 @@
 use embassy_stm32::{Peri};
-use embassy_stm32::spi::{Config as SpiConfig, DmaDrivenSpi, Instance, MODE_0, MisoPin, MosiPin, SckPin, RxDma};
+use embassy_stm32::spi::{Config as SpiConfig, Spi, Instance, MODE_0, MisoPin, MosiPin, SckPin};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::gpio::{Pin, Level, Output, Speed};
 
@@ -11,7 +11,7 @@ pub fn spi_mappings<EncSpi, SpiSck, SpiMosi, SpiMiso, CsPin>(
     mosi: Peri<'static, SpiMosi>,
     miso: Peri<'static, SpiMiso>,
     cs: Peri<'static, CsPin>
-) -> SPIMappings<EncSpi>
+) -> SPIMappings
     where
     EncSpi: Instance,
     SpiSck: SckPin<EncSpi>,
@@ -23,7 +23,7 @@ pub fn spi_mappings<EncSpi, SpiSck, SpiMosi, SpiMiso, CsPin>(
     spi_config.mode = MODE_0;
     spi_config.frequency = Hertz(2_000_000);
     spi_config.gpio_speed = Speed::VeryHigh;
-    let spi =  DmaDrivenSpi::new(spi, sck, mosi, miso, spi_config);
+    let spi =  Spi::new_blocking(spi, sck, mosi, miso, spi_config);
 
     SPIMappings {
         spi,
