@@ -90,8 +90,8 @@ pub async fn can_tx_task(mut cx: app::can_tx_task::Context<'_>) {
                         mode,
                         dc_bus_voltage: vbus.unwrap_or(0.0),
                         temperature: temp.unwrap_or(0.0),
-                        dc_bus_valid: vbus.is_some(),
-                        temp_valid: temp.is_some(),
+                        dc_bus_voltage_valid: vbus.is_some(),
+                        temperature_valid: temp.is_some(),
                     }).ok().map(|m| m.into_frame())
                 }
             };

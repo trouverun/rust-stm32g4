@@ -20,10 +20,6 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
 
         match Messages::from_can_message(id as u32, frame.data()) {
             Ok(Messages::OperatingModeRequest(msg)) => {
-                if cx.local.mode_request_integrity.check(&frame.data()[..7], msg.rolling_counter(), msg.checksum()).is_err() {
-                    cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: FaultCause::CANMessageIntegrity }));
-                    continue;
-                }
                 let command = match msg.requested_mode() {
                     OperatingModeRequestRequestedMode::Idle => {
                         Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }
@@ -72,7 +68,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     }
                 }
             }
-            Ok(Messages::ProtectionLimits(msg)) => {
+            Ok(Messages::ProtectionLimits1(msg)) => {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
                     candidate.set_dc_bus_limits(msg.dc_bus_v_min(), msg.dc_bus_v_max())?;
@@ -155,7 +151,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 let all = matches!(block, ConfigQueryBlockId::All);
                 if all || matches!(block, ConfigQueryBlockId::ProtectionLimits) {
                     let cfg = cx.shared.config.lock(|c| *c);
-                    let f = ProtectionLimitsReport::try_from(ProtectionLimitsReportInit {
+                    let f = ProtectionLimits1Report::try_from(ProtectionLimits1ReportInit {
                         dc_bus_v_min: cfg.dc_bus_min_voltage_v(),
                         dc_bus_v_max: cfg.dc_bus_max_voltage_v(),
                         braking_current_limit: cfg.braking_current_limit_a(),

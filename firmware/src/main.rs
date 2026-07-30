@@ -298,7 +298,6 @@ mod app {
             ],
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
-                mode_request_integrity: FrameIntegrity = FrameIntegrity::new(),
                 setpoint_fault: LeakyBucket = LeakyBucket::new(
                     TORQUE_SETPOINT_FAULT_FILL_RATE, 
                     TORQUE_SETPOINT_FAULT_DRAIN_RATE, 
