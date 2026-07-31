@@ -17,8 +17,7 @@ pub mod pac {
     pub use embassy_stm32::pac::*;
 }
 
-/// Copy `.ccmram` code from its flash load address into CCM SRAM.
-/// Must run before the first call into anything placed there.
+/// Copy `.ccmram` code section from the flash load address into CCM SRAM
 fn init_ccmram() {
     extern "C" {
         static mut __sccmram: u32;
@@ -39,7 +38,6 @@ fn init_ccmram() {
 
 #[rtic::app(device = crate::pac, peripherals = false, dispatchers = [SPI2, SPI3, UART5])]
 mod app {
-    use defmt::info;
     use defmt_rtt as _;
     use embassy_stm32::time::Hertz;
     use embassy_stm32::{peripherals::TIM2, rcc};
@@ -161,7 +159,7 @@ mod app {
 
         // Load motor parameters from flash:
         let motor_parameters = match memory.load::<MotorParamsEstimate>() {
-            Ok(Some(p)) => {info!("Motpar {}", p); ConstantMotorParameters::from_other(p)},
+            Ok(Some(p)) => ConstantMotorParameters::from_other(p),
             Ok(None) => ConstantMotorParameters { params: MotorParamsEstimate::new_empty() },
             Err(e) => { 
                 mode.on_command(Command::AssertFault { cause: e.into() }); 
@@ -169,13 +167,12 @@ mod app {
             }
         };
         match memory.load::<HallCalibration>() {
-            Ok(Some(cal)) => {info!("Halcal {}", cal); hall_feedback.set_calibration(cal)},
+            Ok(Some(cal)) => hall_feedback.set_calibration(cal),
             Ok(None) => {}
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
         match memory.load::<ControllerParameters>() {
             Ok(Some(p)) => {
-                info!("Contpar {}", p); 
                 match foc.set_pi_gains(Some(p)) {
                     Ok(()) => {}
                     Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),

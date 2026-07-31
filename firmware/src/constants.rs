@@ -13,7 +13,7 @@ pub const IWDG_TIMEOUT_US: u32 = 5 * 1_000_000 / PWM_FREQUENCY_HZ.0;
 /// Bitrate of the CAN bus (bit/s)
 pub const CAN_BIT_RATE: u32 = 1_000_000;
 /// Cutoff frequency for the lowpass filter used on the hall-derived rotor angular velocity
-pub const HALL_VELOCITY_LOW_PASS_CUTOFF_HZ: f32 = 1000.0;
+pub const HALL_VELOCITY_LOW_PASS_CUTOFF_HZ: f32 = 500.0;
 /// Cutoff frequency for the lowpass filter used on the phase current measurements (to detect overcurrent from SW)
 pub const PHASE_CURRENT_FILTER_LOWPASS_CUTOFF_HZ: f32 = 2500.0;
 /// Cutoff frequency for the lowpass filter used on the regenerative braking current (to detect excess regen current from SW)
@@ -22,14 +22,14 @@ pub const BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ: f32 = 100.0;
 pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.9;
 
 /// The electrical angular rotor velocity required before sensorless feedback is considered valid (enough back-EMF) 
-pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 25.0;
+pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 100.0;
 /// Gain of the ortega praly sensorless estimator
 pub const ORTEGA_PRALY_GAIN: f32 = 1500.0;
 /// Bandwidth of the PLL omega estimator for the ortega praly sensorless estimator
 pub const ORTEGA_PRALY_BANDWIDTH_HZ: f32 = 500.0;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
-pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.9;
+pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
 // The design bandwidth of the field weakening controller
 pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 100.0;
 
