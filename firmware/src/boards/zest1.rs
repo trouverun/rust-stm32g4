@@ -37,9 +37,6 @@ pub const BOARD_FEEDBACK_TRIGGER: Adc345RegularTrigger = Adc345RegularTrigger::T
 // Hall feedback:
 pub type HallFeedbackTimer = TIM3;
 
-// Encoder feedback:
-pub type EncoderSpi = SPI1;
-
 // PWM output:
 pub type CompU = COMP6;
 pub type CompV = COMP5;
@@ -86,7 +83,7 @@ pub const BOARD: super::BoardInfo = super::BoardInfo {
     mosfet_deadtime_ns: 300,
     mosfet_on_delay_ns: 15,
     mosfet_off_delay_ns: 24,
-    deadtime_compensation_band_a: 0.25
+    deadtime_compensation_band_a: 0.1
 };
 
 pub struct DebugMappings {

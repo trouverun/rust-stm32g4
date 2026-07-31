@@ -100,9 +100,11 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
             Ok(Messages::MotorConfig(msg)) => {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
-                    candidate.set_rated_current_limit_a(msg.rated_current_limit())?;
-                    candidate.set_momentary_current_limit_a(msg.momentary_current_limit())?;
-                    candidate.set_overcurrent_limit_a(msg.overcurrent_limit())?;
+                    candidate.set_current_limits(
+                        msg.rated_current_limit(),
+                        msg.momentary_current_limit(),
+                        msg.overcurrent_limit(),
+                    )?;
                     candidate.set_rotor_speed_limit_mech_rpm(msg.rotor_speed_limit_mech())?;
                     *cfg = candidate;
                     Ok::<f32, ConfigError>(candidate.overcurrent_limit_a())

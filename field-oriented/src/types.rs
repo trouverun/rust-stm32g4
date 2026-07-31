@@ -71,7 +71,7 @@ pub struct FocConfig {
     pub mosfet_on_delay_ns: f32,
     /// MOSFET OFF delay (not including fall time)
     pub mosfet_off_delay_ns: f32,
-    /// The phase current magnitude at which deadtime compensation becomes fully active
+    /// The current vector magnitude at which deadtime compensation becomes fully active
     /// (below this value, it is linearly scaled down to avoid alternating sign noise degrading modulation)
     pub deadtime_compensation_band_a: f32,
     /// The ratio of the maximum linear modulation voltage which can be reached before field weakening starts 

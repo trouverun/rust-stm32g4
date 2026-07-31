@@ -185,7 +185,7 @@ impl FOC {
         } else {
             0.0
         };
-        let mut duty_cycles = PhaseValues {
+        let mut duty_cycles: PhaseValues = PhaseValues {
             u: 0.5 + bus_reciprocal*(v_tgt.u + v0_tgt),
             v: 0.5 + bus_reciprocal*(v_tgt.v + v0_tgt),
             w: 0.5 + bus_reciprocal*(v_tgt.w + v0_tgt)
