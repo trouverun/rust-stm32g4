@@ -100,16 +100,6 @@ impl FirmwareConfig {
     #[inline]
     pub fn ss1t_duration_ms(&self) -> u16 { self.ss1t_duration_ms }
 
-    /// Enforce calibration_current <= current_limit <= rated_current.
-    fn clamp_current_hierarchy(&mut self) {
-        if self.rated_current_limit_a > self.momentary_current_limit_a {
-            self.rated_current_limit_a = self.momentary_current_limit_a;
-        }
-        if self.calibration_current_a > self.rated_current_limit_a {
-            self.calibration_current_a = self.rated_current_limit_a;
-        }
-    }
-
     /// Set as a pair so min/max aren't validated against each other's stale value.
     pub fn set_dc_bus_limits(&mut self, min_v: f32, max_v: f32) -> Result<(), ConfigError> {
         let min_v = in_range(min_v, DC_BUS_VOLTAGE_RANGE)?;
@@ -129,7 +119,7 @@ impl FirmwareConfig {
 
     pub fn set_calibration_current_a(&mut self, v: f32) -> Result<(), ConfigError> {
         let v = in_range(v, CURRENT_LIMIT_RANGE)?;
-        self.calibration_current_a = v.min(self.momentary_current_limit_a);
+        self.calibration_current_a = v.min(self.rated_current_limit_a);
         Ok(())
     }
 
@@ -138,21 +128,23 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_rated_current_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
-        self.rated_current_limit_a = in_range(v, CURRENT_LIMIT_RANGE)?;
-        self.clamp_current_hierarchy();
-        Ok(())
-    }
-
-    pub fn set_momentary_current_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
-        let v = in_range(v, CURRENT_LIMIT_RANGE)?;
-        self.momentary_current_limit_a = v.min(self.rated_current_limit_a);
-        self.clamp_current_hierarchy();
-        Ok(())
-    }
-
-    pub fn set_overcurrent_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
-        self.overcurrent_limit_a = in_range(v, CURRENT_LIMIT_RANGE)?;
+    /// Set as a group so none is validated against another's stale value.
+    pub fn set_current_limits(
+        &mut self,
+        rated_a: f32,
+        momentary_a: f32,
+        overcurrent_a: f32,
+    ) -> Result<(), ConfigError> {
+        let rated_a = in_range(rated_a, CURRENT_LIMIT_RANGE)?;
+        let momentary_a = in_range(momentary_a, CURRENT_LIMIT_RANGE)?;
+        let overcurrent_a = in_range(overcurrent_a, CURRENT_LIMIT_RANGE)?;
+        if rated_a > momentary_a || momentary_a > overcurrent_a {
+            return Err(ConfigError::RangeInverted);
+        }
+        self.rated_current_limit_a = rated_a;
+        self.momentary_current_limit_a = momentary_a;
+        self.overcurrent_limit_a = overcurrent_a;
+        self.calibration_current_a = self.calibration_current_a.min(rated_a);
         Ok(())
     }
 
