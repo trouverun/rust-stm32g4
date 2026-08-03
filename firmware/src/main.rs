@@ -9,6 +9,7 @@ mod boards;
 mod bsp;
 mod can;
 mod constants;
+mod bandwidth_test;
 mod memory;
 mod tasks;
 mod types;
@@ -53,6 +54,7 @@ mod app {
         Command, FaultCause, OperatingMode, SafeControlStrategy,
         CurrentLoopSnapshot, FrameIntegrity, Debounced, LeakyBucket
     };
+    use crate::bandwidth_test::BandwidthTest;
     use crate::types::*;
     use field_oriented::{
         AlphaBeta, ClarkParkValue, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator, 
@@ -265,6 +267,7 @@ mod app {
                 dc_undervolt: Debounced = Debounced::new(false),
                 dc_overvolt: Debounced = Debounced::new(false),
                 sensorless_estimator,
+                bandwidth_test: BandwidthTest = BandwidthTest::new(),
             ],
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator,

@@ -6,7 +6,7 @@ use defmt::info;
 use crate::app;
 use crate::constants::PWM_FREQUENCY_HZ;
 use crate::constants::*;
-use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
+use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, SafeControlStrategy, StageResult, foc_step};
 use field_oriented::{
     AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback,
     MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput,
@@ -58,6 +58,9 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         
         cx.shared.debug_mappings.lock(|dm| dm.la_c.set_high());
         let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
+        let target_torque = cx.local.bandwidth_test.pre_step(
+            target_torque, active_current_limit_a, params.torque_constant()
+        );
         let (hall_feedback, hall_pattern) = cx.shared.hall_feedback.lock(|hall_feedback| {
             (hall_feedback.read(), hall_feedback.get_pattern())
         });
@@ -113,6 +116,11 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                     pwm.set_duty_cycles(duty_cycles);
                 });
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
+                if cx.local.bandwidth_test.post_step(&snapshot) {
+                    cx.shared.mode.lock(|mode| mode.on_command(Command::Idle {
+                        safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 },
+                    }));
+                }
                 *cx.local.prev_u_ab = u_ab;
                 let braking_current = if let Some(dc_v) = dc_bus_reading_v {
                     if dc_v > dc_bus_min_v {
