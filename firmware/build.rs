@@ -97,7 +97,8 @@ fn emit_multisine_table() -> String {
     const TICKS: usize = 400;
     // Excitation frequencies as multiples of the fundamental (100 Hz at 40 kHz PWM),
     // odd so even-order distortion lands on unmeasured bins
-    const HARMONICS: [u32; 14] = [1, 3, 5, 7, 9, 11, 13, 15, 19, 23, 27, 31, 35, 39];
+    const HARMONICS: [u32; 1] = [3];
+    // const HARMONICS: [u32; 14] = [1, 3, 5, 7, 9, 11, 13, 15, 19, 23, 27, 31, 35, 39];
     let pi = std::f64::consts::PI;
 
     let samples: Vec<f64> = (0..TICKS)
