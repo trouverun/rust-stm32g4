@@ -22,7 +22,7 @@ The repository is structured as follows:
 - **firmware-core**: testable library crate with application-level logic
 - **firmware**: binary crate containing the main hardware-dependent firmware to be flashed on the target 
 
-<details>
+<details open>
   <summary><h2>Demo running on the STM32 ZEST1S discovery kit</h2></summary>
 The firmware was tested on the setup shown below:
   
@@ -37,7 +37,7 @@ First, during operation in torque control mode, GPIO pins were toggled from the 
 
 <img width="1452" height="491" alt="foc_rate" src="https://github.com/user-attachments/assets/39abdfac-19c1-4892-8fd6-923dde3cc4c5" />
 
-The real-time constraint at 40 kHz is satisfied, with the full ISR executing within 14.23 us of the 25 us deadline.  
+The real-time constraint at 40 kHz is satisfied, with the full ISR executing in 14.23 µs, well within the 25 µs budget.  
 
 Next, the closed-loop current control performance was evaluated using the branch "bandwidth-test", which includes a firmware-level routine for injecting sine wave torque setpoints, composed of the specified frequencies and the given amplitude. The derived q-axis current setpoint and the measured q-axis current is recorded to RAM at the full 40 kHz FOC rate, and retrieved with probe-rs.
 
