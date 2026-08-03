@@ -32,6 +32,7 @@ The configuration used was as follows:
 - 40 kHz FOC rate
 - Motor parameters were identified using the self-commissioning routine built to the firmware
 - Current loop PI controllers were autotuned with a closed-loop bandwidth tuning goal of 1 kHz
+- Hall feedback below 100 rad/s (electrical), sensorless above
 
 First, during operation in torque control mode, GPIO pins were toggled from the FOC ISR to measure the execution time using a logic analyser:
 
