@@ -1,7 +1,6 @@
 use super::calibration::{CalibrationPhase, CalibrationRunner, Calibrator};
 use super::faults::FaultCause;
 use super::safe_strategy::SafeControlStrategy;
-use defmt::{Format, Formatter, write, info};
 
 #[derive(Clone, Copy)]
 pub struct FocGate {
@@ -42,28 +41,8 @@ pub enum OperatingMode<C = CalibrationRunner> {
     },
 }
 
-impl<C: Calibrator> Format for OperatingMode<C> {
-    fn format(&self, f: Formatter<'_>) {
-        match self {
-            OperatingMode::Idle { safe_strategy } => {
-                write!(f, "Idle {{ safe_strategy: {} }}", safe_strategy)
-            }
-            OperatingMode::Calibration { calibrator, .. } => {
-                write!(f, "Calibration {{ phase: {} }}", calibrator.phase())
-            }
-            OperatingMode::TorqueControl => {
-                write!(f, "TorqueControl")
-            }
-            OperatingMode::Fault { safe_strategy, write_index, trace } => {
-                write!(f, "Fault {{ safe_strategy: {}, write_index: {}, trace: {} }}", safe_strategy, write_index, trace)
-            }
-        }
-    }
-}
-
 impl<C: Calibrator> OperatingMode<C> {
     pub fn on_command(&mut self, command: Command) {
-        info!("On command {}, state {}", command, &*self);
         let new_state = match (&mut *self, command) {
             (OperatingMode::Fault { safe_strategy, .. }, Command::ClearFault) => {
                 if matches!(*safe_strategy, SafeControlStrategy::SS1t { .. } | SafeControlStrategy::RampDown {..} ) {

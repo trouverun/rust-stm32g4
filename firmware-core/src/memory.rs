@@ -6,12 +6,11 @@ pub const MAX_RECORD_BYTES: usize = 64;
 const HEADER_BYTES: usize = 4;
 const CRC_BYTES: usize = 4;
 
-const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+pub const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 
-/// Serializes `value` into `buf` as one record and returns the record length.
-///
-/// Record layout: `[version: u16 le][payload len: u16 le][postcard payload][crc32 le]`,
-/// CRC is over header + payload.
+/// Serializes `value` into `buf` as one record and returns the record length:
+/// 
+/// record = `[version: u16 le][payload len: u16 le][postcard payload][crc32 le]`
 pub fn encode_record<T: serde::Serialize>(
     value: &T, version: u16, buf: &mut [u8; MAX_RECORD_BYTES]
 ) -> Result<usize, MemoryFault> {

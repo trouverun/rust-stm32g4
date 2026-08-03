@@ -38,10 +38,10 @@ BO_ 592 SafeStopConfig: 4 Host
  SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
  SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Hyperdrive
 
-BO_ 512 Setpoint: 8 Host
+BO_ 512 Setpoint: 4 Host
  SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
- SG_ rolling_counter : 48|4@1+ (1,0) [0|15] "" Hyperdrive
- SG_ checksum : 56|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ rolling_counter : 16|4@1+ (1,0) [0|15] "" Hyperdrive
+ SG_ checksum : 24|8@1+ (1,0) [0|255] "" Hyperdrive
 
 BO_ 368 CalibrationTargetsReport: 6 Hyperdrive
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Host
@@ -130,7 +130,7 @@ BO_ 448 SafeStopConfigReport: 4 Hyperdrive
  SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Host
 
 CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands. Messages are listed Host-transmitted first, then Hyperdrive-transmitted, alphabetical within each group.";
-CM_ BO_ 512 "Torque setpoint. checksum = CRC-8 (SAE J1850) over data bytes 0-6.";
+CM_ BO_ 512 "Torque setpoint. checksum = CRC-8 (SAE J1850) over data bytes 0-2.";
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ BO_  "GenMsgCycleTimeUs" INT 0 1000000;

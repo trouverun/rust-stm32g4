@@ -276,13 +276,13 @@ mod app {
         fn shared_adc_isr(_: shared_adc_isr::Context);
 
         #[task(priority = 1, shared = [mode, hall_feedback, memory])]
-        async fn update_hall_table(_: update_hall_table::Context, angle_table: HallCalibration);
+        async fn store_hall_table(_: store_hall_table::Context, angle_table: HallCalibration);
 
         #[task(priority = 1, shared = [mode, foc, memory])]
         async fn tune_pi(_: tune_pi::Context, estimate: MotorParamsEstimate);
 
         #[task(priority = 1, shared = [motor_parameters, mode, memory])]
-        async fn update_motor_params(_: update_motor_params::Context, parameters: MotorParamsEstimate);
+        async fn store_motor_params(_: store_motor_params::Context, parameters: MotorParamsEstimate);
 
         #[task(priority = 1, shared = [can, current_loop_snapshot, feedback_arbitrator, mode, board_status])]
         async fn can_tx_task(_: can_tx_task::Context);

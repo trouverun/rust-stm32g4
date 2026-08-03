@@ -56,8 +56,8 @@ impl FieldWeakening {
         } else {
             0.0
         };
-        let bound = if -0.95*current_limit_a > -i_ch {
-            -0.95*current_limit_a
+        let bound = if -0.99*current_limit_a > -i_ch {
+            -0.99*current_limit_a
         } else {
             -i_ch
         };
