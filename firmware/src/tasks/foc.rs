@@ -154,13 +154,13 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 cx.shared.mode.lock(|mode| mode.on_command(Command::ResumeCalibration));
             }   
             Some(StageResult::HallCalibration { angle_table }) => {
-                let _ = app::update_hall_table::spawn(angle_table);
+                let _ = app::store_hall_table::spawn(angle_table);
             }
             Some(StageResult::TuningRequest { params_estimate }) => {
                 let _ = app::tune_pi::spawn(params_estimate);
             }
             Some(StageResult::MotorParameters { motor_params }) => {
-                let _ = app::update_motor_params::spawn(motor_params);
+                let _ = app::store_motor_params::spawn(motor_params);
             }
             _ => {}
         }
@@ -195,7 +195,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     }
 }
 
-pub async fn update_hall_table(mut cx: app::update_hall_table::Context<'_>, angle_table: HallCalibration) {
+pub async fn store_hall_table(mut cx: app::store_hall_table::Context<'_>, angle_table: HallCalibration) {
     info!("Angle table {}", angle_table);
     cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
     let command = cx.shared.memory.lock(|memory| {
@@ -250,7 +250,7 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
     }
 }
 
-pub async fn update_motor_params(mut cx: app::update_motor_params::Context<'_>, parameters: MotorParamsEstimate) {
+pub async fn store_motor_params(mut cx: app::store_motor_params::Context<'_>, parameters: MotorParamsEstimate) {
     info!("Params {}", parameters);
     cx.shared.motor_parameters.lock(|active_params| {
         active_params.copy_other(parameters);

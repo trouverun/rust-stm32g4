@@ -10,11 +10,11 @@ use embassy_stm32::peripherals::{CORDIC, IWDG};
 use embassy_stm32::wdg::IndependentWatchdog;
 use embassy_stm32::Peri;
 use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
-use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin, Sqrt, SqrtScale};
+use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin};
 
 use crate::boards::*;
 use crate::constants::{OPAMP_CALIBRATION_SAMPLE_COUNT};
-use crate::memory::{sector_offset, Stored, SECTOR_SIZE};
+use crate::memory::{DFU_OFFSET, DFU_SIZE, PAGE_SIZE, Stored, page_offset};
 use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES};
 use embassy_stm32::adc::{
     Adc, AdcConfig, AnyAdcChannel, Dual, EocInterruptEnabled, Exten, ExternalTriggeredADC,
@@ -638,7 +638,7 @@ impl HardwareWatchdog {
 
     pub fn feed(&mut self) {
         if !self.started {
-            // self.iwdg.unleash();
+            self.iwdg.unleash();
             self.started = true;
         }
         self.iwdg.pet();
@@ -662,7 +662,7 @@ impl Memory {
     pub fn load<T: Stored>(&mut self) -> Result<Option<T>, MemoryFault> {
         let mut buf = [0u8; MAX_RECORD_BYTES];
         self.flash
-            .blocking_read(sector_offset(T::SECTOR), &mut buf)
+            .blocking_read(page_offset(T::PAGE), &mut buf)
             .map_err(|_| MemoryFault::FlashInternalFault)?;
         decode_record::<T>(&buf, T::VERSION)
     }
@@ -674,7 +674,7 @@ impl Memory {
         let record_len = encode_record(value, T::VERSION, &mut buf)?;
         let write_len = record_len.next_multiple_of(WRITE_SIZE);
 
-        let off = sector_offset(T::SECTOR);
+        let off = page_offset(T::PAGE);
         let mut current = [0u8; MAX_RECORD_BYTES];
         if self.flash.blocking_read(off, &mut current).is_ok()
             && current[..write_len] == buf[..write_len]
@@ -682,11 +682,49 @@ impl Memory {
             return Ok(());
         }
         self.flash
-            .blocking_erase(off, off + SECTOR_SIZE)
+            .blocking_erase(off, off + PAGE_SIZE)
             .map_err(|_| MemoryFault::FlashInternalFault)?;
         self.flash
             .blocking_write(off, &buf[..write_len])
             .map_err(|_| MemoryFault::FlashInternalFault)?;
         Ok(())
+    }
+
+    /// Writes into the DFU area, erasing each page as the write first reaches it
+    pub fn dfu_write(&mut self, offset: u32, data: &[u8]) -> Result<(), MemoryFault> {
+        let start = DFU_OFFSET + offset;
+        let end = start + data.len() as u32;
+        if end > DFU_OFFSET + DFU_SIZE {
+            return Err(MemoryFault::TooLarge);
+        }
+        let mut page = start.next_multiple_of(PAGE_SIZE);
+        if start % PAGE_SIZE == 0 {
+            page = start;
+        }
+        while page < end {
+            self.flash
+                .blocking_erase(page, page + PAGE_SIZE)
+                .map_err(|_| MemoryFault::FlashInternalFault)?;
+            page += PAGE_SIZE;
+        }
+        self.flash
+            .blocking_write(start, data)
+            .map_err(|_| MemoryFault::FlashInternalFault)
+    }
+
+    /// CRC-32 (ISO-HDLC) over the first `length` bytes of the DFU area
+    pub fn dfu_crc32(&mut self, length: u32) -> Result<u32, MemoryFault> {
+        let mut digest = firmware_core::CRC32.digest();
+        let mut buf = [0u8; 64];
+        let mut offset = 0;
+        while offset < length {
+            let n = (length - offset).min(buf.len() as u32) as usize;
+            self.flash
+                .blocking_read(DFU_OFFSET + offset, &mut buf[..n])
+                .map_err(|_| MemoryFault::FlashInternalFault)?;
+            digest.update(&buf[..n]);
+            offset += n as u32;
+        }
+        Ok(digest.finalize())
     }
 }
