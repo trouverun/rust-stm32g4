@@ -195,6 +195,7 @@ impl FOC {
         duty_cycles.u += self.deadtime_ratio * (input.phase_currents.u * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
         duty_cycles.v += self.deadtime_ratio * (input.phase_currents.v * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
         duty_cycles.w += self.deadtime_ratio * (input.phase_currents.w * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
+        
         duty_cycles.u = duty_cycles.u.clamp(0.0, 1.0);
         duty_cycles.v = duty_cycles.v.clamp(0.0, 1.0);
         duty_cycles.w = duty_cycles.w.clamp(0.0, 1.0);

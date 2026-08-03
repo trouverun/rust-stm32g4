@@ -10,7 +10,7 @@ use embassy_stm32::peripherals::{CORDIC, IWDG};
 use embassy_stm32::wdg::IndependentWatchdog;
 use embassy_stm32::Peri;
 use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
-use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin, Sqrt, SqrtScale};
+use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin};
 
 use crate::boards::*;
 use crate::constants::{OPAMP_CALIBRATION_SAMPLE_COUNT};
@@ -638,7 +638,7 @@ impl HardwareWatchdog {
 
     pub fn feed(&mut self) {
         if !self.started {
-            // self.iwdg.unleash();
+            self.iwdg.unleash();
             self.started = true;
         }
         self.iwdg.pet();

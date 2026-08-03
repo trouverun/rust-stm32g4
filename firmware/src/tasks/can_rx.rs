@@ -51,7 +51,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 });
             }
             Ok(Messages::Setpoint(msg)) => {
-                match cx.local.setpoint_integrity.check(&frame.data()[..7], msg.rolling_counter(), msg.checksum()) {
+                match cx.local.setpoint_integrity.check(&frame.data()[..3], msg.rolling_counter(), msg.checksum()) {
                     Ok(()) => {
                         let now = Mono::now();
                         cx.shared.runtime_values.lock(|rtv| {
