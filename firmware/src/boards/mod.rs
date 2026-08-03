@@ -2,8 +2,8 @@
 mod zest1;
 #[cfg(feature = "board-zest1")]
 pub use zest1::*;
-pub mod spi_encoder;
-pub use spi_encoder::*;
+pub mod spi;
+pub use spi::*;
 
 use embassy_stm32::adc::AnyAdcChannel;
 use embassy_stm32::can::CanConfigurator;
