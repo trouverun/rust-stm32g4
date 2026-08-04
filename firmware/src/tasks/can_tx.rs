@@ -2,6 +2,8 @@ use rtic::Mutex as _;
 use rtic_monotonics::{stm32::Tim2 as Mono, Monotonic};
 
 use crate::app;
+#[cfg(feature = "debug-capture")]
+use crate::capture;
 use crate::can::messages::*;
 use crate::can::periodic::{Periodic, Slot};
 use crate::can::transport::IntoFrame;
@@ -82,6 +84,20 @@ pub async fn can_tx_task(mut cx: app::can_tx_task::Context<'_>) {
                             fault_7: t[7].encode(),
                         }).ok()
                     }).map(|m| m.into_frame())
+                }
+                Periodic::CaptureDump => {
+                    #[cfg(feature = "debug-capture")]
+                    let frame = capture::next_dump_frame().and_then(|(seq, words)| {
+                        CaptureDump::try_from(CaptureDumpInit {
+                            seq,
+                            data_0: words[0],
+                            data_1: words[1],
+                            data_2: words[2],
+                        }).ok()
+                    }).map(|m| m.into_frame());
+                    #[cfg(not(feature = "debug-capture"))]
+                    let frame = None;
+                    frame
                 }
                 Periodic::Heartbeat => {
                     let mode = cx.shared.mode.lock(|m| m.encode());
