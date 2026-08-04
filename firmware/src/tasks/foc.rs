@@ -6,6 +6,8 @@ use defmt::info;
 use crate::app;
 use crate::constants::PWM_FREQUENCY_HZ;
 use crate::constants::*;
+#[cfg(feature = "debug-capture")]
+use crate::capture;
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
 use field_oriented::{
     AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback,
@@ -113,6 +115,17 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                     pwm.set_duty_cycles(duty_cycles);
                 });
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
+                
+                #[cfg(feature = "debug-capture")]
+                capture::record(capture::Record {
+                    id_meas_ma: (snapshot.id_meas_a * 1000.0) as i16,
+                    iq_meas_ma: (snapshot.iq_meas_a * 1000.0) as i16,
+                    theta_mrad: (rotor_feedback.map_or(0.0, |fb| fb.theta) * 1000.0) as i16,
+                    sector: sector as i16,
+                    ud_10mv: (u_dq.d * 100.0) as i16,
+                    uq_10mv: (u_dq.q * 100.0) as i16,
+                });
+
                 *cx.local.prev_u_ab = u_ab;
                 let braking_current = if let Some(dc_v) = dc_bus_reading_v {
                     if dc_v > dc_bus_min_v {

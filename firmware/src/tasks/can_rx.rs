@@ -4,6 +4,8 @@ use embedded_can::Id;
 
 use crate::app;
 use crate::constants::PWM_FREQUENCY_HZ;
+#[cfg(feature = "debug-capture")]
+use crate::capture;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
@@ -249,6 +251,16 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));
                     }
+                }
+            }
+            #[cfg(feature = "debug-capture")]
+            Ok(Messages::CaptureControl(msg)) => {
+                match msg.command() {
+                    CaptureControlCommand::Start => capture::start(),
+                    CaptureControlCommand::RequestDump => {
+                        capture::request_dump();
+                    }
+                    CaptureControlCommand::_Other(_) => {}
                 }
             }
             Ok(_) => {}
