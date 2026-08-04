@@ -48,7 +48,7 @@ Next, the closed-loop current control performance was evaluated using the branch
 
 The plot below shows the response to a 300 Hz sine wave setpoint, showing adequate tracking performance with some phase lag:
 
-  <img width="1800" height="1050" alt="image" src="https://github.com/user-attachments/assets/ab43a091-d069-4650-b012-c66bb56e5263" />
+  <img width="1800" height="1050" alt="tracking" src="https://github.com/user-attachments/assets/ab43a091-d069-4650-b012-c66bb56e5263" />
 
 For a more comprehensive test, a sum of sine waves at 14 odd harmonics of 100 Hz, spanning from 100 Hz to 3.9 kHz was fed as setpoint instead. The setpoints and the measured response were coherently averaged across 15 periods of excitation, and a Discrete Fourier Transform (DFT) was applied to them. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
 
@@ -60,8 +60,13 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
 
 <details>
   <summary><h2>CAN interface details</h2></summary>
+  The CAN interface is defined and documented by the [DBC](/firmware/dbc/servo.dbc) file:
+  <img width="1385" height="678" alt="dbc" src="https://github.com/user-attachments/assets/da8f2a8f-8015-4a2f-8624-dbd1952540ff" />
 </details>
 
 <details>
   <summary><h2>Adding support for a new board</h2></summary>
+  Prerequisites:
+  - Low side 3-shunt sensing
+  - 
 </details>
