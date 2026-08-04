@@ -8,6 +8,8 @@ use servo_firmware as _;
 mod boards;
 mod bsp;
 mod can;
+#[cfg(feature = "debug-capture")]
+mod capture;
 mod constants;
 mod memory;
 mod tasks;
@@ -264,7 +266,7 @@ mod app {
                 board_overtemp: Debounced = Debounced::new(false),
                 dc_undervolt: Debounced = Debounced::new(false),
                 dc_overvolt: Debounced = Debounced::new(false),
-                sensorless_estimator,
+                sensorless_estimator
             ],
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator,
