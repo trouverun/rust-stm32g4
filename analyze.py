@@ -76,7 +76,7 @@ ax.set_xscale("log")
 ax.set_xlim(FUNDAMENTAL_HZ * 0.9, f[-1] * 1.1)
 ax.set_xlabel("frequency (Hz)")
 ax.set_ylabel("gain (dB)")
-ax.set_title("Closed-loop gain (interpolated between log-spaced excitations)")
+ax.set_title("Closed-loop gain (interpolated between excitation frequencies)")
 
 fig.tight_layout()
 fig.savefig("bandwidth.png", dpi=150)
