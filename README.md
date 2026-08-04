@@ -48,7 +48,7 @@ The plot below shows the response to a 300 Hz sine wave setpoint, showing adequa
 
 For a more methodical test, a sum of sine waves at 14 odd harmonics of 100 Hz, spanning from 100 Hz to 3.9 kHz was fed as setpoint instead. The setpoints and the measured response were coherently averaged across 15 periods of excitation, and a Discrete Fourier Transform (DFT) was applied to them. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
 
-<img width="1800" height="1650" alt="image" src="https://github.com/user-attachments/assets/0b0d930d-4843-4e49-945a-eca13622e816" />
+<img width="1800" height="1650" alt="bandwidth" src="https://github.com/user-attachments/assets/32ccd71a-9e6c-4431-be7c-722a0888878d" />
 
 The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 1 kHz, with some deviation caused by the inverter nonlinearities (deadtime, capacitance) and the back-EMF caused by rotor movement due to q-axis current excitation.
 
