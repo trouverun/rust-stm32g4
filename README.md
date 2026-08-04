@@ -28,7 +28,11 @@ The firmware was tested on the setup shown below:
   
   <img width="4032" height="3024" alt="test_setup" src="https://github.com/user-attachments/assets/061007d8-c08d-431e-ad24-0f85361c4255" />
 
-The configuration used was as follows:
+[B-G473E-ZEST1S](https://www.st.com/en/evaluation-tools/b-g473e-zest1s.html#overview)
+[STEVAL-LVLP01](https://www.st.com/en/evaluation-tools/steval-lvlp01.html)
+[B-MOTOR-PMSMA1](https://www.st.com/en/evaluation-tools/b-motor-pmsma1.html)
+
+The firmware configuration used was as follows:
 - 40 kHz FOC rate
 - Motor parameters were identified using the self-commissioning routine built to the firmware
 - Current loop PI controllers were autotuned with a closed-loop bandwidth tuning goal of 1 kHz
@@ -38,7 +42,7 @@ First, during operation in torque control mode, GPIO pins were toggled from the 
 
 <img width="1452" height="491" alt="foc_rate" src="https://github.com/user-attachments/assets/39abdfac-19c1-4892-8fd6-923dde3cc4c5" />
 
-The real-time constraint at 40 kHz is satisfied, with the full ISR executing in 14.23 µs, well within the 25 µs budget.  
+The real-time constraint at 40 kHz is satisfied, with the full ISR executing in 14.23 µs (well within the 25 µs budget).  
 
 Next, the closed-loop current control performance was evaluated using the branch "bandwidth-test", which includes a firmware-level routine for injecting sine wave torque setpoints, composed of the specified frequencies and the given amplitude. The derived q-axis current setpoint and the measured q-axis current is recorded to RAM at the full 40 kHz FOC rate, and retrieved with probe-rs.
 
@@ -46,11 +50,11 @@ The plot below shows the response to a 300 Hz sine wave setpoint, showing adequa
 
   <img width="1800" height="1050" alt="image" src="https://github.com/user-attachments/assets/ab43a091-d069-4650-b012-c66bb56e5263" />
 
-For a more methodical test, a sum of sine waves at 14 odd harmonics of 100 Hz, spanning from 100 Hz to 3.9 kHz was fed as setpoint instead. The setpoints and the measured response were coherently averaged across 15 periods of excitation, and a Discrete Fourier Transform (DFT) was applied to them. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
+For a more comprehensive test, a sum of sine waves at 14 odd harmonics of 100 Hz, spanning from 100 Hz to 3.9 kHz was fed as setpoint instead. The setpoints and the measured response were coherently averaged across 15 periods of excitation, and a Discrete Fourier Transform (DFT) was applied to them. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
 
 <img width="1800" height="1650" alt="bandwidth" src="https://github.com/user-attachments/assets/32ccd71a-9e6c-4431-be7c-722a0888878d" />
 
-The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 1 kHz, with some deviation caused by the inverter nonlinearities (deadtime, capacitance) and the back-EMF caused by rotor movement due to q-axis current excitation.
+The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 1 kHz, with some deviation caused by the inverter nonlinearities (deadtime, capacitance) and any back-EMF caused by rotor movement due to q-axis current excitation.
 
 </details>
 
