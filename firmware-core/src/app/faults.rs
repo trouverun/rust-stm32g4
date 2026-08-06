@@ -40,6 +40,8 @@ pub enum FaultCause {
     
     CANMessageIntegrity,
     SetpointTimeout,
+
+    FirmwareUpdateInvalid,
 }
 
 impl FaultCause {
@@ -98,6 +100,12 @@ impl From<PITuningFault> for FaultCause {
             PITuningFault::InvalidTuningGoals => FaultCause::TuningInvalidTuningGoals,
             PITuningFault::Unstable | PITuningFault::NotRobust => FaultCause::TuningUnstable,
         }
+    }
+}
+
+impl From<super::update::FirmwareUpdateFault> for FaultCause {
+    fn from(_: super::update::FirmwareUpdateFault) -> Self {
+        FaultCause::FirmwareUpdateInvalid
     }
 }
 

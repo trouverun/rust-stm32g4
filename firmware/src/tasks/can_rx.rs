@@ -9,7 +9,7 @@ use crate::capture;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
-use firmware_core::{Command, FaultCause, OperatingMode, SafeControlStrategy};
+use firmware_core::{Command, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
 pub async fn can_process(mut cx: app::can_process::Context<'_>) {
@@ -250,6 +250,59 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));
+                    }
+                }
+            }
+            Ok(Messages::FirmwareUpdateData(msg)) => {
+                if !cx.shared.mode.lock(|m| matches!(m, OperatingMode::Idle { .. })) {
+                    cx.local.firmware_update.reset();
+                } else {
+                    let chunk = [
+                        msg.data_0(), msg.data_1(), msg.data_2(),
+                        msg.data_3(), msg.data_4(), msg.data_5(),
+                    ];
+                    match cx.local.firmware_update.on_data(msg.counter(), &chunk) {
+                        Ok(Some(write)) => {
+                            let stored = cx.shared.memory.lock(|m| m.dfu_write(write.offset, &write.data[..write.len]));
+                            if let Err(e) = stored {
+                                cx.local.firmware_update.reset();
+                                cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                        }
+                    }
+                }
+            }
+            Ok(Messages::FirmwareUpdateApply(msg)) => {
+                if !cx.shared.mode.lock(|m| matches!(m, OperatingMode::Idle { .. })) {
+                    cx.local.firmware_update.reset();
+                } else {
+                    match cx.local.firmware_update.on_apply(msg.image_length(), msg.image_crc32()) {
+                        Ok((flush, verify)) => {
+                            let crc = cx.shared.memory.lock(|m| {
+                                if let Some(write) = flush {
+                                    m.dfu_write(write.offset, &write.data[..write.len])?;
+                                }
+                                m.dfu_crc32(verify.length)
+                            });
+                            match crc {
+                                Ok(crc) if crc == verify.crc32 => {}
+                                Ok(_) => {
+                                    cx.shared.mode.lock(|mode| mode.on_command(
+                                        Command::AssertFault { cause: FirmwareUpdateFault::CrcMismatch.into() }
+                                    ));
+                                }
+                                Err(e) => {
+                                    cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                        }
                     }
                 }
             }

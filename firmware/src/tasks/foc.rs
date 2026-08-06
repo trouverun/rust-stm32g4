@@ -1,7 +1,6 @@
 use rtic::Mutex as _;
 use rtic::mutex::prelude::*;
 use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
-use defmt::info;
 
 use crate::app;
 use crate::constants::PWM_FREQUENCY_HZ;
@@ -209,7 +208,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
 }
 
 pub async fn store_hall_table(mut cx: app::store_hall_table::Context<'_>, angle_table: HallCalibration) {
-    info!("Angle table {}", angle_table);
     cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
     let command = cx.shared.memory.lock(|memory| {
         match memory.store(&angle_table) {
@@ -226,7 +224,6 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
     let result = compute_current_pi_controller_gains(
         estimate, PWM_FREQUENCY_HZ.0 as f32, CURRENT_LOOP_BANDWIDTH_HZ
     );
-    info!("PI gains {}", result);
     match result {
         Ok(pi_gains) => {
             cx.shared.foc.lock(|foc| {
@@ -264,7 +261,6 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
 }
 
 pub async fn store_motor_params(mut cx: app::store_motor_params::Context<'_>, parameters: MotorParamsEstimate) {
-    info!("Params {}", parameters);
     cx.shared.motor_parameters.lock(|active_params| {
         active_params.copy_other(parameters);
     });

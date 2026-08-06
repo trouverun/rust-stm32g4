@@ -31,8 +31,9 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=dbc/can.dbc");
 
-    let dbc_path = "dbc/servo.dbc";
+    let dbc_path = "dbc/can.dbc";
     let dbc_bytes = std::fs::read(dbc_path).expect("read dbc");
     let dbc = DBC::from_slice(&dbc_bytes).expect("parse dbc");
 
@@ -42,7 +43,7 @@ fn main() {
     let frames_path = std::path::Path::new(&out_dir).join("frames.rs");
 
     let mut buf: Vec<u8> = Vec::new();
-    dbc_codegen::codegen("servo.dbc", &dbc_bytes, &mut buf, true)
+    dbc_codegen::codegen("can.dbc", &dbc_bytes, &mut buf, true)
         .expect("dbc codegen");
     let raw = String::from_utf8(buf).expect("dbc codegen produced non-utf8 output");
 
@@ -218,7 +219,7 @@ fn emit_periodic(dbc: &DBC, cycle_times: &HashMap<u32, u32>) -> String {
 // TX helpers (Init/IntoFrame/periodic) only apply to messages the board sends.
 // Host-sent messages are decoded via dbc-codegen's generated `Messages`.
 fn is_board_tx(msg: &Message) -> bool {
-    matches!(msg.transmitter(), Transmitter::NodeName(n) if n == "Hyperdrive")
+    matches!(msg.transmitter(), Transmitter::NodeName(n) if n == "Firmware")
 }
 
 fn is_constructor_signal(sig: &Signal) -> bool {

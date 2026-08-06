@@ -61,7 +61,7 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
 <details>
   <summary><h2>CAN interface details</h2></summary>
   
-  The CAN interface is defined and documented by the [DBC](/firmware/dbc/servo.dbc) file:
+  The CAN interface is defined and documented by the [DBC](/firmware/dbc/can.dbc) file:
   
   <img width="1385" height="678" alt="dbc" src="https://github.com/user-attachments/assets/da8f2a8f-8015-4a2f-8624-dbd1952540ff" />
 </details>
