@@ -4,77 +4,90 @@ NS_ :
 
 BS_:
 
-BU_: Hyperdrive Host
+BU_: Firmware Host
 
 BO_ 576 CalibrationTargets: 6 Host
- SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
- SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
- SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Hyperdrive
+ SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Firmware
+ SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Firmware
+ SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Firmware
 
 BO_ 640 CaptureControl: 1 Host
- SG_ command : 0|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ command : 0|8@1+ (1,0) [0|255] "" Firmware
 
 BO_ 624 ConfigQuery: 1 Host
- SG_ block_id : 0|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ block_id : 0|8@1+ (1,0) [0|255] "" Firmware
+
+BO_ 672 FirmwareUpdateApply: 8 Host
+ SG_ image_length : 0|32@1+ (1,0) [0|4294967295] "bytes" Firmware
+ SG_ image_crc32 : 32|32@1+ (1,0) [0|4294967295] "" Firmware
+
+BO_ 656 FirmwareUpdateData: 8 Host
+ SG_ counter : 0|16@1+ (1,0) [0|65535] "" Firmware
+ SG_ data_0 : 16|8@1+ (1,0) [0|255] "" Firmware
+ SG_ data_1 : 24|8@1+ (1,0) [0|255] "" Firmware
+ SG_ data_2 : 32|8@1+ (1,0) [0|255] "" Firmware
+ SG_ data_3 : 40|8@1+ (1,0) [0|255] "" Firmware
+ SG_ data_4 : 48|8@1+ (1,0) [0|255] "" Firmware
+ SG_ data_5 : 56|8@1+ (1,0) [0|255] "" Firmware
 
 BO_ 560 MotorConfig: 8 Host
- SG_ num_pole_pairs : 0|6@1+ (1,0) [0|63] "" Hyperdrive
- SG_ rotor_speed_limit_mech : 6|16@1+ (1,0) [0|65535] "rpm" Hyperdrive
- SG_ momentary_current_limit : 22|14@1+ (0.01,0) [0|163.83] "A" Hyperdrive
- SG_ rated_current_limit : 36|14@1+ (0.01,0) [0|163.83] "A" Hyperdrive
- SG_ overcurrent_limit : 50|14@1+ (0.01,0) [0|163.83] "A" Hyperdrive
+ SG_ num_pole_pairs : 0|6@1+ (1,0) [0|63] "" Firmware
+ SG_ rotor_speed_limit_mech : 6|16@1+ (1,0) [0|65535] "rpm" Firmware
+ SG_ momentary_current_limit : 22|14@1+ (0.01,0) [0|163.83] "A" Firmware
+ SG_ rated_current_limit : 36|14@1+ (0.01,0) [0|163.83] "A" Firmware
+ SG_ overcurrent_limit : 50|14@1+ (0.01,0) [0|163.83] "A" Firmware
 
 BO_ 528 OperatingModeRequest: 1 Host
- SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Firmware
 
 BO_ 544 ProtectionLimits1: 8 Host
- SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
- SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Hyperdrive
- SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
- SG_ braking_current_fault : 48|16@1+ (0.001,0) [0|65.535] "A" Hyperdrive
+ SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Firmware
+ SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Firmware
+ SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Firmware
+ SG_ braking_current_fault : 48|16@1+ (0.001,0) [0|65.535] "A" Firmware
 
 BO_ 608 ProtectionLimits2: 4 Host
- SG_ setpoint_timeout : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
- SG_ temp_max : 16|16@1- (0.1,0) [-3276.8|3276.7] "degC" Hyperdrive
+ SG_ setpoint_timeout : 0|16@1+ (1,0) [0|65535] "ms" Firmware
+ SG_ temp_max : 16|16@1- (0.1,0) [-3276.8|3276.7] "degC" Firmware
 
 BO_ 592 SafeStopConfig: 4 Host
- SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Hyperdrive
- SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Hyperdrive
+ SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Firmware
+ SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Firmware
 
 BO_ 512 Setpoint: 4 Host
- SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Hyperdrive
- SG_ rolling_counter : 16|4@1+ (1,0) [0|15] "" Hyperdrive
- SG_ checksum : 24|8@1+ (1,0) [0|255] "" Hyperdrive
+ SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Firmware
+ SG_ rolling_counter : 16|4@1+ (1,0) [0|15] "" Firmware
+ SG_ checksum : 24|8@1+ (1,0) [0|255] "" Firmware
 
-BO_ 368 CalibrationTargetsReport: 6 Hyperdrive
+BO_ 368 CalibrationTargetsReport: 6 Firmware
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Host
 
-BO_ 480 CaptureDump: 8 Hyperdrive
+BO_ 480 CaptureDump: 8 Firmware
  SG_ seq : 0|16@1+ (1,0) [0|65535] "" Host
  SG_ data_0 : 16|16@1- (1,0) [-32768|32767] "" Host
  SG_ data_1 : 32|16@1- (1,0) [-32768|32767] "" Host
  SG_ data_2 : 48|16@1- (1,0) [-32768|32767] "" Host
 
-BO_ 384 CurrentGainsDReport: 8 Hyperdrive
+BO_ 384 CurrentGainsDReport: 8 Firmware
  SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
  SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
  SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
  SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
 
-BO_ 400 CurrentGainsQReport: 8 Hyperdrive
+BO_ 400 CurrentGainsQReport: 8 Firmware
  SG_ kr : 0|16@1+ (2e-05,0) [0|1.3107] "" Host
  SG_ kp : 16|16@1+ (0.01,0) [0|655.35] "" Host
  SG_ ki : 32|16@1+ (2,0) [0|131070] "" Host
  SG_ kt : 48|16@1+ (0.02,0) [0|1310.7] "" Host
 
-BO_ 288 EncoderReading: 4 Hyperdrive
+BO_ 288 EncoderReading: 4 Firmware
  SG_ enc_pos : 0|12@1+ (0.0015339808,0) [0|6.2817] "rad" Host
  SG_ enc_vel : 12|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
  SG_ enc_valid : 28|1@1+ (1,0) [0|1] "" Host
 
-BO_ 304 Fault: 8 Hyperdrive
+BO_ 304 Fault: 8 Firmware
  SG_ fault_0 : 0|8@1+ (1,0) [0|255] "" Host
  SG_ fault_1 : 8|8@1+ (1,0) [0|255] "" Host
  SG_ fault_2 : 16|8@1+ (1,0) [0|255] "" Host
@@ -84,49 +97,49 @@ BO_ 304 Fault: 8 Hyperdrive
  SG_ fault_6 : 48|8@1+ (1,0) [0|255] "" Host
  SG_ fault_7 : 56|8@1+ (1,0) [0|255] "" Host
 
-BO_ 320 Heartbeat: 6 Hyperdrive
+BO_ 320 Heartbeat: 6 Firmware
  SG_ mode : 0|8@1+ (1,0) [0|255] "" Host
  SG_ dc_bus_voltage : 8|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ temperature : 24|16@1- (0.1,0) [-3276.8|3276.7] "degC" Host
  SG_ dc_bus_voltage_valid : 40|1@1+ (1,0) [0|1] "" Host
  SG_ temperature_valid : 41|1@1+ (1,0) [0|1] "" Host
 
-BO_ 352 MotorConfigReport: 8 Hyperdrive
+BO_ 352 MotorConfigReport: 8 Firmware
  SG_ num_pole_pairs : 0|6@1+ (1,0) [0|63] "" Host
  SG_ rotor_speed_limit_mech : 6|16@1+ (1,0) [0|65535] "rpm" Host
  SG_ momentary_current_limit : 22|14@1+ (0.01,0) [0|163.83] "A" Host
  SG_ rated_current_limit : 36|14@1+ (0.01,0) [0|163.83] "A" Host
  SG_ overcurrent_limit : 50|14@1+ (0.01,0) [0|163.83] "A" Host
 
-BO_ 256 MotorCurrents: 8 Hyperdrive
+BO_ 256 MotorCurrents: 8 Firmware
  SG_ iQ_meas : 0|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iD_meas : 16|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iQ_target : 32|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iD_target : 48|16@1- (0.001,0) [-32.768|32.767] "A" Host
 
-BO_ 416 MotorParameterReport1: 7 Hyperdrive
+BO_ 416 MotorParameterReport1: 7 Firmware
  SG_ stator_resistance : 0|24@1+ (1e-05,0) [0|167.77215] "ohm" Host
  SG_ pm_flux_linkage : 24|24@1+ (2e-08,0) [0|0.3355443] "Wb" Host
  SG_ rs_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ flux_valid : 49|1@1+ (1,0) [0|1] "" Host
 
-BO_ 432 MotorParameterReport2: 7 Hyperdrive
+BO_ 432 MotorParameterReport2: 7 Firmware
  SG_ d_inductance : 0|24@1+ (1e-07,0) [0|1.6777215] "H" Host
  SG_ q_inductance : 24|24@1+ (1e-07,0) [0|1.6777215] "H" Host
  SG_ ld_valid : 48|1@1+ (1,0) [0|1] "" Host
  SG_ lq_valid : 49|1@1+ (1,0) [0|1] "" Host
 
-BO_ 336 ProtectionLimits1Report: 8 Hyperdrive
+BO_ 336 ProtectionLimits1Report: 8 Firmware
  SG_ dc_bus_v_min : 0|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ dc_bus_v_max : 16|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ braking_current_limit : 32|16@1+ (0.001,0) [0|65.535] "A" Host
  SG_ braking_current_fault : 48|16@1+ (0.001,0) [0|65.535] "A" Host
 
-BO_ 464 ProtectionLimits2Report: 4 Hyperdrive
+BO_ 464 ProtectionLimits2Report: 4 Firmware
  SG_ setpoint_timeout : 0|16@1+ (1,0) [0|65535] "ms" Host
  SG_ temp_max : 16|16@1- (0.1,0) [-3276.8|3276.7] "degC" Host
 
-BO_ 272 RotorEstimates: 8 Hyperdrive
+BO_ 272 RotorEstimates: 8 Firmware
  SG_ hall_pos : 0|12@1+ (0.0015339808,0) [0|6.2817] "rad" Host
  SG_ sensl_pos : 12|14@1+ (0.00038349519,0) [0|6.2829] "rad" Host
  SG_ hall_vel : 26|16@1- (0.25,0) [-8192|8191.75] "rad/s" Host
@@ -134,12 +147,14 @@ BO_ 272 RotorEstimates: 8 Hyperdrive
  SG_ hall_valid : 58|1@1+ (1,0) [0|1] "" Host
  SG_ sensl_valid : 59|1@1+ (1,0) [0|1] "" Host
 
-BO_ 448 SafeStopConfigReport: 4 Hyperdrive
+BO_ 448 SafeStopConfigReport: 4 Firmware
  SG_ ss1t_duration_ms : 0|16@1+ (1,0) [0|65535] "ms" Host
  SG_ ss1t_velocity_thresh : 16|16@1+ (0.01,0) [0|655.35] "rad/s" Host
 
-CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands. Messages are listed Host-transmitted first, then Hyperdrive-transmitted, alphabetical within each group.";
-CM_ BO_ 512 "Torque setpoint. checksum = CRC-8 (SAE J1850) over data bytes 0-2.";
+CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands. Messages are listed Host-transmitted first, then Firmware-transmitted, alphabetical within each group.";
+CM_ BO_ 512 "Checksum = CRC-8 (SAE J1850) over data bytes 0-2.";
+CM_ BO_ 656 "Firmware image chunk, byte offset = counter * 6. Counter 0 restarts reception; a counter gap aborts the transfer.";
+CM_ BO_ 672 "Finalize update: image_crc32 = CRC-32 (ISO-HDLC) over image_length bytes read back from the DFU partition.";
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ BO_  "GenMsgCycleTimeUs" INT 0 1000000;

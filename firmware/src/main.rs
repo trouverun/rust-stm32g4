@@ -52,7 +52,7 @@ mod app {
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
     };
     use firmware_core::{
-        Command, FaultCause, OperatingMode, SafeControlStrategy,
+        Command, FaultCause, FirmwareUpdateState, OperatingMode, SafeControlStrategy,
         CurrentLoopSnapshot, FrameIntegrity, Debounced, LeakyBucket
     };
     use crate::types::*;
@@ -293,15 +293,16 @@ mod app {
             priority = 1,
             shared = [
                 can, mode, runtime_values, config, phase_current_filter,
-                braking_current_filter, foc, motor_parameters, pwm_output
+                braking_current_filter, foc, motor_parameters, pwm_output, memory
             ],
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
                 setpoint_fault: LeakyBucket = LeakyBucket::new(
-                    TORQUE_SETPOINT_FAULT_FILL_RATE, 
-                    TORQUE_SETPOINT_FAULT_DRAIN_RATE, 
+                    TORQUE_SETPOINT_FAULT_FILL_RATE,
+                    TORQUE_SETPOINT_FAULT_DRAIN_RATE,
                     TORQUE_SETPOINT_FAULT_CAPACITY
-                )
+                ),
+                firmware_update: FirmwareUpdateState = FirmwareUpdateState::new(crate::memory::DFU_SIZE)
             ]
         )]
         async fn can_process(_: can_process::Context);
