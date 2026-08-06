@@ -11,6 +11,13 @@ pub const MOTOR_ESTIMATION_SINGLE_TEST_DURATION_S: f32 = 5.0;
 /// Maximum amount of time allocated to spinning up the motor during system identification
 pub const MOTOR_ESTIMATION_SPINUP_DURATION_S: f32 = 15.0;
 
+// Firmware update:
+
+/// Payload bytes in one FirmwareUpdateData frame
+pub const UPDATE_CHUNK_BYTES: usize = 6;
+/// Staging length aligned to both the chunk size and the flash write granularity
+pub const UPDATE_STAGE_BYTES: usize = 24;
+
 // Safe strategy:
 
 /// Number of consecutive ticks where the STO <-> ASC condition needs to hold before activating
