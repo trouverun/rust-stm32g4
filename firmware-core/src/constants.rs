@@ -13,6 +13,8 @@ pub const MOTOR_ESTIMATION_SPINUP_DURATION_S: f32 = 15.0;
 
 // Firmware update:
 
+/// Number of flash pages reserved at the end of bank2 for configuration values
+pub const RESERVED_CONFIG_PAGES: u32 = 8;
 /// Payload bytes in one FirmwareUpdateData frame
 pub const UPDATE_CHUNK_BYTES: usize = 6;
 /// Staging length aligned to both the chunk size and the flash write granularity

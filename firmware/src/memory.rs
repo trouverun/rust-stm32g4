@@ -1,7 +1,10 @@
 use crate::types::FirmwareConfig;
-use embassy_stm32::flash::{FLASH_SIZE, MAX_ERASE_SIZE, WRITE_SIZE};
+use embassy_stm32::flash::{BANK2_REGION, FLASH_BASE, WRITE_SIZE};
 use field_oriented::{ControllerParameters, HallCalibration, MotorParamsEstimate};
-use firmware_core::MAX_RECORD_BYTES;
+use firmware_core::{MAX_RECORD_BYTES, RESERVED_CONFIG_PAGES};
+
+// FIRMWARE_SIZE parsed from memory.x
+include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 
 /// An entry persisted in its own flash page.
 /// `PAGE` indexes pages from the end of flash (0 = last page)
@@ -21,29 +24,28 @@ impl Stored for ControllerParameters {
     const VERSION: u16 = (1 << 12) | (crate::constants::PWM_FREQUENCY_HZ.0 / 1000) as u16;
 }
 
-pub(crate) const PAGE_SIZE: u32 = MAX_ERASE_SIZE as u32;
-const TOTAL_FLASH_PAGES: usize = FLASH_SIZE / MAX_ERASE_SIZE;
+pub(crate) const PAGE_SIZE: u32 = BANK2_REGION.erase_size;
 
-/// DFU image staging area: bank 2 up to the reserved config pages
-pub(crate) const DFU_OFFSET: u32 = (FLASH_SIZE / 2) as u32;
-pub(crate) const DFU_SIZE: u32 = (FLASH_SIZE / 2) as u32 - 4 * PAGE_SIZE;
+/// DFU image staging area:
+pub(crate) const DFU_OFFSET: u32 = BANK2_REGION.base - FLASH_BASE as u32;
+pub(crate) const DFU_SIZE: u32 = FIRMWARE_SIZE + 1 * PAGE_SIZE;
+pub(crate) const BOOTLOADER_STATUS_OFFSET: u32 = DFU_OFFSET + DFU_SIZE;
 
-/// Flash byte offset of the page at `index`, counted from the end of flash:
+/// Flash byte offset of the page at `index`, counted from the end of bank 2:
 /// index 0 is the last page, 1 the second-to-last, and so on.
 pub(crate) const fn page_offset(index: usize) -> u32 {
-    FLASH_SIZE as u32 - (index as u32 + 1) * PAGE_SIZE
+    BANK2_REGION.end() - FLASH_BASE as u32 - (index as u32 + 1) * PAGE_SIZE
 }
 
 const _: () = {
-    assert!(FirmwareConfig::PAGE < TOTAL_FLASH_PAGES);
-    assert!(HallCalibration::PAGE < TOTAL_FLASH_PAGES);
-    assert!(MotorParamsEstimate::PAGE < TOTAL_FLASH_PAGES);
-    assert!(ControllerParameters::PAGE < TOTAL_FLASH_PAGES);
     assert!(MAX_RECORD_BYTES % WRITE_SIZE == 0);
     assert!(MAX_RECORD_BYTES <= PAGE_SIZE as usize);
-    // The version stamp encodes the frequency in whole kHz below the layout tag bits:
-    assert!(crate::constants::PWM_FREQUENCY_HZ.0 % 1000 == 0);
+    assert!(FirmwareConfig::PAGE < RESERVED_CONFIG_PAGES as usize);
+    assert!(HallCalibration::PAGE < RESERVED_CONFIG_PAGES as usize);
+    assert!(MotorParamsEstimate::PAGE < RESERVED_CONFIG_PAGES as usize);
+    assert!(ControllerParameters::PAGE < RESERVED_CONFIG_PAGES as usize);
     assert!(crate::constants::PWM_FREQUENCY_HZ.0 / 1000 < (1 << 12));
-    assert!(DFU_OFFSET + DFU_SIZE <= page_offset(3));
+    assert!(DFU_OFFSET + DFU_SIZE <= page_offset(1 + RESERVED_CONFIG_PAGES as usize - 1));
     assert!(DFU_OFFSET % PAGE_SIZE == 0);
+    assert!(BOOTLOADER_STATUS_OFFSET % PAGE_SIZE == 0);
 };

@@ -1,12 +1,11 @@
 use crate::app::MemoryFault;
+use crate::CRC32;
 
-/// Scratch-buffer size, in **bytes**, for one record (4-byte header + postcard payload + 4-byte CRC).
+/// Buffer size in **bytes** for one record (4-byte header + postcard payload + 4-byte CRC).
 /// The flash side must ensure this is a multiple of the write granularity and fits within a sector.
 pub const MAX_RECORD_BYTES: usize = 64;
 const HEADER_BYTES: usize = 4;
 const CRC_BYTES: usize = 4;
-
-pub const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 
 /// Serializes `value` into `buf` as one record and returns the record length:
 /// 

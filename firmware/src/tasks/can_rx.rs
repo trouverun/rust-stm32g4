@@ -280,29 +280,22 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 if !cx.shared.mode.lock(|m| matches!(m, OperatingMode::Idle { .. })) {
                     cx.local.firmware_update.reset();
                 } else {
-                    match cx.local.firmware_update.on_apply(msg.image_length(), msg.image_crc32()) {
-                        Ok((flush, verify)) => {
-                            let crc = cx.shared.memory.lock(|m| {
-                                if let Some(write) = flush {
-                                    m.dfu_write(write.offset, &write.data[..write.len])?;
-                                }
-                                m.dfu_crc32(verify.length)
-                            });
-                            match crc {
-                                Ok(crc) if crc == verify.crc32 => {}
-                                Ok(_) => {
-                                    cx.shared.mode.lock(|mode| mode.on_command(
-                                        Command::AssertFault { cause: FirmwareUpdateFault::CrcMismatch.into() }
-                                    ));
-                                }
-                                Err(e) => {
-                                    cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
-                                }
+                    let applied: Result<(), FaultCause> = match cx.local.firmware_update.on_apply(msg.image_length(), msg.image_crc32()) {
+                        Ok((flush, verify)) => cx.shared.memory.lock(|m| {
+                            if let Some(write) = flush {
+                                m.dfu_write(write.offset, &write.data[..write.len])?;
                             }
-                        }
-                        Err(e) => {
-                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
-                        }
+                            let crc = m.dfu_crc32(verify.length)?;
+                            if crc != verify.crc32 {
+                                return Err(FirmwareUpdateFault::CrcMismatch.into());
+                            }
+                            m.dfu_mark_written(verify.length, verify.crc32)?;
+                            Ok(())
+                        }),
+                        Err(e) => Err(e.into()),
+                    };
+                    if let Err(cause) = applied {
+                        cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause }));
                     }
                 }
             }
@@ -322,7 +315,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
     }
 }
 
-/// Deferred flash write until FOC is inactive
+/// Deferred flash write until in non-active control state
 pub async fn persist_config(mut cx: app::persist_config::Context<'_>) {
     loop {
         if !cx.shared.mode.lock(|m| m.foc_gate().active) {

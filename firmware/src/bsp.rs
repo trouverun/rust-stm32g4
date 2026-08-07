@@ -14,8 +14,8 @@ use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin};
 
 use crate::boards::*;
 use crate::constants::{OPAMP_CALIBRATION_SAMPLE_COUNT};
-use crate::memory::{DFU_OFFSET, DFU_SIZE, PAGE_SIZE, Stored, page_offset};
-use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES};
+use crate::memory::{DFU_OFFSET, FIRMWARE_SIZE, BOOTLOADER_STATUS_OFFSET, PAGE_SIZE, Stored, page_offset};
+use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES, BootloaderStatus, BootloaderState, DecodeResult};
 use embassy_stm32::adc::{
     Adc, AdcConfig, AnyAdcChannel, Dual, EocInterruptEnabled, Exten, ExternalTriggeredADC,
     JeosInterruptEnabled, Queued, Running as AdcRunning, SampleTime, StartMode,
@@ -694,7 +694,7 @@ impl Memory {
     pub fn dfu_write(&mut self, offset: u32, data: &[u8]) -> Result<(), MemoryFault> {
         let start = DFU_OFFSET + offset;
         let end = start + data.len() as u32;
-        if end > DFU_OFFSET + DFU_SIZE {
+        if end > DFU_OFFSET + FIRMWARE_SIZE {
             return Err(MemoryFault::TooLarge);
         }
         let mut page = start.next_multiple_of(PAGE_SIZE);
@@ -726,5 +726,51 @@ impl Memory {
             offset += n as u32;
         }
         Ok(digest.finalize())
+    }
+
+    pub fn read_bootloader_status(&mut self) -> Result<DecodeResult, MemoryFault> {
+        let mut buf = [0u8; 16];
+        self.flash
+            .blocking_read(BOOTLOADER_STATUS_OFFSET, &mut buf)
+            .map_err(|_| MemoryFault::FlashInternalFault)?;
+
+        Ok(BootloaderStatus::from_bytes(&buf))
+    }
+
+    fn write_bootloader_status(&mut self, status: BootloaderStatus) -> Result<(), MemoryFault> {
+        self.flash
+            .blocking_erase(BOOTLOADER_STATUS_OFFSET, BOOTLOADER_STATUS_OFFSET + PAGE_SIZE)
+            .map_err(|_| MemoryFault::FlashInternalFault)?;
+        self.flash
+            .blocking_write(BOOTLOADER_STATUS_OFFSET, &status.to_bytes())
+            .map_err(|_| MemoryFault::FlashInternalFault)?;
+
+        Ok(())
+    }
+
+    /// Marks the DFU area as newly written for the bootloader
+    pub fn dfu_mark_written(&mut self, image_length: u32, image_crc32: u32) -> Result<(), MemoryFault> {
+        let bootloader_status = BootloaderStatus::new(
+            BootloaderState::DfuFreshlyWritten, image_length, image_crc32
+        );
+        self.write_bootloader_status(bootloader_status)?;
+
+        Ok(())
+    }
+
+    /// Marks that the currently active firmware boots normally 
+    /// (for the bootloader, so it does not revert to the previous firmware)
+    pub fn confirm_boot(&mut self) -> Result<(), MemoryFault> {
+        let read_status = self.read_bootloader_status()?;
+
+        if let DecodeResult::Valid(status) = read_status {
+            if matches!(status.state, BootloaderState::DfuContentsRejected | BootloaderState::SwappedImageTrialBooted | BootloaderState::SwappedImageBootTimeout) {
+                self.flash
+                    .blocking_erase(BOOTLOADER_STATUS_OFFSET, BOOTLOADER_STATUS_OFFSET + PAGE_SIZE)
+                    .map_err(|_| MemoryFault::FlashInternalFault)?;
+            }
+        }
+
+        Ok(())
     }
 }
