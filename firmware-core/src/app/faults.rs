@@ -42,6 +42,7 @@ pub enum FaultCause {
     SetpointTimeout,
 
     FirmwareUpdateInvalid,
+    FirmwareUpdateReverted
 }
 
 impl FaultCause {
