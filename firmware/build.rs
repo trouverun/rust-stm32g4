@@ -12,6 +12,16 @@ const CYCLE_TIME_MS_ATTRIBUTE: &str = "GenMsgCycleTime";
 const CYCLE_TIME_US_ATTRIBUTE: &str = "GenMsgCycleTimeUs";
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    let out_dir = env::var("OUT_DIR").unwrap();
+
+    configure_linker();
+    configure_defmt();
+    generate_memory_layout(&out_dir);
+    generate_can(&out_dir);
+}
+
+fn configure_linker() {
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
@@ -19,25 +29,80 @@ fn main() {
     println!("cargo:rustc-link-search={}", env::var("CARGO_MANIFEST_DIR").unwrap());
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=ccmram.x");
-    let profile = env::var("PROFILE").unwrap();
+}
 
-    match profile.as_str() {
-        "release" => {
-            println!("cargo:rustc-env=DEFMT_LOG=error");
-        }
-        _ => {
-            println!("cargo:rustc-env=DEFMT_LOG=trace");
-        }
+fn configure_defmt() {
+    match env::var("PROFILE").unwrap().as_str() {
+        "release" => println!("cargo:rustc-env=DEFMT_LOG=error"),
+        _ => println!("cargo:rustc-env=DEFMT_LOG=trace"),
     }
+}
 
-    println!("cargo:rerun-if-changed=build.rs");
+/// Emits FIRMWARE_SIZE from memory.x and checks that the bootloader's
+/// flash ends exactly where the firmware's begins.
+fn generate_memory_layout(out_dir: &str) {
+    println!("cargo:rerun-if-changed=../bootloader/memory.x");
+    let (firmware_origin, firmware_size) = flash_region("memory.x");
+    let (loader_origin, loader_size) = flash_region("../bootloader/memory.x");
+    assert!(
+        loader_origin + loader_size == firmware_origin,
+        "bootloader flash ends at {:#x} but firmware starts at {:#x}",
+        loader_origin + loader_size,
+        firmware_origin,
+    );
+    let layout = format!("pub(crate) const FIRMWARE_SIZE: u32 = {firmware_size:#x};\n");
+    std::fs::write(std::path::Path::new(out_dir).join("layout.rs"), layout)
+        .expect("write layout.rs");
+}
+
+/// ORIGIN and LENGTH of the FLASH region in a linker memory script
+fn flash_region(path: &str) -> (u32, u32) {
+    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    for line in src.lines() {
+        let line = line.split("/*").next().unwrap();
+        let Some((name, rest)) = line.split_once(':') else { continue };
+        if name.trim() != "FLASH" {
+            continue;
+        }
+        let origin = region_field(rest, "ORIGIN")
+            .unwrap_or_else(|| panic!("bad FLASH ORIGIN in {path}"));
+        let length = region_field(rest, "LENGTH")
+            .unwrap_or_else(|| panic!("bad FLASH LENGTH in {path}"));
+        return (origin, length);
+    }
+    panic!("no FLASH region in {path}");
+}
+
+fn region_field(s: &str, key: &str) -> Option<u32> {
+    let after = s.split_once(key)?.1;
+    let value = after.trim_start().strip_prefix('=')?.trim_start();
+    let end = value
+        .find(|c: char| c == ',' || c.is_whitespace())
+        .unwrap_or(value.len());
+    linker_number(&value[..end])
+}
+
+/// Linker script numbers: hex, decimal, and K/M suffixes
+fn linker_number(s: &str) -> Option<u32> {
+    if let Some(hex) = s.strip_prefix("0x") {
+        return u32::from_str_radix(hex, 16).ok();
+    }
+    if let Some(k) = s.strip_suffix('K') {
+        return k.parse::<u32>().ok().map(|v| v * 1024);
+    }
+    if let Some(m) = s.strip_suffix('M') {
+        return m.parse::<u32>().ok().map(|v| v * 1024 * 1024);
+    }
+    s.parse().ok()
+}
+
+fn generate_can(out_dir: &str) {
     println!("cargo:rerun-if-changed=dbc/can.dbc");
 
     let dbc_path = "dbc/can.dbc";
     let dbc_bytes = std::fs::read(dbc_path).expect("read dbc");
     let dbc = DBC::from_slice(&dbc_bytes).expect("parse dbc");
 
-    let out_dir = env::var("OUT_DIR").unwrap();
     let messages_path = std::path::Path::new(&out_dir).join("messages.rs");
     let periodic_path = std::path::Path::new(&out_dir).join("periodic.rs");
     let frames_path = std::path::Path::new(&out_dir).join("frames.rs");
@@ -86,8 +151,6 @@ fn main() {
 
     let frames_src = emit_frames(&dbc);
     std::fs::write(&frames_path, frames_src).expect("write frames.rs");
-
-    println!("cargo:rerun-if-changed={}", dbc_path);
 }
 
 /// Returns each periodic message's transmit period in **microseconds**.

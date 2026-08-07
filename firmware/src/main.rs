@@ -4,7 +4,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(core_intrinsics)]
 
-use servo_firmware as _;
+use stm32g4_firmware as _;
 mod boards;
 mod bsp;
 mod can;
@@ -52,8 +52,8 @@ mod app {
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
     };
     use firmware_core::{
-        Command, FaultCause, FirmwareUpdateState, OperatingMode, SafeControlStrategy,
-        CurrentLoopSnapshot, FrameIntegrity, Debounced, LeakyBucket
+        BootloaderState, Command, CurrentLoopSnapshot, Debounced, FaultCause, FirmwareUpdateState, 
+        FrameIntegrity, LeakyBucket, OperatingMode, SafeControlStrategy, DecodeResult
     };
     use crate::types::*;
     use field_oriented::{
@@ -125,6 +125,19 @@ mod app {
         let mut memory = bsp::Memory::new(memory_mappings);
         let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
 
+        let bootloader_status = memory.read_bootloader_status();
+        if let Ok(DecodeResult::Valid(status)) = bootloader_status {
+            match status.state {
+                BootloaderState::DfuContentsRejected => {
+                    mode.on_command(Command::AssertFault { cause: FaultCause::FirmwareUpdateInvalid });
+                },
+                BootloaderState::SwappedImageBootTimeout => {
+                    mode.on_command(Command::AssertFault { cause: FaultCause::FirmwareUpdateReverted });
+                },
+                _ => {}
+            }
+        }
+
         if HardwareWatchdog::caused_reset() {
             mode.on_command(Command::AssertFault { cause: FaultCause::WatchdogReboot });
         }
@@ -189,6 +202,12 @@ mod app {
         let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
         Mono::start(rcc::frequency::<TIM2>().0, token);
         can_tx_task::spawn().unwrap();
+
+        // Mark the current firmware as correctly booting
+        match memory.confirm_boot() {
+            Ok(_) => {},
+            Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
+        }
 
         (Shared {
             mode,
@@ -302,7 +321,7 @@ mod app {
                     TORQUE_SETPOINT_FAULT_DRAIN_RATE,
                     TORQUE_SETPOINT_FAULT_CAPACITY
                 ),
-                firmware_update: FirmwareUpdateState = FirmwareUpdateState::new(crate::memory::DFU_SIZE)
+                firmware_update: FirmwareUpdateState = FirmwareUpdateState::new(crate::memory::FIRMWARE_SIZE)
             ]
         )]
         async fn can_process(_: can_process::Context);
