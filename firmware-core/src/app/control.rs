@@ -146,14 +146,15 @@ fn foc_step_inner<A, C, M>(
     if !rotor_feedback_fault {
         const RPM_TO_RADS: f32 = PI / 30.0;
         let mut max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS;
+        let mut skip = false;
         if matches!(angle_type, AngleType::Electrical) {
             if let Some(pole_pairs) = params.get_estimate().num_pole_pairs {
                 max_omega *= pole_pairs as f32;
             } else {
-                mode.on_command(Command::AssertFault { cause: FaultCause::MissingMotorParams });
+                skip = true;
             }
         }
-        if omega.abs() > max_omega {
+        if !skip && omega.abs() > max_omega {
             mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
         }
     }

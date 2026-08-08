@@ -73,6 +73,7 @@ impl FOC {
         }
     }
 
+    #[inline]
     pub fn compute<A>(&mut self, 
         input: FocInput, 
         motor_params: MotorParamsEstimate,
@@ -211,6 +212,7 @@ impl FOC {
         })
     }
 
+    #[inline]
     fn compute_voltages(&mut self,
         target_i_dq: ClarkParkValue, measured_i_dq: ClarkParkValue, 
         omega_e: f32, pm_flux_linkage: f32, motor_params: MotorParamsEstimate
@@ -232,6 +234,7 @@ impl FOC {
         if let Some(ControllerParameters { d_pi, q_pi , closed_loop_bandwidth_hz }) = gains {
             self.d_pi.set_gains(Some(d_pi));
             self.q_pi.set_gains(Some(q_pi));
+            self.current_control_bandwidth_hz = closed_loop_bandwidth_hz;
             if let Some(bandwidth_hz) = closed_loop_bandwidth_hz {
                 self.field_weakening.derive_gains(bandwidth_hz)?;
             }
