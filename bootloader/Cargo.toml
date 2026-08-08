@@ -1,0 +1,23 @@
+[package]
+name = "bootloader"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+[dependencies]
+embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["stm32g473qe", "dual-bank", "unstable-pac"] }
+firmware-core = { path = "../firmware-core" }
+cortex-m = { version = "0.7", features = ["critical-section-single-core", "inline-asm"] }
+cortex-m-rt = "0.7"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = "z"
+incremental = false
+
+# Debug builds overflow the 16K flash region without size optimization
+[profile.dev]
+opt-level = "z"
+lto = "fat"
