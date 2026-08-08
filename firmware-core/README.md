@@ -1,2 +1,2 @@
 # Firmware-core
-This crate contains high-level application logic for the main firmware as a separate testable library. 
+This crate contains high-level application logic for the bootloader and the main firmware as a separate testable library. 
