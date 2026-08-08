@@ -12,6 +12,7 @@
 - Hall sensor and SPI/RS485 encoder support
 - Fault diagnostics and fault handling with per-fault reactions
 - CAN interface
+- Firmware update via CAN
 
 ## Repository details
 The firmware is 100% Rust which uses [RTIC](https://github.com/rtic-rs/rtic) for scheduling in combination with the [Embassy](https://github.com/embassy-rs/embassy) STM32 Hardware Abstraction Library (HAL).
