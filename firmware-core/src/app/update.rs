@@ -2,10 +2,15 @@ use crate::constants::{UPDATE_CHUNK_BYTES, UPDATE_STAGE_BYTES};
 
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub enum FirmwareUpdateFault {
-    CounterGap,
     ImageTooLarge,
     LengthMismatch,
     CrcMismatch,
+}
+
+pub enum DataOutcome {
+    Accepted(Option<DfuWriteData>),
+    /// Chunk dropped. Reception resumes at `expected`.
+    OutOfSequence { expected: u16 },
 }
 
 /// Writable (partial) firmware bytes
@@ -49,15 +54,19 @@ impl FirmwareUpdateState {
         self.write_offset = 0;
     }
 
+    /// The first chunk counter not yet accepted (0 when no transfer is active).
+    pub fn expected(&self) -> u16 {
+        self.next_counter
+    }
+
     pub fn on_data(
         &mut self, counter: u16, chunk: &[u8; UPDATE_CHUNK_BYTES]
-    ) -> Result<Option<DfuWriteData>, FirmwareUpdateFault> {
+    ) -> Result<DataOutcome, FirmwareUpdateFault> {
         if counter == 0 {
             self.reset();
             self.active = true;
         } else if !self.active || counter != self.next_counter {
-            self.reset();
-            return Err(FirmwareUpdateFault::CounterGap);
+            return Ok(DataOutcome::OutOfSequence { expected: self.expected() });
         }
         if self.write_offset + (self.staged_len + UPDATE_CHUNK_BYTES) as u32 > self.capacity {
             self.reset();
@@ -71,9 +80,9 @@ impl FirmwareUpdateState {
             let write = DfuWriteData { offset: self.write_offset, len: UPDATE_STAGE_BYTES, data: self.staged };
             self.write_offset += UPDATE_STAGE_BYTES as u32;
             self.staged_len = 0;
-            Ok(Some(write))
+            Ok(DataOutcome::Accepted(Some(write)))
         } else {
-            Ok(None)
+            Ok(DataOutcome::Accepted(None))
         }
     }
 
@@ -113,13 +122,22 @@ mod tests {
         [fill; UPDATE_CHUNK_BYTES]
     }
 
+    fn accept(s: &mut FirmwareUpdateState, counter: u16, fill: u8) -> Option<DfuWriteData> {
+        match s.on_data(counter, &chunk(fill)).unwrap() {
+            DataOutcome::Accepted(write) => write,
+            DataOutcome::OutOfSequence { expected } => {
+                panic!("chunk {counter} dropped, expected {expected}")
+            }
+        }
+    }
+
     #[test]
     fn emits_a_stage_write_once_the_stage_buffer_fills() {
         let mut s = FirmwareUpdateState::new(2 * UPDATE_STAGE_BYTES as u32);
-        assert!(s.on_data(0, &chunk(1)).unwrap().is_none());
-        assert!(s.on_data(1, &chunk(2)).unwrap().is_none());
-        assert!(s.on_data(2, &chunk(3)).unwrap().is_none());
-        let write = s.on_data(3, &chunk(4)).unwrap().unwrap();
+        assert!(accept(&mut s, 0, 1).is_none());
+        assert!(accept(&mut s, 1, 2).is_none());
+        assert!(accept(&mut s, 2, 3).is_none());
+        let write = accept(&mut s, 3, 4).unwrap();
         assert_eq!(write.offset, 0);
         assert_eq!(write.len, UPDATE_STAGE_BYTES);
         assert_eq!(write.data[..UPDATE_CHUNK_BYTES], chunk(1));
@@ -127,13 +145,34 @@ mod tests {
     }
 
     #[test]
-    fn counter_gap_faults_until_restarted_from_zero() {
+    fn out_of_sequence_chunks_are_dropped_and_reception_resumes() {
         let mut s = FirmwareUpdateState::new(2 * UPDATE_STAGE_BYTES as u32);
-        s.on_data(0, &chunk(0)).unwrap();
-        assert!(matches!(s.on_data(2, &chunk(0)), Err(FirmwareUpdateFault::CounterGap)));
-        // The fault deactivated the transfer, so the once-valid counter is rejected too
-        assert!(matches!(s.on_data(1, &chunk(0)), Err(FirmwareUpdateFault::CounterGap)));
-        assert!(s.on_data(0, &chunk(0)).is_ok());
+        accept(&mut s, 0, 1);
+        accept(&mut s, 1, 2);
+        // gap: dropped without losing what is already staged
+        assert!(matches!(
+            s.on_data(3, &chunk(9)),
+            Ok(DataOutcome::OutOfSequence { expected: 2 })
+        ));
+        // duplicate: dropped too
+        assert!(matches!(
+            s.on_data(1, &chunk(9)),
+            Ok(DataOutcome::OutOfSequence { expected: 2 })
+        ));
+        // resume from the expected counter and complete the stage
+        accept(&mut s, 2, 3);
+        let write = accept(&mut s, 3, 4).unwrap();
+        assert_eq!(write.data[..UPDATE_CHUNK_BYTES], chunk(1));
+        assert_eq!(write.data[UPDATE_STAGE_BYTES - UPDATE_CHUNK_BYTES..], chunk(4));
+    }
+
+    #[test]
+    fn inactive_reception_reports_expected_zero() {
+        let mut s = FirmwareUpdateState::new(2 * UPDATE_STAGE_BYTES as u32);
+        assert!(matches!(
+            s.on_data(5, &chunk(0)),
+            Ok(DataOutcome::OutOfSequence { expected: 0 })
+        ));
     }
 
     #[test]
@@ -165,8 +204,11 @@ mod tests {
         }
         let (flush, _) = s.on_apply(UPDATE_STAGE_BYTES as u32, 0).unwrap();
         assert!(flush.is_none());
-        // Reset by apply: continuing the old counter sequence is a gap
-        assert!(matches!(s.on_data(4, &chunk(0)), Err(FirmwareUpdateFault::CounterGap)));
+        // Reset by apply: continuing the old counter sequence is out of sequence
+        assert!(matches!(
+            s.on_data(4, &chunk(0)),
+            Ok(DataOutcome::OutOfSequence { expected: 0 })
+        ));
     }
 
     #[test]

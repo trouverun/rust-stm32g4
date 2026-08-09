@@ -8,7 +8,7 @@ pub const PWM_FREQUENCY_HZ: Hertz = Hertz(30_000);
 /// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
 pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
 /// Timeout of the hardware watchdog
-pub const IWDG_TIMEOUT_US: u32 = 1000;
+pub const IWDG_TIMEOUT_US: u32 = 10_000;
 
 /// Bitrate of the CAN bus (bit/s)
 pub const CAN_BIT_RATE: u32 = 1_000_000;

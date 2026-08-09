@@ -97,6 +97,14 @@ BO_ 304 Fault: 8 Firmware
  SG_ fault_6 : 48|8@1+ (1,0) [0|255] "" Host
  SG_ fault_7 : 56|8@1+ (1,0) [0|255] "" Host
 
+BO_ 504 FirmwareUpdateAck: 2 Firmware
+ SG_ next_counter : 0|16@1+ (1,0) [0|65535] "" Host
+
+BO_ 496 FirmwareVersionReport: 3 Firmware
+ SG_ major : 0|8@1+ (1,0) [0|255] "" Host
+ SG_ minor : 8|8@1+ (1,0) [0|255] "" Host
+ SG_ patch : 16|8@1+ (1,0) [0|255] "" Host
+
 BO_ 320 Heartbeat: 6 Firmware
  SG_ mode : 0|8@1+ (1,0) [0|255] "" Host
  SG_ dc_bus_voltage : 8|16@1+ (0.01,0) [0|655.35] "V" Host
@@ -153,8 +161,9 @@ BO_ 448 SafeStopConfigReport: 4 Firmware
 
 CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands. Messages are listed Host-transmitted first, then Firmware-transmitted, alphabetical within each group.";
 CM_ BO_ 512 "Checksum = CRC-8 (SAE J1850) over data bytes 0-2.";
-CM_ BO_ 656 "Firmware image chunk, byte offset = counter * 6. Counter 0 restarts reception; a counter gap aborts the transfer.";
-CM_ BO_ 672 "Finalize update: image_crc32 = CRC-32 (ISO-HDLC) over image_length bytes read back from the DFU partition.";
+CM_ BO_ 656 "Byte offset = counter * 6. Counter 0 restarts reception. Out-of-sequence chunks are dropped and acked.";
+CM_ BO_ 504 "next_counter = first chunk not yet accepted.";
+CM_ BO_ 672 "image_crc32 = CRC-32 (ISO-HDLC) over the first image_length bytes.";
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ BO_  "GenMsgCycleTimeUs" INT 0 1000000;
@@ -170,4 +179,4 @@ BA_ "GenMsgCycleTimeUs" BO_ 320 100000;
 VAL_ 320 mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 4 "Fault" ;
 VAL_ 640 command 0 "Start" 1 "RequestDump" ;
 VAL_ 528 requested_mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 3 "CancelCalibration" 4 "FaultClear" ;
-VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 6 "safe_stop_config" 255 "all" ;
+VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 6 "safe_stop_config" 7 "firmware_version" 255 "all" ;

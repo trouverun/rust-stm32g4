@@ -14,7 +14,7 @@ pub use app::{
     CalibrationPhase, CalibrationFailureCause, StageResult,
     foc_step, FocStepInputs, FocStepOutcome, CurrentLoopSnapshot,
     SafeControlStrategy,
-    FirmwareUpdateState, FirmwareUpdateFault
+    FirmwareUpdateState, FirmwareUpdateFault, DataOutcome
 };
 pub use serialize::{encode_record, decode_record, MAX_RECORD_BYTES};
 pub use checks::{Debounced, FrameIntegrity, FrameIntegrityFault, LeakyBucket, Stamped};

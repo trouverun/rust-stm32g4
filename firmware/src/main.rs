@@ -129,7 +129,7 @@ mod app {
         if let Ok(DecodeResult::Valid(status)) = bootloader_status {
             match status.state {
                 BootloaderState::DfuContentsRejected => {
-                    mode.on_command(Command::AssertFault { cause: FaultCause::FirmwareUpdateInvalid });
+                    mode.on_command(Command::AssertFault { cause: FaultCause::FirmwareUpdateCrcMismatch });
                 },
                 BootloaderState::SwappedImageBootTimeout => {
                     mode.on_command(Command::AssertFault { cause: FaultCause::FirmwareUpdateReverted });
@@ -197,17 +197,17 @@ mod app {
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
 
-        // Start CAN interface:
-        let can = bsp::CanBus::new(can_mappings, CAN_BIT_RATE);
-        let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
-        Mono::start(rcc::frequency::<TIM2>().0, token);
-        can_tx_task::spawn().unwrap();
-
         // Mark the current firmware as correctly booting
         match memory.confirm_boot() {
             Ok(_) => {},
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
+
+        // Start CAN interface:
+        let can = bsp::CanBus::new(can_mappings, CAN_BIT_RATE);
+        let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
+        Mono::start(rcc::frequency::<TIM2>().0, token);
+        can_tx_task::spawn().unwrap();
 
         (Shared {
             mode,

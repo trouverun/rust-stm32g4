@@ -18,7 +18,19 @@ fn main() {
     configure_linker();
     configure_defmt();
     generate_memory_layout(&out_dir);
+    generate_version(&out_dir);
     generate_can(&out_dir);
+}
+
+/// Emits VERSION_MAJOR/MINOR/PATCH as u8 from the package version.
+fn generate_version(out_dir: &str) {
+    let mut src = String::new();
+    for part in ["MAJOR", "MINOR", "PATCH"] {
+        let v: u8 = env::var(format!("CARGO_PKG_VERSION_{part}")).unwrap().parse().unwrap();
+        writeln!(src, "pub(crate) const VERSION_{part}: u8 = {v};").unwrap();
+    }
+    std::fs::write(std::path::Path::new(out_dir).join("version.rs"), src)
+        .expect("write version.rs");
 }
 
 fn configure_linker() {

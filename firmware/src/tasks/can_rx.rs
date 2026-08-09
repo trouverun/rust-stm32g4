@@ -9,8 +9,11 @@ use crate::capture;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
-use firmware_core::{Command, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
+use firmware_core::{Command, DataOutcome, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
+
+// Build.rs generated version constants:
+include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
 pub async fn can_process(mut cx: app::can_process::Context<'_>) {
     while let Some(envelope) = cx.shared.can.lock(|c| c.receive()) {
@@ -252,6 +255,16 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         cx.shared.can.lock(|c| c.send(f));
                     }
                 }
+                if all || matches!(block, ConfigQueryBlockId::FirmwareVersion) {
+                    let f = FirmwareVersionReport::try_from(FirmwareVersionReportInit {
+                        major: VERSION_MAJOR,
+                        minor: VERSION_MINOR,
+                        patch: VERSION_PATCH,
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
+                    }
+                }
             }
             Ok(Messages::FirmwareUpdateData(msg)) => {
                 if !cx.shared.mode.lock(|m| matches!(m, OperatingMode::Idle { .. })) {
@@ -261,17 +274,32 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         msg.data_0(), msg.data_1(), msg.data_2(),
                         msg.data_3(), msg.data_4(), msg.data_5(),
                     ];
-                    match cx.local.firmware_update.on_data(msg.counter(), &chunk) {
-                        Ok(Some(write)) => {
+                    // Ack per completed stage write and on out-of-sequence chunks
+                    let ack = match cx.local.firmware_update.on_data(msg.counter(), &chunk) {
+                        Ok(DataOutcome::Accepted(Some(write))) => {
                             let stored = cx.shared.memory.lock(|m| m.dfu_write(write.offset, &write.data[..write.len]));
-                            if let Err(e) = stored {
-                                cx.local.firmware_update.reset();
-                                cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                            match stored {
+                                Ok(()) => Some(cx.local.firmware_update.expected()),
+                                Err(e) => {
+                                    cx.local.firmware_update.reset();
+                                    cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                                    None
+                                }
                             }
                         }
-                        Ok(None) => {}
+                        Ok(DataOutcome::Accepted(None)) => None,
+                        Ok(DataOutcome::OutOfSequence { expected }) => Some(expected),
                         Err(e) => {
+                            defmt::warn!("firmware update: {} at counter {}", e, msg.counter());
                             cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                            None
+                        }
+                    };
+                    if let Some(next_counter) = ack {
+                        let f = FirmwareUpdateAck::try_from(FirmwareUpdateAckInit { next_counter })
+                            .ok().map(|m| m.into_frame());
+                        if let Some(f) = f {
+                            cx.shared.can.lock(|c| c.send(f));
                         }
                     }
                 }
@@ -294,8 +322,12 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         }),
                         Err(e) => Err(e.into()),
                     };
-                    if let Err(cause) = applied {
-                        cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause }));
+                    match applied {
+                        Err(cause) => {
+                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause }));
+                        }
+                        // reboot into the bootloader, which swaps in the image
+                        Ok(()) => cortex_m::peripheral::SCB::sys_reset(),
                     }
                 }
             }

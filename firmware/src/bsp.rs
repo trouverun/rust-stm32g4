@@ -519,7 +519,7 @@ impl DoesFocMath for Acceleration {
     }
 }
 
-const CAN_TX_BUF_SIZE: usize = 8;
+const CAN_TX_BUF_SIZE: usize = 16;
 const CAN_RX_BUF_SIZE: usize = 16;
 
 pub struct CanBus {
