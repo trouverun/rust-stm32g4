@@ -41,7 +41,9 @@ pub enum FaultCause {
     CANMessageIntegrity,
     SetpointTimeout,
 
-    FirmwareUpdateInvalid,
+    FirmwareUpdateTooLarge,
+    FirmwareUpdateLengthMismatch,
+    FirmwareUpdateCrcMismatch,
     FirmwareUpdateReverted
 }
 
@@ -105,8 +107,13 @@ impl From<PITuningFault> for FaultCause {
 }
 
 impl From<super::update::FirmwareUpdateFault> for FaultCause {
-    fn from(_: super::update::FirmwareUpdateFault) -> Self {
-        FaultCause::FirmwareUpdateInvalid
+    fn from(f: super::update::FirmwareUpdateFault) -> Self {
+        use super::update::FirmwareUpdateFault::*;
+        match f {
+            ImageTooLarge => FaultCause::FirmwareUpdateTooLarge,
+            LengthMismatch => FaultCause::FirmwareUpdateLengthMismatch,
+            CrcMismatch => FaultCause::FirmwareUpdateCrcMismatch,
+        }
     }
 }
 

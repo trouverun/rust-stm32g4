@@ -8,7 +8,7 @@ pub mod pac {
 
 use cortex_m_rt::{entry, exception};
 use embassy_stm32::{
-    Config, flash::{Flash}, 
+    Config, flash::{Flash},
     wdg::IndependentWatchdog
 };
 use firmware_core::{BootloaderState, DecodeResult, SwapMode};
@@ -17,6 +17,10 @@ use loader::*;
 #[entry]
 fn main() -> ! {
     let ep = embassy_stm32::init(Config::default());
+
+    let mut watchdog = IndependentWatchdog::new(ep.IWDG, 30_000_000);
+    watchdog.unleash();
+
     let flash = Flash::new_blocking(ep.FLASH);
     let mut bootloader = Bootloader::new(flash);
 
@@ -41,9 +45,6 @@ fn main() -> ! {
         },
         DecodeResult::Empty => {}
     }
-
-    let mut watchdog = IndependentWatchdog::new(ep.IWDG, 10_000_000);
-    watchdog.unleash();
 
     unsafe {
         let mut cp = cortex_m::Peripherals::steal();
