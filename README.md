@@ -42,7 +42,7 @@ The firmware configuration used was as follows:
 
 First, during operation in torque control mode, GPIO pins were toggled from the FOC ISR to measure the execution time using a logic analyser:
 
-<img width="1452" height="491" alt="foc_rate" src="https://github.com/user-attachments/assets/39abdfac-19c1-4892-8fd6-923dde3cc4c5" />
+<img width="1451" height="500" alt="image" src="https://github.com/user-attachments/assets/d60e2209-ba86-4de9-96d2-509b2a2e16d1" />
 
 The real-time constraint at 40 kHz FOC rate is satisfied, with the full FOC ISR (estimation + FOC) executing on average in 14.72 µs (min: 14.59 µs, max: 14.98 µs, N=400), always well within the 25 µs budget.
 
@@ -64,8 +64,8 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   <summary><h2>CAN interface details</h2></summary>
   
   The CAN interface is defined and documented by the [DBC](/firmware/dbc/can.dbc) file:
+  <img width="2077" height="1069" alt="image" src="https://github.com/user-attachments/assets/ec53ca55-423b-4e78-af28-087141005ed8" />
   
-  <img width="1385" height="678" alt="dbc" src="https://github.com/user-attachments/assets/da8f2a8f-8015-4a2f-8624-dbd1952540ff" />
 </details>
 
 <details>
@@ -168,19 +168,19 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   pub fn vbus_measurement_v_to_v(v: f32) -> f32 {}
   ```
 
-  To enable [/firmware/src/main.rs](/firmware/src/main.rs) to generate interrupt handlers for the correct peripherals, the board file needs to export the interrupt handler names, like so:
+  To enable [/firmware/src/main.rs](/firmware/src/main.rs) to generate interrupt handlers for the correct peripherals, the board file needs to export the interrupt handler names:
 
   ```rust
   #[macro_export]
   macro_rules! board_irqs {
       ($cb:ident) => {
           $cb!(
-              foc = ADC3,
-              pwm_break = TIM8_BRK,
-              hall = TIM3,
-              watchdog = TIM7_DAC,
-              can = FDCAN1_IT0,
-              dispatchers = [SPI2, SPI3, UART5]
+              foc = ADCx,
+              pwm_break = TIMx_BRK,
+              hall = TIMx,
+              watchdog = TIMx_DAC,
+              can = FDCANx_IT0,
+              dispatchers = [SPIx, SPIx, UARTx]
           );
       };
   }
