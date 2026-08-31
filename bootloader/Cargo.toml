@@ -4,8 +4,11 @@ edition = "2024"
 version = "0.1.0"
 publish = false
 
+[features]
+board-zest1 = ["embassy-stm32/stm32g473qe"]
+
 [dependencies]
-embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["stm32g473qe", "dual-bank", "unstable-pac"] }
+embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["dual-bank", "unstable-pac"] }
 firmware-core = { path = "../firmware-core" }
 cortex-m = { version = "0.7", features = ["critical-section-single-core", "inline-asm"] }
 cortex-m-rt = "0.7"

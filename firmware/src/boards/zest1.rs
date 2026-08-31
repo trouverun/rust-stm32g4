@@ -47,6 +47,20 @@ pub type PwmTimer = TIM8;
 // Watchdog
 pub type WatchdogTimer = TIM7;
 
+#[macro_export]
+macro_rules! board_irqs {
+    ($cb:ident) => {
+        $cb!(
+            foc = ADC3,
+            pwm_break = TIM8_BRK,
+            hall = TIM3,
+            watchdog = TIM7_DAC,
+            can = FDCAN1_IT0,
+            dispatchers = [SPI2, SPI3, UART5]
+        );
+    };
+}
+
 pub const ADC_REF_V: f32 = 3.3;
 pub const DAC_REF_V: f32 = 3.3;
 

@@ -1,5 +1,5 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip STM32G473QETx"
+runner = "probe-rs run"
 rustflags = ["-C", "target-cpu=cortex-m4"]
 
 [build]

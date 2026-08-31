@@ -4,21 +4,23 @@ edition = "2021"
 version = "0.9.0"
 
 [features]
-default = ["board-zest1"]
 debug-capture = []
 mcu-opamps = []
 overcurrent-comparators = []
-board-zest1 = ["debug-capture", "mcu-opamps", "overcurrent-comparators"]
+board-zest1 = [
+    "debug-capture", "mcu-opamps", "overcurrent-comparators",
+    "embassy-stm32/stm32g473qe", "rtic-monotonics/stm32g473qe",
+]
 
 [dependencies]
-embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["stm32g473qe", "defmt", "unstable-pac", "exti", "dual-bank"] }
+embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["defmt", "unstable-pac", "exti", "dual-bank"] }
 firmware-core = { path = "../firmware-core" }
 field-oriented = { path = "../field-oriented" }
 cortex-m = { version = "0.7", features = ["critical-section-single-core", "inline-asm"] }
 defmt = { version = "1", features = ["encoding-rzcobs"] }
 panic-probe = { version = "1", features = ["print-defmt"] }
 rtic = { version = "2.0.0", features = ["thumbv7-backend"] }
-rtic-monotonics = { version = "1.5", default-features = false, features = ["stm32g473qe", "stm32_tim2"] }
+rtic-monotonics = { version = "1.5", default-features = false, features = ["stm32_tim2"] }
 embedded-can = "0.4"
 defmt-rtt = "1.1.0"
 libm = "0.2"
