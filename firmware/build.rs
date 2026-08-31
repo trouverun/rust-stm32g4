@@ -14,12 +14,25 @@ const CYCLE_TIME_US_ATTRIBUTE: &str = "GenMsgCycleTimeUs";
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let out_dir = env::var("OUT_DIR").unwrap();
+    let board = board_name();
 
-    configure_linker();
+    configure_linker(&out_dir, &board);
     configure_defmt();
-    generate_memory_layout(&out_dir);
+    generate_memory_layout(&out_dir, &board);
     generate_version(&out_dir);
     generate_can(&out_dir);
+}
+
+/// The single enabled `board-*` cargo feature
+fn board_name() -> String {
+    let boards: Vec<String> = env::vars()
+        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_BOARD_").map(|b| b.to_lowercase()))
+        .collect();
+    match boards.as_slice() {
+        [board] => board.clone(),
+        [] => panic!("no board selected: build with --features board-<name>"),
+        _ => panic!("multiple board features enabled: {boards:?}"),
+    }
 }
 
 /// Emits VERSION_MAJOR/MINOR/PATCH as u8 from the package version.
@@ -33,13 +46,17 @@ fn generate_version(out_dir: &str) {
         .expect("write version.rs");
 }
 
-fn configure_linker() {
+fn configure_linker(out_dir: &str, board: &str) {
+    let memory_x = format!("memory/{board}.x");
+    std::fs::copy(&memory_x, std::path::Path::new(out_dir).join("memory.x"))
+        .unwrap_or_else(|e| panic!("copy {memory_x}: {e}"));
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
     println!("cargo:rustc-link-arg-bins=-Tccmram.x");
+    println!("cargo:rustc-link-search={out_dir}");
     println!("cargo:rustc-link-search={}", env::var("CARGO_MANIFEST_DIR").unwrap());
-    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed={memory_x}");
     println!("cargo:rerun-if-changed=ccmram.x");
 }
 
@@ -52,10 +69,11 @@ fn configure_defmt() {
 
 /// Emits FIRMWARE_SIZE from memory.x and checks that the bootloader's
 /// flash ends exactly where the firmware's begins.
-fn generate_memory_layout(out_dir: &str) {
-    println!("cargo:rerun-if-changed=../bootloader/memory.x");
-    let (firmware_origin, firmware_size) = flash_region("memory.x");
-    let (loader_origin, loader_size) = flash_region("../bootloader/memory.x");
+fn generate_memory_layout(out_dir: &str, board: &str) {
+    let loader_memory_x = format!("../bootloader/memory/{board}.x");
+    println!("cargo:rerun-if-changed={loader_memory_x}");
+    let (firmware_origin, firmware_size) = flash_region(&format!("memory/{board}.x"));
+    let (loader_origin, loader_size) = flash_region(&loader_memory_x);
     assert!(
         loader_origin + loader_size == firmware_origin,
         "bootloader flash ends at {:#x} but firmware starts at {:#x}",

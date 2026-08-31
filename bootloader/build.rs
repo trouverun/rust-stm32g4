@@ -1,29 +1,40 @@
 use std::env;
-use std::fs::File;
-use std::io::Write;
 use std::path::PathBuf;
 
 fn main() {
     let out = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    File::create(out.join("memory.x"))
-        .unwrap()
-        .write_all(include_bytes!("memory.x"))
-        .unwrap();
+    let board = board_name();
+    let memory_x = format!("memory/{board}.x");
+    std::fs::copy(&memory_x, out.join("memory.x"))
+        .unwrap_or_else(|e| panic!("copy {memory_x}: {e}"));
     println!("cargo:rustc-link-search={}", out.display());
-    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed={memory_x}");
 
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
 
-    generate_memory_layout(out);
+    generate_memory_layout(out, &board);
+}
+
+/// The single enabled `board-*` cargo feature
+fn board_name() -> String {
+    let boards: Vec<String> = env::vars()
+        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_BOARD_").map(|b| b.to_lowercase()))
+        .collect();
+    match boards.as_slice() {
+        [board] => board.clone(),
+        [] => panic!("no board selected: build with --features board-<name>"),
+        _ => panic!("multiple board features enabled: {boards:?}"),
+    }
 }
 
 /// Emits FIRMWARE_ORIGIN and FIRMWARE_SIZE from the two memory.x files
-fn generate_memory_layout(out_dir: &PathBuf) {
-    println!("cargo:rerun-if-changed=../firmware/memory.x");
-    let (origin, length) = flash_region("memory.x");
-    let (_, firmware_size) = flash_region("../firmware/memory.x");
+fn generate_memory_layout(out_dir: &PathBuf, board: &str) {
+    let firmware_memory_x = format!("../firmware/memory/{board}.x");
+    println!("cargo:rerun-if-changed={firmware_memory_x}");
+    let (origin, length) = flash_region(&format!("memory/{board}.x"));
+    let (_, firmware_size) = flash_region(&firmware_memory_x);
     let layout = format!(
         "pub const FIRMWARE_ORIGIN: u32 = {:#x};\npub const FIRMWARE_SIZE: u32 = {:#x};\n",
         origin + length,

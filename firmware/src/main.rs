@@ -38,7 +38,17 @@ fn init_ccmram() {
     }
 }
 
-#[rtic::app(device = crate::pac, peripherals = false, dispatchers = [SPI2, SPI3, UART5])]
+macro_rules! define_app {
+    (
+        foc = $foc_irq:ident,
+        pwm_break = $pwm_break_irq:ident,
+        hall = $hall_irq:ident,
+        watchdog = $watchdog_irq:ident,
+        can = $can_irq:ident,
+        dispatchers = $dispatchers:tt
+    ) => {
+
+#[rtic::app(device = crate::pac, peripherals = false, dispatchers = $dispatchers)]
 mod app {
     use defmt_rtt as _;
     use embassy_stm32::time::Hertz;
@@ -115,7 +125,7 @@ mod app {
 
         // Initialize HW:
         let pwm_output: PwmOutput = bsp::PwmOutput::new(pwm_mappings, 0.0);
-        pwm_output.wait_break2_ready(); // Shows active low for first N cycles, wait it out
+        pwm_output.wait_break2_ready();
         let mut adc_feedback = bsp::AdcFeedback::new(adc_mappings);
         adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
         let mut hall_feedback = bsp::HallFeedback::new(
@@ -241,14 +251,14 @@ mod app {
         })
     }
 
-    #[task(priority = 6, binds = TIM7_DAC, shared = [software_watchdog, debug_mappings])]
+    #[task(priority = 6, binds = $watchdog_irq, shared = [software_watchdog, debug_mappings])]
     fn watchdog_isr(mut cx: watchdog_isr::Context) {
         cx.shared.debug_mappings.lock(|dm| dm.la_d.set_high());
         cx.shared.software_watchdog.lock(|wd| wd.register_fault());
     }
 
-    #[task(priority = 6, binds = TIM8_BRK, shared = [mode, pwm_output])]
-    fn on_tim8(mut cx: on_tim8::Context) {
+    #[task(priority = 6, binds = $pwm_break_irq, shared = [mode, pwm_output])]
+    fn pwm_break_isr(mut cx: pwm_break_isr::Context) {
         let bk1_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break1());
         let bk2_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break2());
 
@@ -268,8 +278,8 @@ mod app {
         }
     }
 
-    #[task(priority = 5, binds = TIM3, shared = [hall_feedback])]
-    fn on_tim3(mut cx: on_tim3::Context) {
+    #[task(priority = 5, binds = $hall_irq, shared = [hall_feedback])]
+    fn hall_isr(mut cx: hall_isr::Context) {
         cx.shared.hall_feedback.lock(|hall_feedback| {
             hall_feedback.on_hall_interrupt();
         });
@@ -277,7 +287,7 @@ mod app {
 
     extern "Rust" {
         #[task(
-            priority = 6, binds = ADC3,
+            priority = 6, binds = $foc_irq,
             local = [
                 adc_feedback, acceleration, hardware_watchdog,
                 prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
@@ -330,8 +340,8 @@ mod app {
         async fn persist_config(_: persist_config::Context);
     }
 
-    #[task(priority = 2, binds = FDCAN1_IT0, shared = [can])]
-    fn fdcan1_it0(mut cx: fdcan1_it0::Context) {
+    #[task(priority = 2, binds = $can_irq, shared = [can])]
+    fn can_isr(mut cx: can_isr::Context) {
         cx.shared.can.lock(|can| can.on_interrupt());
         let _ = can_process::spawn();
     }
@@ -343,3 +353,8 @@ mod app {
         }
     }
 }
+
+    };
+}
+
+crate::board_irqs!(define_app);

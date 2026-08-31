@@ -4,7 +4,7 @@ use crate::boards::BOARD;
 // Main:
 
 /// The frequency of the PWM carrier and the frequency at which the FOC ISR fires at
-pub const PWM_FREQUENCY_HZ: Hertz = Hertz(30_000);
+pub const PWM_FREQUENCY_HZ: Hertz = Hertz(40_000);
 /// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
 pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
 /// Timeout of the hardware watchdog
@@ -49,7 +49,7 @@ pub const DEFAULT_CALIBRATION_CURRENT_A: f32 = 1.5;
 pub const DEFAULT_CALIBRATION_OMEGA: f32 = 1.0;
 pub const DEFAULT_RATED_CURRENT_LIMIT_A: f32 = 0.5;
 pub const DEFAULT_MOMENTARY_CURRENT_LIMIT_A: f32 = 0.5;
-pub const DEFAULT_ROTOR_SPEED_LIMIT_MECH_RPM: u16 = 60;
+pub const DEFAULT_ROTOR_SPEED_LIMIT_MECH_RPM: u16 = 1000;
 pub const DEFAULT_SETPOINT_TIMEOUT_MS: u16 = 50;
 pub const DEFAULT_TEMP_MAX_C: f32 = 80.0;
 pub const DEFAULT_SS1T_DURATION_MS: u16 = 500;

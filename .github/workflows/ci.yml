@@ -82,4 +82,4 @@ jobs:
 
       - name: Build
         working-directory: firmware
-        run: cargo build --release
+        run: cargo build --release --features board-zest1
