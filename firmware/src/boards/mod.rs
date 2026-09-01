@@ -5,7 +5,7 @@ pub use zest1::*;
 pub mod spi;
 pub use spi::*;
 
-use embassy_stm32::adc::AnyAdcChannel;
+use embassy_stm32::adc::{AnyAdcChannel, Resolution, SampleTime, resolution_to_max_count};
 use embassy_stm32::can::CanConfigurator;
 use embassy_stm32::comp::Comp;
 use embassy_stm32::dac::Dac;
@@ -23,6 +23,8 @@ use embassy_stm32::timer::hall::HallSensor;
 use embassy_stm32::opamp::OpAmpOutput;
 
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
+pub const ADC_RESOLUTION: Resolution = Resolution::BITS12;
+pub const ADC_MAX_COUNT: f32 = resolution_to_max_count(ADC_RESOLUTION) as f32;
 
 pub struct BoardInfo {
     pub current_limit_a: f32,
@@ -51,6 +53,9 @@ pub struct AdcFeedbackMappings {
     pub vbus_channel: AnyAdcChannel<'static, FeedbackAdcA>,
     pub tboard_channel: AnyAdcChannel<'static, FeedbackAdcB>,
     pub sample_trigger: BasicTrgoOutput<'static, AdcFeedbackTimer>,
+    pub phase_sample_time: SampleTime,
+    pub vbus_sample_time: SampleTime,
+    pub tboard_sample_time: SampleTime,
 }
 
 pub struct HallFeedbackMappings {

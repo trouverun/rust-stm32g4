@@ -1,5 +1,5 @@
 use embassy_stm32::adc::{
-    Adc345InjectedTrigger, Adc345RegularTrigger, AdcChannel,
+    Adc345InjectedTrigger, Adc345RegularTrigger, AdcChannel, SampleTime,
 };
 use embassy_stm32::{rcc::*};
 use embassy_stm32::Config as RccConfig;
@@ -61,9 +61,9 @@ macro_rules! board_irqs {
     };
 }
 
-pub const ADC_REF_V: f32 = 3.3;
-pub const DAC_REF_V: f32 = 3.3;
-
+const ADC_REF_V: f32 = 3.3;
+const ADC_SCALER: f32 = ADC_REF_V / super::ADC_MAX_COUNT;
+const DAC_REF_V: f32 = 3.3;
 const SHUNT_RESISTANCE_MOHM: f32 = 15.0;
 const OPAMP_GAIN: f32 = 15.0;
 const OPAMP_BIAS_V: f32 = 1.65;
@@ -71,9 +71,15 @@ const VBUS_DIVIDE_FACTOR: f32 = 25.3589743589744;
 const TBOARD_SLOPE_C_PER_V: f32 = 45.7;
 const TBOARD_BIAS_C: f32 = 23.6;
 
-/// Phase current from the shunt opamp output voltage
-pub fn measurement_v_to_a(v: f32) -> f32 {
-    -v / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
+/// Voltage at the ADC pin from a raw full-resolution conversion result
+/// (unsigned regular reads, or signed offset-corrected injected reads)
+fn adc_raw_to_v(raw: impl Into<f32>) -> f32 {
+    raw.into() * ADC_SCALER
+}
+
+/// Phase current from the raw offset-corrected shunt opamp output sample
+pub fn phase_current_a(raw: i16) -> f32 {
+    -adc_raw_to_v(raw) / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
 }
 
 /// Opamp output voltage at the given phase current magnitude
@@ -81,14 +87,14 @@ pub fn limit_a_to_v(current_limit_a: f32) -> f32 {
     OPAMP_GAIN * SHUNT_RESISTANCE_MOHM / 1000.0 * current_limit_a + OPAMP_BIAS_V
 }
 
-/// Board temperature from the thermistor measurement voltage
-pub fn v_to_c(v: f32) -> f32 {
-    v * TBOARD_SLOPE_C_PER_V + TBOARD_BIAS_C
+/// Board temperature from the raw thermistor sample
+pub fn board_temperature_c(raw: u16) -> f32 {
+    adc_raw_to_v(raw) * TBOARD_SLOPE_C_PER_V + TBOARD_BIAS_C
 }
 
-/// DC bus voltage from the divider measurement voltage
-pub fn vbus_measurement_v_to_v(v: f32) -> f32 {
-    v * VBUS_DIVIDE_FACTOR
+/// DC bus voltage from the raw divider sample
+pub fn dc_bus_voltage_v(raw: u16) -> f32 {
+    adc_raw_to_v(raw) * VBUS_DIVIDE_FACTOR
 }
 
 pub const BOARD: super::BoardInfo = super::BoardInfo {
@@ -155,6 +161,9 @@ pub fn map_peripherals() -> (
         vbus_channel: AdcChannel::<FeedbackAdcA>::degrade_adc(p.PB13),
         tboard_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PE15),
         sample_trigger: BasicTrgoOutput::new(p.TIM6, crate::constants::BOARD_STATUS_FREQUENCY_HZ),
+        phase_sample_time: SampleTime::CYCLES6_5,
+        vbus_sample_time: SampleTime::CYCLES6_5,
+        tboard_sample_time: SampleTime::CYCLES6_5,
     };
 
     let hall_feedback = super::HallFeedbackMappings {

@@ -132,6 +132,7 @@ impl SafeControlStrategy {
             (SafeControlStrategy::ASC { .. }, SafeControlStrategy::ASC { .. }) => Self::asc(),
             (SafeControlStrategy::SS1t { .. }, SafeControlStrategy::STO { .. }) => Self::sto(),
             (SafeControlStrategy::SS1t { .. }, SafeControlStrategy::ASC { .. }) => Self::asc(),
+            (SafeControlStrategy::RampDown { .. }, SafeControlStrategy::RampDown { .. }) => return,
             (SafeControlStrategy::RampDown { .. }, _) => new.clone(),
             _ => return
         };

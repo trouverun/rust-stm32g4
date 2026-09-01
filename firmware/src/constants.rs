@@ -68,8 +68,8 @@ pub const SS1T_VELOCITY_THRESHOLD_MAX: f32 = 1000.0;
 
 // BSP:
 
-/// Number of ADC samples to collect when calibrating the OPAMP offset voltages during init
-pub const OPAMP_CALIBRATION_SAMPLE_COUNT: u32 = 100;
+/// Number of ADC samples to collect when calibrating the offset voltages during init
+pub const ADC_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 
 // FOC:
 
