@@ -212,8 +212,8 @@ impl AdcFeedback {
             let result_a = self.adc_a.read_injected::<1>()[0];
             // V or W:
             let result_b = self.adc_b.read_injected::<1>()[0];
-            let amps_a = current_adc_to_a(result_a);
-            let amps_b = current_adc_to_a(result_b);
+            let amps_a = Active::current_adc_to_a(result_a);
+            let amps_b = Active::current_adc_to_a(result_b);
             let amps_c = -(amps_a + amps_b);
             match self.sampled_sector {
                 // 1 0 0, sampled VW:
@@ -319,8 +319,8 @@ impl AdcFeedback {
             let _ = self.adc_a.read();
             return None;
         }
-        let vbus = vbus_adc_to_v(self.adc_a.read());
-        let tboard = temperature_adc_to_c(self.adc_b.read());
+        let vbus = Active::vbus_adc_to_v(self.adc_a.read());
+        let tboard = Active::temperature_adc_to_c(self.adc_b.read());
         Some((vbus, tboard))
     }
 }
@@ -390,7 +390,7 @@ impl PwmOutput {
 
         #[cfg(feature = "overcurrent-comparators")]
         {
-            let voltage_threshold = limit_a_to_v(comparator_current_limit_a);
+            let voltage_threshold = Active::limit_a_to_v(comparator_current_limit_a);
             mappings.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
             tmp = tmp
                 .with_break1_comp(
@@ -456,7 +456,7 @@ impl PwmOutput {
     
     #[cfg(feature = "overcurrent-comparators")]
     pub fn set_comparator_current_limit(&self, comparator_current_limit_a: f32) {
-        let voltage_threshold = limit_a_to_v(comparator_current_limit_a);
+        let voltage_threshold = Active::limit_a_to_v(comparator_current_limit_a);
         self.comparators.dac_dual.set_voltage(voltage_threshold, voltage_threshold);
     }
 

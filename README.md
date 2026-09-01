@@ -96,25 +96,88 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
 
   ### New board file
 
-  The next step is to create a new board file in /firmware/src/boards/, which populates the following structs, defined in [/firmware/src/boards/mod.rs](/firmware/src/boards/mod.rs), using the embassy peripherals actually used by the board:
+  The next step is to create a new board file in [/firmware/src/boards/](/firmware/src/boards/), which implements the `Board` trait defined in [/firmware/src/boards/mod.rs](/firmware/src/boards/mod.rs):
 
   ```rust
-  pub struct BoardInfo {
-    pub current_limit_a: f32,
-    pub dc_voltage_limit_v: f32,
-    pub mosfet_deadtime_ns: u32,
-    pub mosfet_on_delay_ns: u32,
-    pub mosfet_off_delay_ns: u32,
-    pub deadtime_compensation_band_a: f32
+  pub trait Board {
+      #[cfg(feature = "mcu-opamps")]
+      type OpAmpU: opamp::Instance;
+      #[cfg(feature = "mcu-opamps")]
+      type OpAmpV: opamp::Instance;
+      #[cfg(feature = "mcu-opamps")]
+      type OpAmpW: opamp::Instance;
+      type FeedbackAdcA: adc::Instance + HasInjectedTrigger + HasRegularTrigger;
+      type FeedbackAdcB: adc::Instance + HasInjectedTrigger + HasRegularTrigger;
+      type AdcFeedbackTimer: BasicInstance;
+      type HallFeedbackTimer: GeneralInstance4Channel;
+      #[cfg(feature = "overcurrent-comparators")]
+      type CompU: comp::Instance;
+      #[cfg(feature = "overcurrent-comparators")]
+      type CompV: comp::Instance;
+      #[cfg(feature = "overcurrent-comparators")]
+      type CompW: comp::Instance;
+      #[cfg(feature = "overcurrent-comparators")]
+      type ComparatorDacDual: dac::Instance;
+      type PwmTimer: AdvancedInstance4Channel;
+      type WatchdogTimer: BasicInstance;
+  
+      const FEEDBACK_TRIGGER_A: <Self::FeedbackAdcA as HasInjectedTrigger>::Trigger;
+      const FEEDBACK_TRIGGER_B: <Self::FeedbackAdcB as HasInjectedTrigger>::Trigger;
+      const BOARD_FEEDBACK_TRIGGER: <Self::FeedbackAdc as HasRegularTrigger>::Trigger;
+      const INFO: BoardInfo;
+  
+      /// Phase current from the shunt opamp output counts
+      fn current_adc_to_a(counts: i16) -> f32;
+      /// Opamp output voltage at the given phase current   magnitude
+      #[cfg(feature = "overcurrent-comparators")]
+      fn limit_a_to_v(current_limit_a: f32) -> f32;
+      /// Board temperature from the thermistor measurement   counts
+      fn temperature_adc_to_c(counts: u16) -> f32;
+      /// DC bus voltage from the divider measurement counts
+      fn vbus_adc_to_v(counts: u16) -> f32;
+  
+      fn map_peripherals() -> (
+          AdcFeedbackMappings,
+          HallFeedbackMappings,
+          SPIMappings,
+          PwmOutputMappings,
+          AccelerationMappings,
+          MemoryMappings,
+          CanMappings,
+          WatchdogMappings,
+          DebugMappings,
+      );
   }
-
+  ```
+  The mappings structs returned by `map_peripherals()` are also defined in [/firmware/src/boards/mod.rs](/firmware/src/boards/mod.rs), and they carry the embassy peripheral selections:
+  ```rust
+  #[cfg(feature = "mcu-opamps")]
+  pub type OpAmpU = <Active as Board>::OpAmpU;
+  #[cfg(feature = "mcu-opamps")]
+  pub type OpAmpV = <Active as Board>::OpAmpV;
+  #[cfg(feature = "mcu-opamps")]
+  pub type OpAmpW = <Active as Board>::OpAmpW;
+  pub type FeedbackAdcA = <Active as Board>::FeedbackAdcA;
+  pub type FeedbackAdcB = <Active as Board>::FeedbackAdcB;
+  pub type AdcFeedbackTimer = <Active as Board>::AdcFeedbackTimer;
+  // Other type aliases...
+  
+  pub struct BoardInfo {
+      pub current_limit_a: f32,
+      pub dc_voltage_limit_v: f32,
+      pub mosfet_deadtime_ns: u32,
+      pub mosfet_on_delay_ns: u32,
+      pub mosfet_off_delay_ns: u32,
+      pub deadtime_compensation_band_a: f32
+  }
+  
   #[cfg(feature = "mcu-opamps")]
   pub struct ShuntOpAmps {
       u: OpAmpOutput<'static, OpAmpU>,
       v: OpAmpOutput<'static, OpAmpV>,
       w: OpAmpOutput<'static, OpAmpW>,
   }
-
+  
   pub struct AdcFeedbackMappings {
       #[cfg(feature = "mcu-opamps")]
       pub opamps: ShuntOpAmps,
@@ -124,54 +187,18 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
       pub v_channel: AnyAdcChannel<'static, FeedbackAdcA>,
       pub w_channel: AnyAdcChannel<'static, FeedbackAdcB>,
       pub vbus_channel: AnyAdcChannel<'static, FeedbackAdcA>,
-      pub tboard_channel: AnyAdcChannel<'static, FeedbackAdcB>,
-      pub sample_trigger: BasicTrgoOutput<'static, AdcFeedbackTimer>,
+      pub tboard_channel: AnyAdcChannel<'static,   FeedbackAdcB>,
+      pub sample_trigger: BasicTrgoOutput<'static,   AdcFeedbackTimer>,
       pub phase_sample_time: SampleTime,
       pub vbus_sample_time: SampleTime,
       pub tboard_sample_time: SampleTime,
   }
 
-  pub struct HallFeedbackMappings {
-      pub hall_timer: HallSensor<'static, HallFeedbackTimer>,
-  }
-
-  pub struct SPIMappings {
-      pub spi: Spi<'static, Blocking, Master>,
-      pub cs: Output<'static>
-  }
-
-  #[cfg(feature = "overcurrent-comparators")]
-  pub struct CurrentComparators {
-      pub dac_dual: Dac<'static, ComparatorDacDual, Blocking>,
-      pub comp_u: Comp<'static, CompU>,
-      pub comp_v: Comp<'static, CompV>,
-      pub comp_w: Comp<'static, CompW>,
-  }
-
-  pub struct PwmOutputMappings {
-      #[cfg(feature = "overcurrent-comparators")]
-      pub comparators: CurrentComparators,
-      pub pwm: PWM<'static, PwmTimer, NotRunning>,
-      pub deadtime: PwmDeadtime,
-  }
+  // Other mapping structs...
   ```
 
-  The board file also needs to implement the following measurement abstractions:
-  ```rust
-  /// Phase current from the shunt opamp output counts
-  pub fn current_adc_to_a(counts: i16) -> f32 {}
 
-  /// Opamp output voltage at the given phase current magnitude
-  pub fn limit_a_to_v(current_limit_a: f32) -> f32 {}
-
-  /// Board temperature from the thermistor measurement counts
-  pub fn temperature_adc_to_c(counts: u16) -> f32 {}
-
-  /// DC bus voltage from the divider measurement counts
-  pub fn vbus_adc_to_v(counts: u16) -> f32 {}
-  ```
-
-  To enable [/firmware/src/main.rs](/firmware/src/main.rs) to generate interrupt handlers for the correct peripherals, the board file needs to export the interrupt handler names:
+  Besides implementing the `Board` trait, to enable [/firmware/src/main.rs](/firmware/src/main.rs) to generate interrupt handlers for the correct peripherals, the board file needs to also export valid names for RTIC task binding, which match the peripherals actually used by the board:
 
   ```rust
   #[macro_export]
@@ -189,14 +216,14 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   }
   ```
 
-  The file [/firmware/src/boards/zest1.rs](/firmware/src/boards/zest1.rs) can be used as a reference for the above steps.
+  The file [/firmware/src/boards/zest1.rs](/firmware/src/boards/zest1.rs) should be used as a reference for the above steps.
 
-  To register the board file, it needs to be included from [/firmware/src/boards/mod.rs](/firmware/src/boards/mod.rs) behind the feature flag created in the previous step:
+  To register the new board file, it needs to be included from [/firmware/src/boards/mod.rs](/firmware/src/boards/mod.rs) behind the feature flag created in the first step, and type defined as the active board:
   ```rust
   #[cfg(feature = "board-zest1")]
   mod zest1;
   #[cfg(feature = "board-zest1")]
-  pub use zest1::*;
+  pub type Active = zest1::Zest1;
   ```
   
   ### Linker memory layout
@@ -209,8 +236,8 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   // bootloader/memory/zest1.x
   MEMORY
   {
-      FLASH            : ORIGIN = 0x08000000, LENGTH =  16K
-      RAM              : ORIGIN = 0x20000000, LENGTH =  96K
+      FLASH : ORIGIN = 0x08000000, LENGTH =  16K
+      RAM   : ORIGIN = 0x20000000, LENGTH =  96K
   }
 
   // firmware/memory/zest1.x
