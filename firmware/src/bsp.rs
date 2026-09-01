@@ -212,8 +212,8 @@ impl AdcFeedback {
             let result_a = self.adc_a.read_injected::<1>()[0];
             // V or W:
             let result_b = self.adc_b.read_injected::<1>()[0];
-            let amps_a = phase_current_a(result_a);
-            let amps_b = phase_current_a(result_b);
+            let amps_a = current_adc_to_a(result_a);
+            let amps_b = current_adc_to_a(result_b);
             let amps_c = -(amps_a + amps_b);
             match self.sampled_sector {
                 // 1 0 0, sampled VW:
@@ -319,8 +319,8 @@ impl AdcFeedback {
             let _ = self.adc_a.read();
             return None;
         }
-        let vbus = dc_bus_voltage_v(self.adc_a.read());
-        let tboard = board_temperature_c(self.adc_b.read());
+        let vbus = vbus_adc_to_v(self.adc_a.read());
+        let tboard = temperature_adc_to_c(self.adc_b.read());
         Some((vbus, tboard))
     }
 }
