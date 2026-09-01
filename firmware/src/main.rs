@@ -40,11 +40,11 @@ fn init_ccmram() {
 
 macro_rules! define_app {
     (
-        foc = $foc_irq:ident,
-        pwm_break = $pwm_break_irq:ident,
-        hall = $hall_irq:ident,
-        watchdog = $watchdog_irq:ident,
-        can = $can_irq:ident,
+        foc_isr = $foc_irq:ident,
+        pwm_break_isr = $pwm_break_irq:ident,
+        hall_isr = $hall_irq:ident,
+        soft_watchdog_isr = $watchdog_irq:ident,
+        can_isr = $can_irq:ident,
         dispatchers = $dispatchers:tt
     ) => {
 

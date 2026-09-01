@@ -567,14 +567,14 @@ impl CanBus {
 }
 
 pub struct SoftwareWatchdog {
-    timer: Timer<'static, WatchdogTimer>,
+    timer: Timer<'static, SoftWatchdogTimer>,
     started: bool,
     faulted: bool,
     acknowledged: bool,
 }
 
 impl SoftwareWatchdog {
-    pub fn new(timer: Timer<'static, WatchdogTimer>, frequency: Hertz) -> Self {
+    pub fn new(timer: Timer<'static, SoftWatchdogTimer>, frequency: Hertz) -> Self {
         timer.set_frequency(frequency ,embassy_stm32::timer::low_level::RoundTo::Slower);
         timer.generate_update_event();
         timer.clear_update_interrupt();
