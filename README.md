@@ -128,10 +128,10 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   
       /// Phase current from the shunt opamp output counts
       fn current_adc_to_a(counts: i16) -> f32;
-      /// Opamp output voltage at the given phase current   magnitude
+      /// Opamp output voltage at the given phase current magnitude
       #[cfg(feature = "overcurrent-comparators")]
       fn limit_a_to_v(current_limit_a: f32) -> f32;
-      /// Board temperature from the thermistor measurement   counts
+      /// Board temperature from the thermistor measurement counts
       fn temperature_adc_to_c(counts: u16) -> f32;
       /// DC bus voltage from the divider measurement counts
       fn vbus_adc_to_v(counts: u16) -> f32;
@@ -187,8 +187,8 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
       pub v_channel: AnyAdcChannel<'static, FeedbackAdcA>,
       pub w_channel: AnyAdcChannel<'static, FeedbackAdcB>,
       pub vbus_channel: AnyAdcChannel<'static, FeedbackAdcA>,
-      pub tboard_channel: AnyAdcChannel<'static,   FeedbackAdcB>,
-      pub sample_trigger: BasicTrgoOutput<'static,   AdcFeedbackTimer>,
+      pub tboard_channel: AnyAdcChannel<'static, FeedbackAdcB>,
+      pub sample_trigger: BasicTrgoOutput<'static, AdcFeedbackTimer>,
       pub phase_sample_time: SampleTime,
       pub vbus_sample_time: SampleTime,
       pub tboard_sample_time: SampleTime,
@@ -198,18 +198,18 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   ```
 
 
-  Besides implementing the `Board` trait, to enable [/firmware/src/main.rs](/firmware/src/main.rs) to generate interrupt handlers for the correct peripherals, the board file needs to also export valid names for RTIC task binding, which match the peripherals actually used by the board:
+  Besides implementing the `Board` trait, the board file needs to export valid names for RTIC task interrupt binding, where the names match the peripherals actually used by the board:
 
   ```rust
   #[macro_export]
   macro_rules! board_irqs {
       ($cb:ident) => {
           $cb!(
-              foc = ADCx,
-              pwm_break = TIMx_BRK,
-              hall = TIMx,
-              watchdog = TIMx_DAC,
-              can = FDCANx_IT0,
+              foc_isr = ADCx,
+              pwm_break_isr = TIMx_BRK,
+              hall_isr = TIMx,
+              soft_watchdog_isr = TIMx_DAC,
+              can_isr = FDCANx_IT0,
               dispatchers = [SPIx, SPIx, UARTx]
           );
       };
