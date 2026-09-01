@@ -126,6 +126,9 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
       pub vbus_channel: AnyAdcChannel<'static, FeedbackAdcA>,
       pub tboard_channel: AnyAdcChannel<'static, FeedbackAdcB>,
       pub sample_trigger: BasicTrgoOutput<'static, AdcFeedbackTimer>,
+      pub phase_sample_time: SampleTime,
+      pub vbus_sample_time: SampleTime,
+      pub tboard_sample_time: SampleTime,
   }
 
   pub struct HallFeedbackMappings {
@@ -155,17 +158,17 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
 
   The board file also needs to implement the following measurement abstractions:
   ```rust
-  /// Phase current from the shunt opamp output voltage
-  pub fn measurement_v_to_a(v: f32) -> f32 {}
+  /// Phase current from the shunt opamp output counts
+  pub fn current_adc_to_a(counts: i16) -> f32 {}
 
   /// Opamp output voltage at the given phase current magnitude
   pub fn limit_a_to_v(current_limit_a: f32) -> f32 {}
 
-  /// Board temperature from the thermistor measurement voltage
-  pub fn v_to_c(v: f32) -> f32 {}
+  /// Board temperature from the thermistor measurement counts
+  pub fn temperature_adc_to_c(counts: u16) -> f32 {}
 
-  /// DC bus voltage from the divider measurement voltage
-  pub fn vbus_measurement_v_to_v(v: f32) -> f32 {}
+  /// DC bus voltage from the divider measurement counts
+  pub fn vbus_adc_to_v(counts: u16) -> f32 {}
   ```
 
   To enable [/firmware/src/main.rs](/firmware/src/main.rs) to generate interrupt handlers for the correct peripherals, the board file needs to export the interrupt handler names:

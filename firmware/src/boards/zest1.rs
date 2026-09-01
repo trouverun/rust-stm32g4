@@ -71,15 +71,14 @@ const VBUS_DIVIDE_FACTOR: f32 = 25.3589743589744;
 const TBOARD_SLOPE_C_PER_V: f32 = 45.7;
 const TBOARD_BIAS_C: f32 = 23.6;
 
-/// Voltage at the ADC pin from a raw full-resolution conversion result
-/// (unsigned regular reads, or signed offset-corrected injected reads)
-fn adc_raw_to_v(raw: impl Into<f32>) -> f32 {
-    raw.into() * ADC_SCALER
+/// Voltage at the ADC pin from the conversion counts
+fn adc_count_to_v(counts: impl Into<f32>) -> f32 {
+    counts.into() * ADC_SCALER
 }
 
-/// Phase current from the raw offset-corrected shunt opamp output sample
-pub fn phase_current_a(raw: i16) -> f32 {
-    -adc_raw_to_v(raw) / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
+/// Phase current from the shunt opamp output counts
+pub fn current_adc_to_a(counts: i16) -> f32 {
+    -adc_count_to_v(counts) / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
 }
 
 /// Opamp output voltage at the given phase current magnitude
@@ -87,14 +86,14 @@ pub fn limit_a_to_v(current_limit_a: f32) -> f32 {
     OPAMP_GAIN * SHUNT_RESISTANCE_MOHM / 1000.0 * current_limit_a + OPAMP_BIAS_V
 }
 
-/// Board temperature from the raw thermistor sample
-pub fn board_temperature_c(raw: u16) -> f32 {
-    adc_raw_to_v(raw) * TBOARD_SLOPE_C_PER_V + TBOARD_BIAS_C
+/// Board temperature from the thermistor measurement counts
+pub fn temperature_adc_to_c(counts: u16) -> f32 {
+    adc_count_to_v(counts) * TBOARD_SLOPE_C_PER_V + TBOARD_BIAS_C
 }
 
-/// DC bus voltage from the raw divider sample
-pub fn dc_bus_voltage_v(raw: u16) -> f32 {
-    adc_raw_to_v(raw) * VBUS_DIVIDE_FACTOR
+/// DC bus voltage from the divider measurement counts
+pub fn vbus_adc_to_v(counts: u16) -> f32 {
+    adc_count_to_v(counts) * VBUS_DIVIDE_FACTOR
 }
 
 pub const BOARD: super::BoardInfo = super::BoardInfo {
