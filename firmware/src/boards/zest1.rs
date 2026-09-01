@@ -23,29 +23,7 @@ use embassy_stm32::can::CanConfigurator;
 
 use crate::boards::spi_mappings;
 
-// Adc feedback:
-pub type OpAmpU = OPAMP3;
-pub type OpAmpV = OPAMP4;
-pub type OpAmpW = OPAMP5;
-pub type FeedbackAdcA = ADC3;
-pub type FeedbackAdcB = ADC4;
-pub type AdcFeedbackTimer = TIM6;
-pub const FEEDBACK_TRIGGER_A: Adc345InjectedTrigger = Adc345InjectedTrigger::Tim8Trgo2;
-pub const FEEDBACK_TRIGGER_B: Adc345InjectedTrigger = Adc345InjectedTrigger::Tim8Trgo2;
-pub const BOARD_FEEDBACK_TRIGGER: Adc345RegularTrigger = Adc345RegularTrigger::Tim6Trgo;
-
-// Hall feedback:
-pub type HallFeedbackTimer = TIM3;
-
-// PWM output:
-pub type CompU = COMP6;
-pub type CompV = COMP5;
-pub type CompW = COMP7;
-pub type ComparatorDacDual = DAC4;
-pub type PwmTimer = TIM8;
-
-// Watchdog
-pub type WatchdogTimer = TIM7;
+pub struct Zest1;
 
 #[macro_export]
 macro_rules! board_irqs {
@@ -76,42 +54,6 @@ fn adc_count_to_v(counts: impl Into<f32>) -> f32 {
     counts.into() * ADC_SCALER
 }
 
-/// Phase current from the shunt opamp output counts
-pub fn current_adc_to_a(counts: i16) -> f32 {
-    -adc_count_to_v(counts) / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
-}
-
-/// Opamp output voltage at the given phase current magnitude
-pub fn limit_a_to_v(current_limit_a: f32) -> f32 {
-    OPAMP_GAIN * SHUNT_RESISTANCE_MOHM / 1000.0 * current_limit_a + OPAMP_BIAS_V
-}
-
-/// Board temperature from the thermistor measurement counts
-pub fn temperature_adc_to_c(counts: u16) -> f32 {
-    adc_count_to_v(counts) * TBOARD_SLOPE_C_PER_V + TBOARD_BIAS_C
-}
-
-/// DC bus voltage from the divider measurement counts
-pub fn vbus_adc_to_v(counts: u16) -> f32 {
-    adc_count_to_v(counts) * VBUS_DIVIDE_FACTOR
-}
-
-pub const BOARD: super::BoardInfo = super::BoardInfo {
-    current_limit_a: 5.0,
-    dc_voltage_limit_v: 25.5,
-    mosfet_deadtime_ns: 300,
-    mosfet_on_delay_ns: 15,
-    mosfet_off_delay_ns: 24,
-    deadtime_compensation_band_a: 0.1
-};
-
-pub struct DebugMappings {
-    pub la_a: Output<'static>,
-    pub la_b: Output<'static>,
-    pub la_c: Output<'static>,
-    pub la_d: Output<'static>
-}
-
 fn rcc_init() -> embassy_stm32::Peripherals {
     // Configure sysclk (to 170MHz)
     let mut rcc_config = RccConfig::default();
@@ -134,110 +76,169 @@ fn rcc_init() -> embassy_stm32::Peripherals {
     embassy_stm32::init(rcc_config)
 }
 
-pub fn map_peripherals() -> (
-    super::AdcFeedbackMappings,
-    super::HallFeedbackMappings,
-    super::SPIMappings,
-    super::PwmOutputMappings,
-    super::AccelerationMappings,
-    super::MemoryMappings,
-    super::CanMappings,
-    super::WatchdogMappings,
-    DebugMappings,
-) {
-    let p = rcc_init();
-    let adc_feedback = super::AdcFeedbackMappings {
-        opamps: super::ShuntOpAmps {
-            u: OpAmp::new(p.OPAMP3, OpAmpSpeed::HighSpeed).standalone_ext(p.PB0, p.PB2, p.PB1),
-            v: OpAmp::new(p.OPAMP4, OpAmpSpeed::HighSpeed).standalone_ext(p.PB11, p.PB10, p.PB12),
-            w: OpAmp::new(p.OPAMP5, OpAmpSpeed::HighSpeed).standalone_ext(p.PB14, p.PB15, p.PA8),
-        },
-        adc_a: p.ADC3,
-        adc_b: p.ADC4,
-        u_channel: AdcChannel::<FeedbackAdcA>::degrade_adc(p.PD11),
-        v_channel: AdcChannel::<FeedbackAdcA>::degrade_adc(p.PD12),
-        w_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PD14),
-        vbus_channel: AdcChannel::<FeedbackAdcA>::degrade_adc(p.PB13),
-        tboard_channel: AdcChannel::<FeedbackAdcB>::degrade_adc(p.PE15),
-        sample_trigger: BasicTrgoOutput::new(p.TIM6, crate::constants::BOARD_STATUS_FREQUENCY_HZ),
-        phase_sample_time: SampleTime::CYCLES6_5,
-        vbus_sample_time: SampleTime::CYCLES6_5,
-        tboard_sample_time: SampleTime::CYCLES6_5,
+impl super::Board for Zest1 {
+    // Adc feedback:
+    #[cfg(feature = "mcu-opamps")]
+    type OpAmpU = OPAMP3;
+    #[cfg(feature = "mcu-opamps")]
+    type OpAmpV = OPAMP4;
+    #[cfg(feature = "mcu-opamps")]
+    type OpAmpW = OPAMP5;
+    type FeedbackAdcA = ADC3;
+    type FeedbackAdcB = ADC4;
+    type AdcFeedbackTimer = TIM6;
+    const FEEDBACK_TRIGGER_A: Adc345InjectedTrigger = Adc345InjectedTrigger::Tim8Trgo2;
+    const FEEDBACK_TRIGGER_B: Adc345InjectedTrigger = Adc345InjectedTrigger::Tim8Trgo2;
+    const BOARD_FEEDBACK_TRIGGER: Adc345RegularTrigger = Adc345RegularTrigger::Tim6Trgo;
+
+    // Hall feedback:
+    type HallFeedbackTimer = TIM3;
+
+    // PWM output:
+    #[cfg(feature = "overcurrent-comparators")]
+    type CompU = COMP6;
+    #[cfg(feature = "overcurrent-comparators")]
+    type CompV = COMP5;
+    #[cfg(feature = "overcurrent-comparators")]
+    type CompW = COMP7;
+    #[cfg(feature = "overcurrent-comparators")]
+    type ComparatorDacDual = DAC4;
+    type PwmTimer = TIM8;
+
+    // Watchdog
+    type WatchdogTimer = TIM7;
+
+    fn current_adc_to_a(counts: i16) -> f32 {
+        -adc_count_to_v(counts) / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
+    }
+
+    #[cfg(feature = "overcurrent-comparators")]
+    fn limit_a_to_v(current_limit_a: f32) -> f32 {
+        OPAMP_GAIN * SHUNT_RESISTANCE_MOHM / 1000.0 * current_limit_a + OPAMP_BIAS_V
+    }
+
+    fn temperature_adc_to_c(counts: u16) -> f32 {
+        adc_count_to_v(counts) * TBOARD_SLOPE_C_PER_V + TBOARD_BIAS_C
+    }
+
+    fn vbus_adc_to_v(counts: u16) -> f32 {
+        adc_count_to_v(counts) * VBUS_DIVIDE_FACTOR
+    }
+
+    const INFO: super::BoardInfo = super::BoardInfo {
+        current_limit_a: 5.0,
+        dc_voltage_limit_v: 25.5,
+        mosfet_deadtime_ns: 300,
+        mosfet_on_delay_ns: 15,
+        mosfet_off_delay_ns: 24,
+        deadtime_compensation_band_a: 0.1
     };
 
-    let hall_feedback = super::HallFeedbackMappings {
-        hall_timer: HallSensor::new(p.TIM3, p.PE2, p.PE3, p.PE4, HallConfig::default()),
-    };
-    let spi = spi_mappings(
-        p.SPI1, p.PG2,  p.PG4, p.PG3, p.PG5,
-    );
+    fn map_peripherals() -> (
+        super::AdcFeedbackMappings,
+        super::HallFeedbackMappings,
+        super::SPIMappings,
+        super::PwmOutputMappings,
+        super::AccelerationMappings,
+        super::MemoryMappings,
+        super::CanMappings,
+        super::WatchdogMappings,
+        super::DebugMappings,
+    ) {
+        let p = rcc_init();
+        let adc_feedback = super::AdcFeedbackMappings {
+            opamps: super::ShuntOpAmps {
+                u: OpAmp::new(p.OPAMP3, OpAmpSpeed::HighSpeed).standalone_ext(p.PB0, p.PB2, p.PB1),
+                v: OpAmp::new(p.OPAMP4, OpAmpSpeed::HighSpeed).standalone_ext(p.PB11, p.PB10, p.PB12),
+                w: OpAmp::new(p.OPAMP5, OpAmpSpeed::HighSpeed).standalone_ext(p.PB14, p.PB15, p.PA8),
+            },
+            adc_a: p.ADC3,
+            adc_b: p.ADC4,
+            u_channel: AdcChannel::<Self::FeedbackAdcA>::degrade_adc(p.PD11),
+            v_channel: AdcChannel::<Self::FeedbackAdcA>::degrade_adc(p.PD12),
+            w_channel: AdcChannel::<Self::FeedbackAdcB>::degrade_adc(p.PD14),
+            vbus_channel: AdcChannel::<Self::FeedbackAdcA>::degrade_adc(p.PB13),
+            tboard_channel: AdcChannel::<Self::FeedbackAdcB>::degrade_adc(p.PE15),
+            sample_trigger: BasicTrgoOutput::new(p.TIM6, crate::constants::BOARD_STATUS_FREQUENCY_HZ),
+            phase_sample_time: SampleTime::CYCLES6_5,
+            vbus_sample_time: SampleTime::CYCLES6_5,
+            tboard_sample_time: SampleTime::CYCLES6_5,
+        };
 
-    let pwm = super::PwmOutputMappings {
-        comparators: super::CurrentComparators {
-            dac_dual: Dac::new_internal_blocking(p.DAC4, DAC_REF_V),
-            comp_u: Comp::new(
-                p.COMP6,
-                Comp6InpSel::PD11,
-                Comp6InmSel::Dac4Ch2,
-                Comp6BlankSel::None,
-            ),
-            comp_v: Comp::new(
-                p.COMP5,
-                Comp5InpSel::PD12,
-                Comp5InmSel::Dac4Ch1,
-                Comp5BlankSel::None,
-            ),
-            comp_w: Comp::new(
-                p.COMP7,
-                Comp7InpSel::PD14,
-                Comp7InmSel::Dac4Ch1,
-                Comp7BlankSel::None,
-            ),
-        },
-        pwm: PWM::new(p.TIM8, crate::constants::PWM_FREQUENCY_HZ, super::COUNTING_MODE)
-            .with_ch1(p.PC6)
-            .with_ch1n(p.PC10)
-            .with_ch2(p.PC7)
-            .with_ch2n(p.PC11)
-            .with_ch3(p.PC8)
-            .with_ch3n(p.PC12)
-            .with_break2_pin(
-                p.PD1,
-                Bkinp::INVERTED,
-                Bkp::ACTIVE_HIGH,
-                FilterValue::FCK_INT_N4,
-            ),
-        deadtime: PwmDeadtime::Nanosecods(BOARD.mosfet_deadtime_ns),
-    };
+        let hall_feedback = super::HallFeedbackMappings {
+            hall_timer: HallSensor::new(p.TIM3, p.PE2, p.PE3, p.PE4, HallConfig::default()),
+        };
+        let spi = spi_mappings(
+            p.SPI1, p.PG2,  p.PG4, p.PG3, p.PG5,
+        );
 
-    let acceleration = super::AccelerationMappings { cordic: p.CORDIC };
-    let storage = super::MemoryMappings { flash: p.FLASH };
+        let pwm = super::PwmOutputMappings {
+            comparators: super::CurrentComparators {
+                dac_dual: Dac::new_internal_blocking(p.DAC4, DAC_REF_V),
+                comp_u: Comp::new(
+                    p.COMP6,
+                    Comp6InpSel::PD11,
+                    Comp6InmSel::Dac4Ch2,
+                    Comp6BlankSel::None,
+                ),
+                comp_v: Comp::new(
+                    p.COMP5,
+                    Comp5InpSel::PD12,
+                    Comp5InmSel::Dac4Ch1,
+                    Comp5BlankSel::None,
+                ),
+                comp_w: Comp::new(
+                    p.COMP7,
+                    Comp7InpSel::PD14,
+                    Comp7InmSel::Dac4Ch1,
+                    Comp7BlankSel::None,
+                ),
+            },
+            pwm: PWM::new(p.TIM8, crate::constants::PWM_FREQUENCY_HZ, super::COUNTING_MODE)
+                .with_ch1(p.PC6)
+                .with_ch1n(p.PC10)
+                .with_ch2(p.PC7)
+                .with_ch2n(p.PC11)
+                .with_ch3(p.PC8)
+                .with_ch3n(p.PC12)
+                .with_break2_pin(
+                    p.PD1,
+                    Bkinp::INVERTED,
+                    Bkp::ACTIVE_HIGH,
+                    FilterValue::FCK_INT_N4,
+                ),
+            deadtime: PwmDeadtime::Nanosecods(Self::INFO.mosfet_deadtime_ns),
+        };
 
-    let can = super::CanMappings {
-        configurator: unsafe { CanConfigurator::new_unbound(p.FDCAN1, p.PD0, p.PA12) },
-    };
+        let acceleration = super::AccelerationMappings { cordic: p.CORDIC };
+        let storage = super::MemoryMappings { flash: p.FLASH };
 
-    let debug = DebugMappings {
-        la_a: Output::new(p.PE8, Level::Low, Speed::Low),
-        la_b: Output::new(p.PE14, Level::Low, Speed::Low),
-        la_c: Output::new(p.PD15, Level::Low, Speed::Low),
-        la_d: Output::new(p.PE5, Level::Low, Speed::Low)
-    };
+        let can = super::CanMappings {
+            configurator: unsafe { CanConfigurator::new_unbound(p.FDCAN1, p.PD0, p.PA12) },
+        };
 
-    let watchdog = super::WatchdogMappings {
-        timer: Timer::new(p.TIM7),
-        iwdg: p.IWDG,
-    };
+        let debug = super::DebugMappings {
+            la_a: Output::new(p.PE8, Level::Low, Speed::Low),
+            la_b: Output::new(p.PE14, Level::Low, Speed::Low),
+            la_c: Output::new(p.PD15, Level::Low, Speed::Low),
+            la_d: Output::new(p.PE5, Level::Low, Speed::Low)
+        };
 
-    (
-        adc_feedback,
-        hall_feedback,
-        spi,
-        pwm,
-        acceleration,
-        storage,
-        can,
-        watchdog,
-        debug,
-    )
+        let watchdog = super::WatchdogMappings {
+            timer: Timer::new(p.TIM7),
+            iwdg: p.IWDG,
+        };
+
+        (
+            adc_feedback,
+            hall_feedback,
+            spi,
+            pwm,
+            acceleration,
+            storage,
+            can,
+            watchdog,
+            debug,
+        )
+    }
 }

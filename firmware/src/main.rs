@@ -121,7 +121,7 @@ mod app {
             can_mappings,
             watchdog_mappings,
             debug_mappings,
-        ) = map_peripherals();
+        ) = Active::map_peripherals();
 
         // Initialize HW:
         let pwm_output: PwmOutput = bsp::PwmOutput::new(pwm_mappings, 0.0);

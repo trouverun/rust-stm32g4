@@ -1,18 +1,20 @@
 #[cfg(feature = "board-zest1")]
 mod zest1;
 #[cfg(feature = "board-zest1")]
-pub use zest1::*;
+pub type Active = zest1::Zest1;
 pub mod spi;
 pub use spi::*;
 
-use embassy_stm32::adc::{AnyAdcChannel, Resolution, SampleTime, resolution_to_max_count};
+use embassy_stm32::adc::{self, AnyAdcChannel, HasInjectedTrigger, HasRegularTrigger, Resolution, SampleTime, resolution_to_max_count};
 use embassy_stm32::can::CanConfigurator;
-use embassy_stm32::comp::Comp;
-use embassy_stm32::dac::Dac;
+use embassy_stm32::comp::{self, Comp};
+use embassy_stm32::dac::{self, Dac};
 use embassy_stm32::mode::Blocking;
 use embassy_stm32::peripherals::{CORDIC, FLASH, IWDG};
 use embassy_stm32::timer::pwm::{NotRunning, PwmDeadtime, PWM};
-use embassy_stm32::timer::{trigger_output::BasicTrgoOutput, CountingMode};
+use embassy_stm32::timer::{
+    trigger_output::BasicTrgoOutput, AdvancedInstance4Channel, BasicInstance, CountingMode, GeneralInstance4Channel
+};
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::Peri;
 use embassy_stm32::gpio::Output;
@@ -20,11 +22,86 @@ use embassy_stm32::spi::{mode::Master, Spi};
 use embassy_stm32::timer::hall::HallSensor;
 
 #[cfg(feature = "mcu-opamps")]
-use embassy_stm32::opamp::OpAmpOutput;
+use embassy_stm32::opamp::{self, OpAmpOutput};
 
 pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupts;
 pub const ADC_RESOLUTION: Resolution = Resolution::BITS12;
 pub const ADC_MAX_COUNT: f32 = resolution_to_max_count(ADC_RESOLUTION) as f32;
+
+pub trait Board {
+    #[cfg(feature = "mcu-opamps")]
+    type OpAmpU: opamp::Instance;
+    #[cfg(feature = "mcu-opamps")]
+    type OpAmpV: opamp::Instance;
+    #[cfg(feature = "mcu-opamps")]
+    type OpAmpW: opamp::Instance;
+    type FeedbackAdcA: adc::Instance + HasInjectedTrigger + HasRegularTrigger;
+    type FeedbackAdcB: adc::Instance + HasInjectedTrigger + HasRegularTrigger;
+    type AdcFeedbackTimer: BasicInstance;
+    type HallFeedbackTimer: GeneralInstance4Channel;
+    #[cfg(feature = "overcurrent-comparators")]
+    type CompU: comp::Instance;
+    #[cfg(feature = "overcurrent-comparators")]
+    type CompV: comp::Instance;
+    #[cfg(feature = "overcurrent-comparators")]
+    type CompW: comp::Instance;
+    #[cfg(feature = "overcurrent-comparators")]
+    type ComparatorDacDual: dac::Instance;
+    type PwmTimer: AdvancedInstance4Channel;
+    type WatchdogTimer: BasicInstance;
+
+    const FEEDBACK_TRIGGER_A: <Self::FeedbackAdcA as HasInjectedTrigger>::Trigger;
+    const FEEDBACK_TRIGGER_B: <Self::FeedbackAdcB as HasInjectedTrigger>::Trigger;
+    const BOARD_FEEDBACK_TRIGGER: <Self::FeedbackAdcA as HasRegularTrigger>::Trigger;
+    const INFO: BoardInfo;
+
+    /// Phase current from the shunt opamp output counts
+    fn current_adc_to_a(counts: i16) -> f32;
+    /// Opamp output voltage at the given phase current magnitude
+    #[cfg(feature = "overcurrent-comparators")]
+    fn limit_a_to_v(current_limit_a: f32) -> f32;
+    /// Board temperature from the thermistor measurement counts
+    fn temperature_adc_to_c(counts: u16) -> f32;
+    /// DC bus voltage from the divider measurement counts
+    fn vbus_adc_to_v(counts: u16) -> f32;
+
+    fn map_peripherals() -> (
+        AdcFeedbackMappings,
+        HallFeedbackMappings,
+        SPIMappings,
+        PwmOutputMappings,
+        AccelerationMappings,
+        MemoryMappings,
+        CanMappings,
+        WatchdogMappings,
+        DebugMappings,
+    );
+}
+
+#[cfg(feature = "mcu-opamps")]
+pub type OpAmpU = <Active as Board>::OpAmpU;
+#[cfg(feature = "mcu-opamps")]
+pub type OpAmpV = <Active as Board>::OpAmpV;
+#[cfg(feature = "mcu-opamps")]
+pub type OpAmpW = <Active as Board>::OpAmpW;
+pub type FeedbackAdcA = <Active as Board>::FeedbackAdcA;
+pub type FeedbackAdcB = <Active as Board>::FeedbackAdcB;
+pub type AdcFeedbackTimer = <Active as Board>::AdcFeedbackTimer;
+pub type HallFeedbackTimer = <Active as Board>::HallFeedbackTimer;
+#[cfg(feature = "overcurrent-comparators")]
+pub type CompU = <Active as Board>::CompU;
+#[cfg(feature = "overcurrent-comparators")]
+pub type CompV = <Active as Board>::CompV;
+#[cfg(feature = "overcurrent-comparators")]
+pub type CompW = <Active as Board>::CompW;
+#[cfg(feature = "overcurrent-comparators")]
+pub type ComparatorDacDual = <Active as Board>::ComparatorDacDual;
+pub type PwmTimer = <Active as Board>::PwmTimer;
+pub type WatchdogTimer = <Active as Board>::WatchdogTimer;
+pub const FEEDBACK_TRIGGER_A: <FeedbackAdcA as HasInjectedTrigger>::Trigger = Active::FEEDBACK_TRIGGER_A;
+pub const FEEDBACK_TRIGGER_B: <FeedbackAdcB as HasInjectedTrigger>::Trigger = Active::FEEDBACK_TRIGGER_B;
+pub const BOARD_FEEDBACK_TRIGGER: <FeedbackAdcA as HasRegularTrigger>::Trigger = Active::BOARD_FEEDBACK_TRIGGER;
+pub const BOARD: BoardInfo = Active::INFO;
 
 pub struct BoardInfo {
     pub current_limit_a: f32,
@@ -97,4 +174,11 @@ pub struct CanMappings {
 pub struct WatchdogMappings {
     pub timer: Timer<'static, WatchdogTimer>,
     pub iwdg: Peri<'static, IWDG>,
+}
+
+pub struct DebugMappings {
+    pub la_a: Output<'static>,
+    pub la_b: Output<'static>,
+    pub la_c: Output<'static>,
+    pub la_d: Output<'static>
 }
