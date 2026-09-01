@@ -13,12 +13,12 @@ use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
 use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin};
 
 use crate::boards::*;
-use crate::constants::{OPAMP_CALIBRATION_SAMPLE_COUNT};
+use crate::constants::{ADC_CALIBRATION_SAMPLE_COUNT};
 use crate::memory::{DFU_OFFSET, FIRMWARE_SIZE, BOOTLOADER_STATUS_OFFSET, PAGE_SIZE, Stored, page_offset};
 use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES, BootloaderStatus, BootloaderState, DecodeResult};
 use embassy_stm32::adc::{
     Adc, AdcConfig, AnyAdcChannel, Dual, EocInterruptEnabled, Exten, ExternalTriggeredADC,
-    JeosInterruptEnabled, Queued, Running as AdcRunning, SampleTime, StartMode,
+    JeosInterruptEnabled, Queued, Running as AdcRunning, StartMode,
 };
 use embassy_stm32::can::{
     Frame, IsrDrivenCan, OperatingMode,
@@ -32,8 +32,6 @@ use field_oriented::{
     PhaseValues, RotorFeedback, RotorFeedbackFault, SinCosResult,
     HallCalibration, HallEstimator, HallEstimatorInput, LowPassFilter, wrap_to_pi
 };
-
-const ADC_SCALER: f32 = ADC_REF_V / ((1 << 12) - 1) as f32;
 
 pub type BusVoltage = f32;
 pub type BoardTemperature = f32;
@@ -63,11 +61,14 @@ impl AdcFeedback {
             vbus_channel,
             tboard_channel,
             sample_trigger,
+            phase_sample_time,
+            vbus_sample_time,
+            tboard_sample_time,
         } = mappings;
 
         let mut adc_a_config: AdcConfig = AdcConfig::default();
         adc_a_config.dual_mode = Some(Dual::INDEPENDENT);
-        adc_a_config.resolution = Some(embassy_stm32::adc::Resolution::BITS12);
+        adc_a_config.resolution = Some(ADC_RESOLUTION);
         let adc_a = Adc::new(adc_a, adc_a_config)
             .to_external_triggered_queued()
             .with_sequence(
@@ -76,9 +77,9 @@ impl AdcFeedback {
                 Exten::RISING_EDGE,
             )
             .using_sampletimes(&[
-                (vbus_channel.get_hw_channel(), SampleTime::CYCLES6_5),
-                (u_channel.get_hw_channel(), SampleTime::CYCLES6_5),
-                (v_channel.get_hw_channel(), SampleTime::CYCLES6_5),
+                (vbus_channel.get_hw_channel(), vbus_sample_time),
+                (u_channel.get_hw_channel(), phase_sample_time),
+                (v_channel.get_hw_channel(), phase_sample_time),
             ])
             .start(
                 EocInterruptEnabled::ENABLED,
@@ -87,7 +88,7 @@ impl AdcFeedback {
             );
 
         let mut adc_b_config = AdcConfig::default();
-        adc_b_config.resolution = Some(embassy_stm32::adc::Resolution::BITS12);
+        adc_b_config.resolution = Some(ADC_RESOLUTION);
         let adc_b = Adc::new(adc_b, adc_b_config)
             .to_external_triggered_queued()
             .with_sequence(
@@ -96,9 +97,9 @@ impl AdcFeedback {
                 Exten::RISING_EDGE,
             )
             .using_sampletimes(&[
-                (tboard_channel.get_hw_channel(), SampleTime::CYCLES6_5),
-                (v_channel.get_hw_channel(), SampleTime::CYCLES6_5),
-                (w_channel.get_hw_channel(), SampleTime::CYCLES6_5),
+                (tboard_channel.get_hw_channel(), tboard_sample_time),
+                (v_channel.get_hw_channel(), phase_sample_time),
+                (w_channel.get_hw_channel(), phase_sample_time),
             ])
             .start(
                 EocInterruptEnabled::DISABLED,
@@ -117,11 +118,11 @@ impl AdcFeedback {
             sample_trigger,
             sampled_sector: 0,
         }
-        .calibrate_opamp_offset()
+        .calibrate_offset()
     }
 
-    /// Finds the opamp offsets from N samples for each motor phase, and configures the ADC(s) to negate them
-    fn calibrate_opamp_offset(self) -> Self {
+    /// Finds the offsets from N samples for each motor phase, and configures the ADC(s) to negate them
+    fn calibrate_offset(self) -> Self {
         let mut val_u = 0i32;
         let mut val_va = 0i32;
         let mut val_vb = 0i32;
@@ -136,8 +137,8 @@ impl AdcFeedback {
             FEEDBACK_TRIGGER_B,
             Exten::RISING_EDGE,
         );
-        for i in 0..2*OPAMP_CALIBRATION_SAMPLE_COUNT {
-            if i < OPAMP_CALIBRATION_SAMPLE_COUNT {
+        for i in 0..2*ADC_CALIBRATION_SAMPLE_COUNT {
+            if i < ADC_CALIBRATION_SAMPLE_COUNT {
                 val_u += self.adc_a.read_injected::<1>()[0] as i32;
                 val_vb += self.adc_b.read_injected::<1>()[0] as i32;
                 self.adc_a.insert_injected_context(
@@ -165,10 +166,10 @@ impl AdcFeedback {
                 );
             }
         }
-        let offset_u = -(val_u / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
-        let offset_va = -(val_va / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
-        let offset_vb = -(val_vb / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
-        let offset_w = -(val_w / OPAMP_CALIBRATION_SAMPLE_COUNT as i32) as i16;
+        let offset_u = -(val_u / ADC_CALIBRATION_SAMPLE_COUNT as i32) as i16;
+        let offset_va = -(val_va / ADC_CALIBRATION_SAMPLE_COUNT as i32) as i16;
+        let offset_vb = -(val_vb / ADC_CALIBRATION_SAMPLE_COUNT as i32) as i16;
+        let offset_w = -(val_w / ADC_CALIBRATION_SAMPLE_COUNT as i32) as i16;
         let tmp_a = self.adc_a
             .stop()
             .using_offsets(&[
@@ -211,8 +212,8 @@ impl AdcFeedback {
             let result_a = self.adc_a.read_injected::<1>()[0];
             // V or W:
             let result_b = self.adc_b.read_injected::<1>()[0];
-            let amps_a = measurement_v_to_a(result_a as f32 * ADC_SCALER);
-            let amps_b = measurement_v_to_a(result_b as f32 * ADC_SCALER);
+            let amps_a = phase_current_a(result_a);
+            let amps_b = phase_current_a(result_b);
             let amps_c = -(amps_a + amps_b);
             match self.sampled_sector {
                 // 1 0 0, sampled VW:
@@ -318,8 +319,8 @@ impl AdcFeedback {
             let _ = self.adc_a.read();
             return None;
         }
-        let vbus = vbus_measurement_v_to_v(self.adc_a.read() as f32 * ADC_SCALER);
-        let tboard = v_to_c(self.adc_b.read() as f32 * ADC_SCALER);
+        let vbus = dc_bus_voltage_v(self.adc_a.read());
+        let tboard = board_temperature_c(self.adc_b.read());
         Some((vbus, tboard))
     }
 }
