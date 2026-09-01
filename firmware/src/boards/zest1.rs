@@ -29,11 +29,11 @@ pub struct Zest1;
 macro_rules! board_irqs {
     ($cb:ident) => {
         $cb!(
-            foc = ADC3,
-            pwm_break = TIM8_BRK,
-            hall = TIM3,
-            watchdog = TIM7_DAC,
-            can = FDCAN1_IT0,
+            foc_isr = ADC3,
+            pwm_break_isr = TIM8_BRK,
+            hall_isr = TIM3,
+            soft_watchdog_isr = TIM7_DAC,
+            can_isr = FDCAN1_IT0,
             dispatchers = [SPI2, SPI3, UART5]
         );
     };
@@ -105,8 +105,8 @@ impl super::Board for Zest1 {
     type ComparatorDacDual = DAC4;
     type PwmTimer = TIM8;
 
-    // Watchdog
-    type WatchdogTimer = TIM7;
+    // Software level watchdog:
+    type SoftWatchdogTimer = TIM7;
 
     fn current_adc_to_a(counts: i16) -> f32 {
         -adc_count_to_v(counts) / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)

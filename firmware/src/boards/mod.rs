@@ -48,7 +48,7 @@ pub trait Board {
     #[cfg(feature = "overcurrent-comparators")]
     type ComparatorDacDual: dac::Instance;
     type PwmTimer: AdvancedInstance4Channel;
-    type WatchdogTimer: BasicInstance;
+    type SoftWatchdogTimer: BasicInstance;
 
     const FEEDBACK_TRIGGER_A: <Self::FeedbackAdcA as HasInjectedTrigger>::Trigger;
     const FEEDBACK_TRIGGER_B: <Self::FeedbackAdcB as HasInjectedTrigger>::Trigger;
@@ -97,7 +97,7 @@ pub type CompW = <Active as Board>::CompW;
 #[cfg(feature = "overcurrent-comparators")]
 pub type ComparatorDacDual = <Active as Board>::ComparatorDacDual;
 pub type PwmTimer = <Active as Board>::PwmTimer;
-pub type WatchdogTimer = <Active as Board>::WatchdogTimer;
+pub type SoftWatchdogTimer = <Active as Board>::SoftWatchdogTimer;
 pub const FEEDBACK_TRIGGER_A: <FeedbackAdcA as HasInjectedTrigger>::Trigger = Active::FEEDBACK_TRIGGER_A;
 pub const FEEDBACK_TRIGGER_B: <FeedbackAdcB as HasInjectedTrigger>::Trigger = Active::FEEDBACK_TRIGGER_B;
 pub const BOARD_FEEDBACK_TRIGGER: <FeedbackAdcA as HasRegularTrigger>::Trigger = Active::BOARD_FEEDBACK_TRIGGER;
@@ -172,7 +172,7 @@ pub struct CanMappings {
 }
 
 pub struct WatchdogMappings {
-    pub timer: Timer<'static, WatchdogTimer>,
+    pub timer: Timer<'static, SoftWatchdogTimer>,
     pub iwdg: Peri<'static, IWDG>,
 }
 
