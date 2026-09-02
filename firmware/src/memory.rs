@@ -3,7 +3,7 @@ use embassy_stm32::flash::{BANK2_REGION, FLASH_BASE, WRITE_SIZE};
 use field_oriented::{ControllerParameters, HallCalibration, MotorParamsEstimate};
 use firmware_core::{MAX_RECORD_BYTES, RESERVED_CONFIG_PAGES};
 
-// FIRMWARE_SIZE parsed from memory.x
+// FIRMWARE_SIZE and CAPTURE_RAM_BYTES parsed from memory.x
 include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 
 /// An entry persisted in its own flash page.

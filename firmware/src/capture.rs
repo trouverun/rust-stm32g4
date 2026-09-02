@@ -2,8 +2,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-pub const RAM_BUDGET_BYTES: usize = 50 * 1024;
-pub const CAPTURE_LEN: usize = RAM_BUDGET_BYTES / size_of::<Record>();
+pub const CAPTURE_LEN: usize = crate::memory::CAPTURE_RAM_BYTES as usize / size_of::<Record>();
 const WORDS_PER_RECORD: usize = 6;
 const WORDS_PER_FRAME: usize = 3;
 const DUMP_FRAMES: usize = CAPTURE_LEN * WORDS_PER_RECORD / WORDS_PER_FRAME;
