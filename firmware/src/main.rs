@@ -3,9 +3,11 @@
 #![feature(type_alias_impl_trait)]
 #![feature(sync_unsafe_cell)]
 #![feature(core_intrinsics)]
+#![feature(stmt_expr_attributes)]
 
 use stm32g4_firmware as _;
 mod boards;
+mod encoders;
 mod bsp;
 mod can;
 #[cfg(feature = "debug-capture")]
@@ -57,6 +59,7 @@ mod app {
 
     use crate::constants::*;
     use crate::boards::*;
+    use crate::encoders::*;
     use crate::bsp::{
         self, Acceleration, AdcFeedback, CanBus, HallFeedback, Memory,
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
@@ -78,23 +81,26 @@ mod app {
         board_status: BoardStatus,
         config: FirmwareConfig,
         runtime_values: RuntimeValues,
-        hall_feedback: HallFeedback,
-        pwm_output: PwmOutput,
-        memory: Memory,
-        foc: FOC,
         motor_parameters: ConstantMotorParameters,
-        debug_mappings: DebugMappings,
-        current_loop_snapshot: CurrentLoopSnapshot,
+        memory: Memory,
+        pwm_output: PwmOutput,
+        foc: FOC,
+        #[cfg(feature = "hall-feedback")]
+        hall_feedback: HallFeedback,
+        #[cfg(not(encoder_none))]
+        encoder_feedback: ActiveEncoder,
         feedback_arbitrator: FeedbackArbitrator,
         phase_current_filter: PhaseCurrentFilter,
         braking_current_filter: CurrentFilter,
+        current_loop_snapshot: CurrentLoopSnapshot,
         software_watchdog: SoftwareWatchdog,
         can: CanBus,
+        debug_mappings: DebugMappings,
     }
 
     #[local]
     struct Local {
-        adc_feedback: AdcFeedback,
+        current_feedback: AdcFeedback,
         acceleration: Acceleration,        
         sensorless_estimator: OrtegaPralyEstimator,
         hardware_watchdog: HardwareWatchdog,
@@ -110,29 +116,27 @@ mod app {
             assert!(BOARD.deadtime_compensation_band_a >= 0.0);
             assert!(OVERMODULATION_THRESHOLD_RATIO > 0.0 && OVERMODULATION_THRESHOLD_RATIO <= 1.0);
         };
-
-        let (
-            adc_mappings,
-            hall_mappings,
-            _spi_mappings,
-            pwm_mappings,
-            accel_mappings,
-            memory_mappings,
-            can_mappings,
-            watchdog_mappings,
-            debug_mappings,
-        ) = Active::map_peripherals();
+        let peripheral_mappings = Active::map_peripherals();
 
         // Initialize HW:
-        let pwm_output: PwmOutput = bsp::PwmOutput::new(pwm_mappings, 0.0);
+        let pwm_output: PwmOutput = bsp::PwmOutput::new(peripheral_mappings.pwm_output, 0.0);
         pwm_output.wait_break2_ready();
-        let mut adc_feedback = bsp::AdcFeedback::new(adc_mappings);
-        adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
+        let mut current_feedback = bsp::AdcFeedback::new(peripheral_mappings.current_feedback);
+        current_feedback.sample_sector(0); // Kick off the ADC ISR loop
+
+        #[cfg(feature = "hall-feedback")]
         let mut hall_feedback = bsp::HallFeedback::new(
-            hall_mappings, PWM_FREQUENCY_HZ.0, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
+            peripheral_mappings.hall_feedback, PWM_FREQUENCY_HZ.0, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
         );
-        let acceleration = bsp::Acceleration::new(accel_mappings);
-        let mut memory = bsp::Memory::new(memory_mappings);
+
+        #[cfg(not(encoder_none))]
+        let encoder_feedback = ActiveEncoder::new(EncoderInterface::take(
+            #[cfg(feature = "spi-encoder")] peripheral_mappings.spi_encoder,
+            #[cfg(feature = "rs485-encoder")] peripheral_mappings.rs485_encoder,
+        ));
+
+        let acceleration = bsp::Acceleration::new(peripheral_mappings.acceleration);
+        let mut memory = bsp::Memory::new(peripheral_mappings.memory);
         let mut mode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
 
         let bootloader_status = memory.read_bootloader_status();
@@ -214,7 +218,7 @@ mod app {
         }
 
         // Start CAN interface:
-        let can = bsp::CanBus::new(can_mappings, CAN_BIT_RATE);
+        let can = bsp::CanBus::new(peripheral_mappings.can, CAN_BIT_RATE);
         let token = rtic_monotonics::create_stm32_tim2_monotonic_token!();
         Mono::start(rcc::frequency::<TIM2>().0, token);
         can_tx_task::spawn().unwrap();
@@ -227,69 +231,38 @@ mod app {
             },
             config,
             runtime_values: RuntimeValues::default(),
+            #[cfg(feature = "hall-feedback")]
             hall_feedback,
+            #[cfg(not(encoder_none))]
+            encoder_feedback,
             pwm_output,
             memory,
             foc,
             motor_parameters,
-            debug_mappings,
+            debug_mappings: peripheral_mappings.debug,
             current_loop_snapshot: CurrentLoopSnapshot::default(),
             feedback_arbitrator: FeedbackArbitrator::new(SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA),
             phase_current_filter,
             braking_current_filter,
             software_watchdog: SoftwareWatchdog::new(
-                watchdog_mappings.timer,
+                peripheral_mappings.watchdog.timer,
                 Hertz((FOC_ISR_WATCHDOG_SLACK_FACTOR*PWM_FREQUENCY_HZ.0 as f32) as u32)
             ),
             can,
         },
         Local {
-            adc_feedback,
+            current_feedback,
             acceleration,
             sensorless_estimator: OrtegaPralyEstimator::new(ORTEGA_PRALY_GAIN, ORTEGA_PRALY_BANDWIDTH_HZ),
-            hardware_watchdog: HardwareWatchdog::new(watchdog_mappings.iwdg, IWDG_TIMEOUT_US),
+            hardware_watchdog: HardwareWatchdog::new(peripheral_mappings.watchdog.iwdg, IWDG_TIMEOUT_US),
         })
-    }
-
-    #[task(priority = 6, binds = $watchdog_irq, shared = [software_watchdog, debug_mappings])]
-    fn watchdog_isr(mut cx: watchdog_isr::Context) {
-        cx.shared.debug_mappings.lock(|dm| dm.la_d.set_high());
-        cx.shared.software_watchdog.lock(|wd| wd.register_fault());
-    }
-
-    #[task(priority = 6, binds = $pwm_break_irq, shared = [mode, pwm_output])]
-    fn pwm_break_isr(mut cx: pwm_break_isr::Context) {
-        let bk1_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break1());
-        let bk2_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break2());
-
-        if bk1_cleared || bk2_cleared {
-            cx.shared.mode.lock(|mode| {
-                if bk1_cleared {
-                    mode.on_command(Command::AssertFault {
-                        cause: FaultCause::Break1,
-                    });
-                }
-                if bk2_cleared {
-                    mode.on_command(Command::AssertFault {
-                        cause: FaultCause::Break2,
-                    });
-                }
-            });
-        }
-    }
-
-    #[task(priority = 5, binds = $hall_irq, shared = [hall_feedback])]
-    fn hall_isr(mut cx: hall_isr::Context) {
-        cx.shared.hall_feedback.lock(|hall_feedback| {
-            hall_feedback.on_hall_interrupt();
-        });
     }
 
     extern "Rust" {
         #[task(
             priority = 6, binds = $foc_irq,
             local = [
-                adc_feedback, acceleration, hardware_watchdog,
+                current_feedback, acceleration, hardware_watchdog,
                 prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
                 prev_u_dq: ClarkParkValue = ClarkParkValue { d: 0.0, q: 0.0 },
                 board_overtemp: Debounced = Debounced::new(false),
@@ -305,9 +278,6 @@ mod app {
             ]
         )]
         fn shared_adc_isr(_: shared_adc_isr::Context);
-
-        #[task(priority = 1, shared = [mode, hall_feedback, memory])]
-        async fn store_hall_table(_: store_hall_table::Context, angle_table: HallCalibration);
 
         #[task(priority = 1, shared = [mode, foc, memory])]
         async fn tune_pi(_: tune_pi::Context, estimate: MotorParamsEstimate);
@@ -340,19 +310,61 @@ mod app {
         async fn persist_config(_: persist_config::Context);
     }
 
+    #[task(priority = 6, binds = $watchdog_irq, shared = [software_watchdog, debug_mappings])]
+    fn watchdog_isr(mut cx: watchdog_isr::Context) {
+        cx.shared.debug_mappings.lock(|dm| dm.la_d.set_high());
+        cx.shared.software_watchdog.lock(|wd| wd.register_fault());
+    }
+
+    #[task(priority = 6, binds = $pwm_break_irq, shared = [mode, pwm_output])]
+    fn pwm_break_isr(mut cx: pwm_break_isr::Context) {
+        let bk1_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break1());
+        let bk2_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break2());
+
+        if bk1_cleared || bk2_cleared {
+            cx.shared.mode.lock(|mode| {
+                if bk1_cleared {
+                    mode.on_command(Command::AssertFault {
+                        cause: FaultCause::Break1,
+                    });
+                }
+                if bk2_cleared {
+                    mode.on_command(Command::AssertFault {
+                        cause: FaultCause::Break2,
+                    });
+                }
+            });
+        }
+    }
+
     #[task(priority = 2, binds = $can_irq, shared = [can])]
     fn can_isr(mut cx: can_isr::Context) {
         cx.shared.can.lock(|can| can.on_interrupt());
         let _ = can_process::spawn();
     }
 
+    #[cfg(feature = "hall-feedback")]
+    #[task(priority = 5, binds = $hall_irq, shared = [hall_feedback])]
+    fn hall_isr(mut cx: hall_isr::Context) {
+        cx.shared.hall_feedback.lock(|hall_feedback| {
+            hall_feedback.on_hall_interrupt();
+        });
+    }
+
+    #[cfg(feature = "hall-feedback")]
+    #[task(priority = 1, shared = [mode, hall_feedback, memory])]
+    async fn store_hall_table(cx: store_hall_table::Context, angle_table: HallCalibration) {
+        crate::tasks::store_hall_table(cx, angle_table).await
+    }
+    
     #[idle(shared=[debug_mappings])]
     fn idle(mut cx: idle::Context) -> ! {
         loop {
             cortex_m::asm::wfi();
         }
     }
-}
+
+} // macro_rules! define_app
 
     };
 }

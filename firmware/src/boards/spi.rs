@@ -1,7 +1,7 @@
 use embassy_stm32::{Peri};
 use embassy_stm32::spi::{Config as SpiConfig, Spi, Instance, MODE_0, MisoPin, MosiPin, SckPin};
-use embassy_stm32::time::Hertz;
 use embassy_stm32::gpio::{Pin, Level, Output, Speed};
+use embassy_stm32::time::Hertz;
 
 use crate::boards::SPIMappings;
 

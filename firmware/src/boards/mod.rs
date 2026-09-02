@@ -28,6 +28,20 @@ pub const COUNTING_MODE: CountingMode = CountingMode::CenterAlignedBothInterrupt
 pub const ADC_RESOLUTION: Resolution = Resolution::BITS12;
 pub const ADC_MAX_COUNT: f32 = resolution_to_max_count(ADC_RESOLUTION) as f32;
 
+pub struct PeripheralMappings {
+    pub current_feedback: AdcFeedbackMappings,
+    #[cfg(feature = "hall-feedback")]
+    pub hall_feedback: HallFeedbackMappings,
+    #[cfg(feature = "spi-encoder")]
+    pub spi_encoder: SPIMappings,
+    pub pwm_output: PwmOutputMappings,
+    pub acceleration: AccelerationMappings,
+    pub memory: MemoryMappings,
+    pub can: CanMappings,
+    pub watchdog: WatchdogMappings,
+    pub debug: DebugMappings,
+}
+
 pub trait Board {
     #[cfg(feature = "mcu-opamps")]
     type OpAmpU: opamp::Instance;
@@ -65,17 +79,7 @@ pub trait Board {
     /// DC bus voltage from the divider measurement counts
     fn vbus_adc_to_v(counts: u16) -> f32;
 
-    fn map_peripherals() -> (
-        AdcFeedbackMappings,
-        HallFeedbackMappings,
-        SPIMappings,
-        PwmOutputMappings,
-        AccelerationMappings,
-        MemoryMappings,
-        CanMappings,
-        WatchdogMappings,
-        DebugMappings,
-    );
+    fn map_peripherals() -> PeripheralMappings;
 }
 
 #[cfg(feature = "mcu-opamps")]

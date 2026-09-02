@@ -18,7 +18,7 @@ use field_oriented::{
 #[inline(never)]
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
-    if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
+    if let Some(phase_currents) = cx.local.current_feedback.read_currents() {
         cx.local.hardware_watchdog.feed();
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
 
@@ -59,9 +59,12 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         
         cx.shared.debug_mappings.lock(|dm| dm.la_c.set_high());
         let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
+        
+        #[cfg(feature = "hall-feedback")]
         let (hall_feedback, hall_pattern) = cx.shared.hall_feedback.lock(|hall_feedback| {
             (hall_feedback.read(), hall_feedback.get_pattern())
         });
+
         let sensorless_input = OrtegaPralyEstimatorInput {
             currents: phase_currents,
             voltages: *cx.local.prev_u_ab,
@@ -70,7 +73,10 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         };
         cx.local.sensorless_estimator.update(sensorless_input, cx.local.acceleration);
         let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
+            
+            #[cfg(feature = "hall-feedback")]
             fa.update_hall(hall_feedback, hall_pattern);
+
             fa.update_sensorless(cx.local.sensorless_estimator.read());
             (fa.read(), fa.get_hall_pattern())
         });
@@ -166,7 +172,10 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 cx.shared.mode.lock(|mode| mode.on_command(Command::ResumeCalibration));
             }   
             Some(StageResult::HallCalibration { angle_table }) => {
+                #[cfg(feature = "hall-feedback")]
                 let _ = app::store_hall_table::spawn(angle_table);
+                #[cfg(not(feature = "hall-feedback"))]
+                cx.shared.mode.lock(|mode| mode.on_command(Command::ResumeCalibration)); // Unreachable, but just in case
             }
             Some(StageResult::TuningRequest { params_estimate }) => {
                 let _ = app::tune_pi::spawn(params_estimate);
@@ -178,12 +187,12 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         }
 
         // Always sample something to keep the ADC EOC ISRs running:
-        cx.local.adc_feedback.sample_sector(sector);
+        cx.local.current_feedback.sample_sector(sector);
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
     }
 
     // if board status ISR (sampled DC bus voltage and board temperature):
-    if let Some((vbus, tboard)) = cx.local.adc_feedback.read_board_info() {
+    if let Some((vbus, tboard)) = cx.local.current_feedback.read_board_info() {
         cx.shared.board_status.lock(|bs| {
             bs.dc_bus_voltage_v = Some(vbus);
             bs.temperature_c = Some(tboard);
@@ -207,6 +216,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     }
 }
 
+#[cfg(feature = "hall-feedback")]
 pub async fn store_hall_table(mut cx: app::store_hall_table::Context<'_>, angle_table: HallCalibration) {
     cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
     let command = cx.shared.memory.lock(|memory| {
