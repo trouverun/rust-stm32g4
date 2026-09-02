@@ -10,6 +10,9 @@ use heck::{ToPascalCase, ToSnakeCase};
 
 const CYCLE_TIME_MS_ATTRIBUTE: &str = "GenMsgCycleTime";
 const CYCLE_TIME_US_ATTRIBUTE: &str = "GenMsgCycleTimeUs";
+/// RAM reserved for core firmware use 
+/// (with remainder being free to use for the debug capture buffer feature)
+const RESERVED_RAM_BYTES: u32 = 40 * 1024;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -67,40 +70,47 @@ fn configure_defmt() {
     }
 }
 
-/// Emits FIRMWARE_SIZE from memory.x and checks that the bootloader's
+/// Emits FIRMWARE_SIZE and CAPTURE_RAM_BYTES from memory.x and checks that the bootloader's
 /// flash ends exactly where the firmware's begins.
 fn generate_memory_layout(out_dir: &str, board: &str) {
     let loader_memory_x = format!("../bootloader/memory/{board}.x");
     println!("cargo:rerun-if-changed={loader_memory_x}");
-    let (firmware_origin, firmware_size) = flash_region(&format!("memory/{board}.x"));
-    let (loader_origin, loader_size) = flash_region(&loader_memory_x);
+    let memory_x = format!("memory/{board}.x");
+    let (firmware_origin, firmware_size) = region(&memory_x, "FLASH");
+    let (_, ram_size) = region(&memory_x, "RAM");
+    let (loader_origin, loader_size) = region(&loader_memory_x, "FLASH");
     assert!(
         loader_origin + loader_size == firmware_origin,
         "bootloader flash ends at {:#x} but firmware starts at {:#x}",
         loader_origin + loader_size,
         firmware_origin,
     );
-    let layout = format!("pub(crate) const FIRMWARE_SIZE: u32 = {firmware_size:#x};\n");
+    let capture_ram = ram_size.checked_sub(RESERVED_RAM_BYTES).unwrap_or_else(|| {
+        panic!("RAM is {ram_size:#x} bytes but {RESERVED_RAM_BYTES:#x} are reserved")
+    });
+    let layout = format!(
+        "pub(crate) const FIRMWARE_SIZE: u32 = {firmware_size:#x};\npub(crate) const CAPTURE_RAM_BYTES: u32 = {capture_ram:#x};\n"
+    );
     std::fs::write(std::path::Path::new(out_dir).join("layout.rs"), layout)
         .expect("write layout.rs");
 }
 
-/// ORIGIN and LENGTH of the FLASH region in a linker memory script
-fn flash_region(path: &str) -> (u32, u32) {
+/// ORIGIN and LENGTH of a memory region in a linker memory script
+fn region(path: &str, region: &str) -> (u32, u32) {
     let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     for line in src.lines() {
         let line = line.split("/*").next().unwrap();
         let Some((name, rest)) = line.split_once(':') else { continue };
-        if name.trim() != "FLASH" {
+        if name.trim() != region {
             continue;
         }
         let origin = region_field(rest, "ORIGIN")
-            .unwrap_or_else(|| panic!("bad FLASH ORIGIN in {path}"));
+            .unwrap_or_else(|| panic!("bad {region} ORIGIN in {path}"));
         let length = region_field(rest, "LENGTH")
-            .unwrap_or_else(|| panic!("bad FLASH LENGTH in {path}"));
+            .unwrap_or_else(|| panic!("bad {region} LENGTH in {path}"));
         return (origin, length);
     }
-    panic!("no FLASH region in {path}");
+    panic!("no {region} region in {path}");
 }
 
 fn region_field(s: &str, key: &str) -> Option<u32> {
