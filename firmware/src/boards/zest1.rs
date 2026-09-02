@@ -21,7 +21,7 @@ use embassy_stm32::timer::{
 };
 use embassy_stm32::can::CanConfigurator;
 
-use crate::boards::spi_mappings;
+use crate::boards::{PeripheralMappings, spi_mappings};
 
 pub struct Zest1;
 
@@ -134,19 +134,9 @@ impl super::Board for Zest1 {
         deadtime_compensation_band_a: 0.1
     };
 
-    fn map_peripherals() -> (
-        super::AdcFeedbackMappings,
-        super::HallFeedbackMappings,
-        super::SPIMappings,
-        super::PwmOutputMappings,
-        super::AccelerationMappings,
-        super::MemoryMappings,
-        super::CanMappings,
-        super::WatchdogMappings,
-        super::DebugMappings,
-    ) {
+    fn map_peripherals() -> PeripheralMappings {
         let p = rcc_init();
-        let adc_feedback = super::AdcFeedbackMappings {
+        let current_feedback = super::AdcFeedbackMappings {
             opamps: super::ShuntOpAmps {
                 u: OpAmp::new(p.OPAMP3, OpAmpSpeed::HighSpeed).standalone_ext(p.PB0, p.PB2, p.PB1),
                 v: OpAmp::new(p.OPAMP4, OpAmpSpeed::HighSpeed).standalone_ext(p.PB11, p.PB10, p.PB12),
@@ -168,11 +158,11 @@ impl super::Board for Zest1 {
         let hall_feedback = super::HallFeedbackMappings {
             hall_timer: HallSensor::new(p.TIM3, p.PE2, p.PE3, p.PE4, HallConfig::default()),
         };
-        let spi = spi_mappings(
+        let spi_encoder = spi_mappings(
             p.SPI1, p.PG2,  p.PG4, p.PG3, p.PG5,
         );
 
-        let pwm = super::PwmOutputMappings {
+        let pwm_output = super::PwmOutputMappings {
             comparators: super::CurrentComparators {
                 dac_dual: Dac::new_internal_blocking(p.DAC4, DAC_REF_V),
                 comp_u: Comp::new(
@@ -211,7 +201,7 @@ impl super::Board for Zest1 {
         };
 
         let acceleration = super::AccelerationMappings { cordic: p.CORDIC };
-        let storage = super::MemoryMappings { flash: p.FLASH };
+        let memory = super::MemoryMappings { flash: p.FLASH };
 
         let can = super::CanMappings {
             configurator: unsafe { CanConfigurator::new_unbound(p.FDCAN1, p.PD0, p.PA12) },
@@ -229,16 +219,16 @@ impl super::Board for Zest1 {
             iwdg: p.IWDG,
         };
 
-        (
-            adc_feedback,
+        PeripheralMappings {
+            current_feedback,
             hall_feedback,
-            spi,
-            pwm,
+            spi_encoder,
+            pwm_output,
             acceleration,
-            storage,
+            memory,
             can,
             watchdog,
             debug,
-        )
+        }
     }
 }
