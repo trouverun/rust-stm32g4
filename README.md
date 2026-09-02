@@ -1,5 +1,5 @@
 # Rust-STM32G4
-### Flexible firmware for STM32G4 based motor control boards.
+### Firmware for STM32G4 based motor control boards.
 
 [![CI](https://github.com/trouverun/rust-stm32g4/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/trouverun/rust-stm32g4/actions/workflows/ci.yml)
 
@@ -25,7 +25,7 @@ The repository is structured as follows:
 - **bootloader**: binary crate containing the bootloader
 
 <details open>
-  <summary><h2>Demo running on the STM32 ZEST1S discovery kit</h2></summary>
+  <summary><h2>Evaluation on the STM32 ZEST1S discovery kit</h2></summary>
 The firmware was tested on the setup shown below:
   
   <img width="4032" height="3024" alt="test_setup" src="https://github.com/user-attachments/assets/061007d8-c08d-431e-ad24-0f85361c4255" />
@@ -38,7 +38,7 @@ The firmware configuration used was as follows:
 - 40 kHz FOC rate
 - Motor parameters were identified using the self-commissioning routine built to the firmware
 - Current loop PI controllers were autotuned with a closed-loop bandwidth tuning goal of 1 kHz
-- Hall feedback below 100 rad/s (electrical), sensorless above
+- Hall sensor feedback
 
 First, during operation in torque control mode, GPIO pins were toggled from the FOC ISR to measure the execution time using a logic analyser:
 
@@ -46,17 +46,17 @@ First, during operation in torque control mode, GPIO pins were toggled from the 
 
 The real-time constraint at 40 kHz FOC rate is satisfied, with the full FOC ISR (estimation + FOC) executing on average in 14.72 µs (min: 14.59 µs, max: 14.98 µs, N=400), always well within the 25 µs budget.
 
-Next, the closed-loop current control performance was evaluated using the branch "bandwidth-test", which includes a firmware-level routine for injecting sine wave torque setpoints, composed of the specified frequencies and the given amplitude. The derived q-axis current setpoint and the measured q-axis current is recorded to RAM at the full 40 kHz FOC rate, and retrieved with probe-rs.
+Next, the closed-loop current control performance was evaluated using the branch "bandwidth-test", which includes a firmware-level routine for injecting sine wave torque setpoints, composed of the specified frequencies and the given amplitude. The derived q-axis current setpoint and the measured q-axis current was recorded to RAM at the full 40 kHz FOC rate and retrieved with probe-rs.
 
-The plot below shows the response to a 300 Hz sine wave setpoint, showing adequate tracking performance with some phase lag:
+The plot below shows the response to a 300 Hz sine wave setpoint, showing good tracking performance with some phase lag:
 
   <img width="1800" height="1050" alt="tracking" src="https://github.com/user-attachments/assets/ab43a091-d069-4650-b012-c66bb56e5263" />
 
-For a more comprehensive test, a sum of sine waves at 14 odd harmonics of 100 Hz, spanning from 100 Hz to 3.9 kHz was fed as setpoint instead. The setpoints and the measured response were coherently averaged across 15 periods of excitation, and a Discrete Fourier Transform (DFT) was applied to them. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
+For a more comprehensive test, a sum of sine waves at 14 odd harmonics of 100 Hz, spanning from 100 Hz to 3.9 kHz was fed as setpoint instead. The setpoints and the measured response were coherently averaged across 15 periods of excitation, and a discrete fourier transform was applied to them. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
 
 <img width="1800" height="1650" alt="bandwidth" src="https://github.com/user-attachments/assets/32ccd71a-9e6c-4431-be7c-722a0888878d" />
 
-The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 1 kHz, with some deviation caused by the unmodelled inverter nonlinearities (deadtime, capacitance).
+The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 1 kHz (deviation of 6%), indicating that the self-commissioning routine works sufficiently well.
 
 </details>
 
@@ -72,11 +72,11 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   <summary><h2>Adding support for a new board</h2></summary>
   
   A new board needs to satisfy the following prerequisites hardware-wise to be compatible:
-  - STM32G4 MCU
-  - Low side 3-shunt sensing
+  - STM32G4 MCU with dual-bank RAM
+  - Low side 3-shunt sensing through two ADCs (sharing one of the phases)
   - "Dumb" gate driver, i.e. deadtime is handled by the MCU timer peripheral, not by the gate driver
 
-  The firmware also makes the following assumptions about the hardware, deviating from these will require minor (10-20 LOC) changes to the firmware code:
+  The firmware also makes the following assumptions about the hardware, deviating from these will require minor (10-20 LOC) additional changes to the firmware code:
   - Board temperature and DC bus voltage are sampled using the same ADC as phase currents (regular conversions pre-empted by injected conversions)
 
   ### Cargo.toml
@@ -88,11 +88,11 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   and in [/firmware/Cargo.toml](/firmware/Cargo.toml): 
   ```rust
   board-zest1 = [
-    "mcu-opamps", "overcurrent-comparators",
+    "mcu-opamps", "overcurrent-comparators", "spi-encoder",
     "embassy-stm32/stm32g473qe", "rtic-monotonics/stm32g473qe",
   ]
   ```
-  The entry needs to follow the naming convention of "board-{yourboard}", and specify the supported features (e.g. MCU side opamps) and the embassy/RTIC flags for the chip (stm32g473qe in this case).
+  The entry needs to follow the naming convention of "board-{yourboard}", and specify the supported features (e.g. MCU side opamps, SPI encoders, etc.) along with the embassy/RTIC flags for the chip (stm32g473qe in this case).
 
   ### New board file
 
@@ -119,7 +119,7 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
       #[cfg(feature = "overcurrent-comparators")]
       type ComparatorDacDual: dac::Instance;
       type PwmTimer: AdvancedInstance4Channel;
-      type WatchdogTimer: BasicInstance;
+      type SoftWatchdogTimer: BasicInstance;
   
       const FEEDBACK_TRIGGER_A: <Self::FeedbackAdcA as HasInjectedTrigger>::Trigger;
       const FEEDBACK_TRIGGER_B: <Self::FeedbackAdcB as HasInjectedTrigger>::Trigger;
@@ -136,21 +136,25 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
       /// DC bus voltage from the divider measurement counts
       fn vbus_adc_to_v(counts: u16) -> f32;
   
-      fn map_peripherals() -> (
-          AdcFeedbackMappings,
-          HallFeedbackMappings,
-          SPIMappings,
-          PwmOutputMappings,
-          AccelerationMappings,
-          MemoryMappings,
-          CanMappings,
-          WatchdogMappings,
-          DebugMappings,
-      );
+      fn map_peripherals() -> PeripheralMappings;
   }
   ```
-  The mappings structs returned by `map_peripherals()` are also defined in [/firmware/src/boards/mod.rs](/firmware/src/boards/mod.rs), and they carry the embassy peripheral selections:
+  Where the mappings structs returned by `map_peripherals()` carry the embassy peripheral selections:
   ```rust
+  pub struct PeripheralMappings {
+    pub current_feedback: AdcFeedbackMappings,
+    #[cfg(feature = "hall-feedback")]
+    pub hall_feedback: HallFeedbackMappings,
+    #[cfg(feature = "spi-encoder")]
+    pub spi_encoder: SPIMappings,
+    pub pwm_output: PwmOutputMappings,
+    pub acceleration: AccelerationMappings,
+    pub memory: MemoryMappings,
+    pub can: CanMappings,
+    pub watchdog: WatchdogMappings,
+    pub debug: DebugMappings,
+  }
+
   #[cfg(feature = "mcu-opamps")]
   pub type OpAmpU = <Active as Board>::OpAmpU;
   #[cfg(feature = "mcu-opamps")]
@@ -197,8 +201,7 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   // Other mapping structs...
   ```
 
-
-  Besides implementing the `Board` trait, the board file needs to export valid names for RTIC task interrupt binding, where the names match the peripherals actually used by the board:
+  Besides implementing the `Board` trait, the board file needs to define a macro which exports valid names for use in RTIC task interrupt binding, where the names match the peripherals actually used by the board:
 
   ```rust
   #[macro_export]
@@ -266,4 +269,60 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   cargo run --release --features board-zest1 -- --chip STM32G473QETx
   ```
   At this stage further firmware flashing can be done through CAN.
+</details>
+
+
+<details>
+  <summary><h2>Adding support for a new encoder</h2></summary>
+
+  Encoders in this repository are treated as state machines which are stepped forwards during each FOC ISR. For example, an encoder could have the following state flow:
+  - Send read command via SPI/RS485
+  - Receive byte1 via SPI/RS485
+  - Receive byte2 via SPI/RS485 -> combine byte1 and byte2 for an angle measurement
+
+  This approach results in a less than optimal latency from the measurement instant to the value being used (and consequently, less than optimal sampling rate), but at the high FOC rates (20-40 kHz) targeted by this firmware the angle drift will be relatively small. For example, a two iteration latency at 20 kHz FOC rate is 100 µs, which even at 30000 deg/s mechanical rotor speed amounts to only 1.5 deg of angle staleness. On the flipside, this makes it much easier to support different encoders regardless of their exact communication protocol and communication interface.
+
+  ### Cargo.toml
+  The first step to adding a new encoder is to add new feature flags in [/bootloader/Cargo.toml](/bootloader/Cargo.toml), as shown below for the AMT22 A/B series (12/14-bit resolution correspondingly):
+  ```rust
+  encoder-amt22a = []
+  encoder-amt22b = []
+  ```
+
+  ### New encoder file
+  The next step is to create a new encoder file in [/firmware/src/encoders/](/firmware/src/encoders/), which implements the `Encoder` trait defined in [/firmware/src/encoders/mod.rs](/firmware/src/encoders/mod.rs):
+  ```rust
+  pub trait Encoder {
+    /// Peripheral mapping used by the encoder (e.g. SPIMappings)
+    type InterfaceMappings: EncoderInterface;
+
+    /// Initializes the encoder and takes ownership of the given interfacing peripheral
+    fn new(interface: Self::InterfaceMappings) -> Self;
+    
+    /// Configure the current position as the zero angle position 
+    fn set_zero(&self) -> bool;
+
+    /// Callback executed at the beginning of each FOC iteration 
+    /// (called from within the FOC hotpath, should be conservative with use of CPU cycles)
+    fn foc_step(&self) -> Result<Option<RotorFeedback>, RotorFeedbackFault>;
+  }
+  ```
+  An example implementation can be found for the AMT22 series encoder in [/firmware/src/encoders/amt22.rs](/firmware/src/encoders/amt22.rs).
+
+
+  To wire up the new implementation, it needs to be included and type aliased as `ActiveEncoder` behind the previously created feature gate:  
+  ```rust
+    #[cfg(any(feature = "encoder-amt22a", feature = "encoder-amt22b"))]
+    pub mod amt22;
+    #[cfg(any(feature = "encoder-amt22a", feature = "encoder-amt22b"))]
+    pub type ActiveEncoder = amt22::Amt22Encoder;
+  ```
+
+  ### Build firmware with specific encoder support
+  The firmware can be built with specific encoder support by specifying the correct feature flag:
+  ```bash
+  cd ../firmware
+  cargo build --release --features board-zest1 encoder-amt22a
+  ```
+  Note, that if the firmware is built with support for an encoder, the encoder needs to be always connected to the board. This applies also to the `hall-feedback` feature flag.
 </details>
