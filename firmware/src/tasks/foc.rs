@@ -18,7 +18,7 @@ use field_oriented::{
 #[inline(never)]
 pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
-    if let Some(phase_currents) = cx.local.current_feedback.read_currents() {
+    if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
         cx.local.hardware_watchdog.feed();
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
 
@@ -183,12 +183,12 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         }
 
         // Always sample something to keep the ADC EOC ISRs running:
-        cx.local.current_feedback.sample_sector(sector);
+        cx.local.adc_feedback.sample_sector(sector);
         cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
     }
 
     // if board status ISR (sampled DC bus voltage and board temperature):
-    if let Some((vbus, tboard)) = cx.local.current_feedback.read_board_info() {
+    if let Some((vbus, tboard)) = cx.local.adc_feedback.read_board_info() {
         cx.shared.board_status.lock(|bs| {
             bs.dc_bus_voltage_v = Some(vbus);
             bs.temperature_c = Some(tboard);

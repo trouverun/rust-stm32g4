@@ -96,7 +96,7 @@ mod app {
 
     #[local]
     struct Local {
-        current_feedback: AdcFeedback,
+        adc_feedback: AdcFeedback,
         acceleration: Acceleration,        
         sensorless_estimator: OrtegaPralyEstimator,
         hardware_watchdog: HardwareWatchdog,
@@ -117,8 +117,8 @@ mod app {
         // Initialize HW:
         let pwm_output: PwmOutput = bsp::PwmOutput::new(peripheral_mappings.pwm_output, 0.0);
         pwm_output.wait_break2_ready();
-        let mut current_feedback = bsp::AdcFeedback::new(peripheral_mappings.current_feedback);
-        current_feedback.sample_sector(0); // Kick off the ADC ISR loop
+        let mut adc_feedback = bsp::AdcFeedback::new(peripheral_mappings.adc_feedback);
+        adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
 
         #[cfg(feature = "hall-feedback")]
         let mut hall_feedback = bsp::HallFeedback::new(
@@ -239,7 +239,7 @@ mod app {
             can,
         },
         Local {
-            current_feedback,
+            adc_feedback,
             acceleration,
             sensorless_estimator: OrtegaPralyEstimator::new(ORTEGA_PRALY_GAIN, ORTEGA_PRALY_BANDWIDTH_HZ),
             hardware_watchdog: HardwareWatchdog::new(peripheral_mappings.watchdog.iwdg, IWDG_TIMEOUT_US),
@@ -250,7 +250,7 @@ mod app {
         #[task(
             priority = 6, binds = $foc_irq,
             local = [
-                current_feedback, acceleration, hardware_watchdog,
+                adc_feedback, acceleration, hardware_watchdog,
                 prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
                 prev_u_dq: ClarkParkValue = ClarkParkValue { d: 0.0, q: 0.0 },
                 board_overtemp: Debounced = Debounced::new(false),

@@ -26,7 +26,7 @@ pub const ADC_RESOLUTION: Resolution = Resolution::BITS12;
 pub const ADC_MAX_COUNT: f32 = resolution_to_max_count(ADC_RESOLUTION) as f32;
 
 pub struct PeripheralMappings {
-    pub current_feedback: AdcFeedbackMappings,
+    pub adc_feedback: AdcFeedbackMappings,
     #[cfg(feature = "hall-feedback")]
     pub hall_feedback: HallFeedbackMappings,
     pub pwm_output: PwmOutputMappings,

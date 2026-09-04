@@ -8,6 +8,7 @@ debug-capture = []
 mcu-opamps = []
 overcurrent-comparators = []
 hall-feedback = []
+resolver-feedback = []
 board-zest1 = [
     "debug-capture", "mcu-opamps", "overcurrent-comparators", "hall-feedback",
     "embassy-stm32/stm32g473qe", "rtic-monotonics/stm32g473qe",
