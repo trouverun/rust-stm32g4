@@ -139,8 +139,8 @@ impl AdcFeedback {
         );
         for i in 0..2*ADC_CALIBRATION_SAMPLE_COUNT {
             if i < ADC_CALIBRATION_SAMPLE_COUNT {
-                val_u += self.adc_a.read_injected::<1>()[0] as i32;
-                val_vb += self.adc_b.read_injected::<1>()[0] as i32;
+                val_u += self.adc_a.read_injected_blocking::<1>()[0] as i32;
+                val_vb += self.adc_b.read_injected_blocking::<1>()[0] as i32;
                 self.adc_a.insert_injected_context(
                     &[self.u_channel.get_hw_channel()],
                     FEEDBACK_TRIGGER_A,
@@ -152,8 +152,8 @@ impl AdcFeedback {
                     Exten::RISING_EDGE,
                 );
             } else {
-                val_va += self.adc_a.read_injected::<1>()[0] as i32;
-                val_w += self.adc_b.read_injected::<1>()[0] as i32;
+                val_va += self.adc_a.read_injected_blocking::<1>()[0] as i32;
+                val_w += self.adc_b.read_injected_blocking::<1>()[0] as i32;
                 self.adc_a.insert_injected_context(
                     &[self.v_channel.get_hw_channel()],
                     FEEDBACK_TRIGGER_A,
@@ -209,9 +209,9 @@ impl AdcFeedback {
     pub fn read_currents(&self) -> Option<PhaseValues> {
         if self.adc_a.check_jeos() {
             // U or V:
-            let result_a = self.adc_a.read_injected::<1>()[0];
+            let result_a = self.adc_a.read_injected::<1>()?[0];
             // V or W:
-            let result_b = self.adc_b.read_injected::<1>()[0];
+            let result_b = self.adc_b.read_injected::<1>()?[0];
             let amps_a = Active::current_adc_to_a(result_a);
             let amps_b = Active::current_adc_to_a(result_b);
             let amps_c = -(amps_a + amps_b);
@@ -319,8 +319,8 @@ impl AdcFeedback {
             let _ = self.adc_a.read();
             return None;
         }
-        let vbus = Active::vbus_adc_to_v(self.adc_a.read());
-        let tboard = Active::temperature_adc_to_c(self.adc_b.read());
+        let vbus = Active::vbus_adc_to_v(self.adc_a.read()?);
+        let tboard = Active::temperature_adc_to_c(self.adc_b.read()?);
         Some((vbus, tboard))
     }
 }
