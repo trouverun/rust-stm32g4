@@ -16,7 +16,6 @@ pub enum Command {
         num_pole_pairs: u8, 
         max_rotor_rpm_mech: f32, 
         has_hall: bool,
-        has_encoder: bool, 
         dt_s: f32 
     },
     ResumeCalibration,
@@ -45,7 +44,7 @@ impl<C: Calibrator> OperatingMode<C> {
     pub fn on_command(&mut self, command: Command) {
         let new_state = match (&mut *self, command) {
             (OperatingMode::Fault { safe_strategy, .. }, Command::ClearFault) => {
-                if matches!(*safe_strategy, SafeControlStrategy::SS1t { .. } | SafeControlStrategy::RampDown {..} ) {
+                if matches!(*safe_strategy, SafeControlStrategy::RampDown {..} ) {
                     return;
                 }
                 OperatingMode::Idle { safe_strategy: safe_strategy.clone() }
@@ -64,8 +63,8 @@ impl<C: Calibrator> OperatingMode<C> {
                 trace[0] = cause;
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
-            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, has_hall, has_encoder, dt_s }) => {
-                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, max_rotor_rpm_mech, has_hall, has_encoder, dt_s) }
+            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, has_hall, dt_s }) => {
+                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, max_rotor_rpm_mech, has_hall, dt_s) }
             }
             (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
@@ -98,21 +97,18 @@ impl<C: Calibrator> OperatingMode<C> {
                     CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
                 ),
                 use_safety_command: false,
-                // Encoder zeroing and hall calibration phases do not use rotor feedback:
-                feedback_optional: matches!(
-                    calibrator.phase(),
-                    CalibrationPhase::WaitingEncoderZeroing { .. } | CalibrationPhase::HallCalibration { .. }
-                ),
+                // Hall calibration phase does not use rotor feedback:
+                feedback_optional: matches!(calibrator.phase(), CalibrationPhase::HallCalibration { .. }),
             },
             OperatingMode::TorqueControl => FocGate {
                 active: true,
                 use_safety_command: false,
                 feedback_optional: false,
             },
-            OperatingMode::Fault { safe_strategy, .. } => FocGate { 
-                active: matches!(safe_strategy, SafeControlStrategy::SS1t { .. }), 
+            OperatingMode::Fault { .. } => FocGate {
+                active: false,
                 use_safety_command: true,
-                feedback_optional: !matches!(safe_strategy, SafeControlStrategy::SS1t { .. }), 
+                feedback_optional: true,
             },
         }
     }
@@ -147,7 +143,7 @@ mod tests {
     }
 
     fn calibrating() -> OperatingMode {
-        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, true, DT_S) }
+        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, DT_S) }
     }
 
     fn faulted(cause: FaultCause) -> OperatingMode {
@@ -157,7 +153,7 @@ mod tests {
     }
 
     fn start_calibration() -> Command {
-        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, max_rotor_rpm_mech: MAX_RPM, has_hall: true, has_encoder: true, dt_s: DT_S }
+        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, max_rotor_rpm_mech: MAX_RPM, has_hall: true, dt_s: DT_S }
     }
 
     /// Calibration can be entered from idle and from nowhere else.
@@ -265,7 +261,7 @@ mod tests {
     /// A fault clear is honoured once the reaction has been applied, not while it is still running.
     #[test]
     fn clear_fault_blocked_until_reaction_applied() {
-        let still_reacting = [SafeControlStrategy::RampDown { waited_ms: 0.0 }, SafeControlStrategy::ss1t()];
+        let still_reacting = [SafeControlStrategy::RampDown { waited_ms: 0.0 }];
         for safe_strategy in still_reacting {
             let mut mode = faulted_with(safe_strategy);
             mode.on_command(Command::ClearFault);
@@ -332,8 +328,6 @@ mod tests {
             FocGate { active: false, use_safety_command: true, feedback_optional: true };
         const SAFETY_RAMPDOWN: FocGate =
             FocGate { active: true, use_safety_command: true, feedback_optional: true };
-        const SAFETY_BRAKING: FocGate =
-            FocGate { active: true, use_safety_command: true, feedback_optional: false };
 
         fn assert_gate(gate: FocGate, expected: FocGate, label: &str) {
             assert_eq!(gate.active, expected.active, "{label}: active");
@@ -341,7 +335,7 @@ mod tests {
             assert_eq!(gate.feedback_optional, expected.feedback_optional, "{label}: feedback_optional");
         }
 
-        let cases: [(OperatingMode, FocGate, &str); 10] = [
+        let cases: [(OperatingMode, FocGate, &str); 9] = [
             (OperatingMode::TorqueControl, CLOSED_LOOP_CONTROL, "torque control"),
             (OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }, SAFETY_HOLD, "idle STO"),
             (OperatingMode::Idle { safe_strategy: SafeControlStrategy::asc() }, SAFETY_HOLD, "idle ASC"),
@@ -351,7 +345,6 @@ mod tests {
             (faulted_with(SafeControlStrategy::asc()), SAFETY_HOLD, "fault ASC"),
             (faulted_with(SafeControlStrategy::STOf), SAFETY_HOLD, "fault terminal STO"),
             (faulted_with(SafeControlStrategy::RampDown { waited_ms: 0.0 }), SAFETY_HOLD, "fault rampdown"),
-            (faulted_with(SafeControlStrategy::ss1t()), SAFETY_BRAKING, "fault SS1-t"),
         ];
 
         for (mode, expected, label) in cases {

@@ -9,7 +9,7 @@
 - Sensorless rotor angle/velocity estimation
 - Automatic motor parameter identification
 - Current control PI autotuning
-- Hall sensor and SPI/RS485 encoder support
+- Digital Hall sensor support
 - Fault diagnostics and fault handling with per-fault reactions
 - CAN interface
 - Firmware update via CAN
@@ -88,7 +88,7 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   and in [/firmware/Cargo.toml](/firmware/Cargo.toml): 
   ```rust
   board-zest1 = [
-    "mcu-opamps", "overcurrent-comparators", "spi-encoder",
+    "mcu-opamps", "overcurrent-comparators",
     "embassy-stm32/stm32g473qe", "rtic-monotonics/stm32g473qe",
   ]
   ```
@@ -145,8 +145,6 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
     pub current_feedback: AdcFeedbackMappings,
     #[cfg(feature = "hall-feedback")]
     pub hall_feedback: HallFeedbackMappings,
-    #[cfg(feature = "spi-encoder")]
-    pub spi_encoder: SPIMappings,
     pub pwm_output: PwmOutputMappings,
     pub acceleration: AccelerationMappings,
     pub memory: MemoryMappings,
@@ -269,60 +267,4 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   cargo run --release --features board-zest1 -- --chip STM32G473QETx
   ```
   At this stage further firmware flashing can be done through CAN.
-</details>
-
-
-<details>
-  <summary><h2>Adding support for a new encoder</h2></summary>
-
-  Encoders in this repository are treated as state machines which are stepped forwards during each FOC ISR. For example, an encoder could have the following state flow:
-  - Send read command via SPI/RS485
-  - Receive byte1 via SPI/RS485
-  - Receive byte2 via SPI/RS485 -> combine byte1 and byte2 for an angle measurement
-
-  This approach results in a less than optimal latency from the measurement instant to the value being used (and consequently, less than optimal sampling rate), but at the high FOC rates (20-40 kHz) targeted by this firmware the angle drift will be relatively small. For example, a two iteration latency at 20 kHz FOC rate is 100 µs, which even at 30000 deg/s mechanical rotor speed amounts to only 1.5 deg of angle staleness. On the flipside, this makes it much easier to support different encoders regardless of their exact communication protocol and communication interface.
-
-  ### Cargo.toml
-  The first step to adding a new encoder is to add new feature flags in [/bootloader/Cargo.toml](/bootloader/Cargo.toml), as shown below for the AMT22 A/B series (12/14-bit resolution correspondingly):
-  ```rust
-  encoder-amt22a = []
-  encoder-amt22b = []
-  ```
-
-  ### New encoder file
-  The next step is to create a new encoder file in [/firmware/src/encoders/](/firmware/src/encoders/), which implements the `Encoder` trait defined in [/firmware/src/encoders/mod.rs](/firmware/src/encoders/mod.rs):
-  ```rust
-  pub trait Encoder {
-    /// Peripheral mapping used by the encoder (e.g. SPIMappings)
-    type InterfaceMappings: EncoderInterface;
-
-    /// Initializes the encoder and takes ownership of the given interfacing peripheral
-    fn new(interface: Self::InterfaceMappings) -> Self;
-    
-    /// Configure the current position as the zero angle position 
-    fn set_zero(&self) -> bool;
-
-    /// Callback executed at the beginning of each FOC iteration 
-    /// (called from within the FOC hotpath, should be conservative with use of CPU cycles)
-    fn foc_step(&self) -> Result<Option<RotorFeedback>, RotorFeedbackFault>;
-  }
-  ```
-  An example implementation can be found for the AMT22 series encoder in [/firmware/src/encoders/amt22.rs](/firmware/src/encoders/amt22.rs).
-
-
-  To wire up the new implementation, it needs to be included and type aliased as `ActiveEncoder` behind the previously created feature gate:  
-  ```rust
-    #[cfg(any(feature = "encoder-amt22a", feature = "encoder-amt22b"))]
-    pub mod amt22;
-    #[cfg(any(feature = "encoder-amt22a", feature = "encoder-amt22b"))]
-    pub type ActiveEncoder = amt22::Amt22Encoder;
-  ```
-
-  ### Build firmware with specific encoder support
-  The firmware can be built with specific encoder support by specifying the correct feature flag:
-  ```bash
-  cd ../firmware
-  cargo build --release --features board-zest1 encoder-amt22a
-  ```
-  Note, that if the firmware is built with support for an encoder, the encoder needs to be always connected to the board. This applies also to the `hall-feedback` feature flag.
 </details>

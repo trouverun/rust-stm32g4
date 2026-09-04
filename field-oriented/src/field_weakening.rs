@@ -69,6 +69,7 @@ impl FieldWeakening {
         }
     }
 
+    #[inline]
     pub fn compute(&mut self, input: FieldWeakeningInput) -> Result<f32, FocFault> {
         let (lower_bound, max_weakening_ratio) = Self::lower_bound_ratio(input.d_inductance, input.pm_flux_linkage, input.current_limit_a);
 

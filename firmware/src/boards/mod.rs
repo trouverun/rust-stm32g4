@@ -2,8 +2,6 @@
 mod zest1;
 #[cfg(feature = "board-zest1")]
 pub type Active = zest1::Zest1;
-pub mod spi;
-pub use spi::*;
 
 use embassy_stm32::adc::{self, AnyAdcChannel, HasInjectedTrigger, HasRegularTrigger, Resolution, SampleTime, resolution_to_max_count};
 use embassy_stm32::can::CanConfigurator;
@@ -18,7 +16,6 @@ use embassy_stm32::timer::{
 use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::Peri;
 use embassy_stm32::gpio::Output;
-use embassy_stm32::spi::{mode::Master, Spi};
 use embassy_stm32::timer::hall::HallSensor;
 
 #[cfg(feature = "mcu-opamps")]
@@ -32,8 +29,6 @@ pub struct PeripheralMappings {
     pub current_feedback: AdcFeedbackMappings,
     #[cfg(feature = "hall-feedback")]
     pub hall_feedback: HallFeedbackMappings,
-    #[cfg(feature = "spi-encoder")]
-    pub spi_encoder: SPIMappings,
     pub pwm_output: PwmOutputMappings,
     pub acceleration: AccelerationMappings,
     pub memory: MemoryMappings,
@@ -141,11 +136,6 @@ pub struct AdcFeedbackMappings {
 
 pub struct HallFeedbackMappings {
     pub hall_timer: HallSensor<'static, HallFeedbackTimer>,
-}
-
-pub struct SPIMappings {
-    pub spi: Spi<'static, Blocking, Master>,
-    pub cs: Output<'static>
 }
 
 #[cfg(feature = "overcurrent-comparators")]

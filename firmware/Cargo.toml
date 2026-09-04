@@ -8,14 +8,10 @@ debug-capture = []
 mcu-opamps = []
 overcurrent-comparators = []
 hall-feedback = []
-spi-encoder = []
-rs485-encoder = []
 board-zest1 = [
-    "debug-capture", "mcu-opamps", "overcurrent-comparators", "hall-feedback", "spi-encoder",
+    "debug-capture", "mcu-opamps", "overcurrent-comparators", "hall-feedback",
     "embassy-stm32/stm32g473qe", "rtic-monotonics/stm32g473qe",
 ]
-encoder-amt22a = []
-encoder-amt22b = []
 
 [dependencies]
 embassy-stm32 = { path = "../embassy/embassy-stm32", features = ["defmt", "unstable-pac", "exti", "dual-bank"] }
