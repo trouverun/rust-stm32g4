@@ -36,8 +36,7 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                             Some(num_pole_pairs) => {
                                 Command::StartCalibration { 
                                     num_pole_pairs, max_rotor_rpm_mech, 
-                                    has_hall: cfg!(feature = "hall-feedback"), 
-                                    has_encoder: false, 
+                                    has_hall: cfg!(feature = "hall-feedback"),
                                     dt_s: DT_S 
                                 }
                             },

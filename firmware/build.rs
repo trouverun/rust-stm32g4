@@ -18,7 +18,6 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let out_dir = env::var("OUT_DIR").unwrap();
     let board = board_name();
-    check_encoder();
 
     configure_linker(&out_dir, &board);
     configure_defmt();
@@ -36,19 +35,6 @@ fn board_name() -> String {
         [board] => board.clone(),
         [] => panic!("no board selected: build with --features board-<name>"),
         _ => panic!("multiple board features enabled: {boards:?}"),
-    }
-}
-
-/// At most one `encoder-*` cargo feature, emits the `encoder_none` cfg when there is none
-fn check_encoder() {
-    println!("cargo:rustc-check-cfg=cfg(encoder_none)");
-    let encoders: Vec<String> = env::vars()
-        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_ENCODER_").map(|e| e.to_lowercase()))
-        .collect();
-    match encoders.as_slice() {
-        [_] => {}
-        [] => println!("cargo:rustc-cfg=encoder_none"),
-        _ => panic!("multiple encoder features enabled: {encoders:?}"),
     }
 }
 

@@ -21,7 +21,7 @@ use embassy_stm32::timer::{
 };
 use embassy_stm32::can::CanConfigurator;
 
-use crate::boards::{PeripheralMappings, spi_mappings};
+use crate::boards::PeripheralMappings;
 
 pub struct Zest1;
 
@@ -158,9 +158,6 @@ impl super::Board for Zest1 {
         let hall_feedback = super::HallFeedbackMappings {
             hall_timer: HallSensor::new(p.TIM3, p.PE2, p.PE3, p.PE4, HallConfig::default()),
         };
-        let spi_encoder = spi_mappings(
-            p.SPI1, p.PG2,  p.PG4, p.PG3, p.PG5,
-        );
 
         let pwm_output = super::PwmOutputMappings {
             comparators: super::CurrentComparators {
@@ -222,7 +219,6 @@ impl super::Board for Zest1 {
         PeripheralMappings {
             current_feedback,
             hall_feedback,
-            spi_encoder,
             pwm_output,
             acceleration,
             memory,

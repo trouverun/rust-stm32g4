@@ -1,4 +1,4 @@
-use field_oriented::{BangBangBrake, BangBangBrakeStepInput, FocInputType};
+use field_oriented::FocInputType;
 use crate::{FaultCause, Debounced};
 use crate::constants::{STO_ASC_DEBOUNCE_TICKS, STO_DC_BUS_RATIO, ASC_DC_BUS_RATIO, RAMPDOWN_DURATION_MS};
 
@@ -30,10 +30,6 @@ pub enum SafeControlStrategy {
     /// STO which can switch to ASC
     STO { should_switch: Debounced },
     ASC { should_switch: Debounced },
-    SS1t { 
-        brake: BangBangBrake,
-        done: Debounced
-    }
 }
 
 impl SafeControlStrategy {
@@ -43,10 +39,6 @@ impl SafeControlStrategy {
 
     pub fn asc() -> Self {
         SafeControlStrategy::ASC { should_switch: Debounced::new(false) }
-    }
-
-    pub fn ss1t() -> Self {
-        SafeControlStrategy::SS1t { brake: BangBangBrake::new(), done: Debounced::new(false) }
     }
 
     pub fn foc_tick(&mut self, input: SafeControlStrategyInput) -> SafeCommand {
@@ -80,28 +72,6 @@ impl SafeControlStrategy {
                     *self = Self::sto();
                 }
             },
-            SafeControlStrategy::SS1t { brake, done  } => {
-                if let Some(deceleration_cutoff_omega) = input.deceleration_cutoff_omega {
-                    let braking_input = BangBangBrakeStepInput {
-                        omega: input.omega,
-                        max_duration_ms: input.deceleration_duration_ms,
-                        omega_cutoff: deceleration_cutoff_omega,
-                        max_braking_torque: input.max_braking_torque,
-                        torque_ramp_per_ms: input.deceleration_ramp_per_ms,
-                        dt_ms: input.tick_dt_ms,
-                    };
-                    let brake_done = brake.tick(braking_input);
-                    done.update(brake_done, STO_ASC_DEBOUNCE_TICKS);
-                }
-                // Degrade to another strategy if there is no valid cutoff:
-                if done.state() || input.deceleration_cutoff_omega.is_none() {
-                    if input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v {
-                        *self = Self::asc();
-                    } else {
-                        *self = Self::sto();
-                    }
-                }
-            }
             _ => {}
         };
 
@@ -112,10 +82,6 @@ impl SafeControlStrategy {
             }
             SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf => SafeCommand::NonConducting,
             SafeControlStrategy::ASC { .. } => SafeCommand::ActiveShort,
-            SafeControlStrategy::SS1t { brake , .. } => {
-                let braking_torque = brake.torque_demand();
-                SafeCommand::FOC(FocInputType::TargetTorque(braking_torque))
-            }
         }
     }
 
@@ -130,8 +96,6 @@ impl SafeControlStrategy {
                 Self::sto()
             },
             (SafeControlStrategy::ASC { .. }, SafeControlStrategy::ASC { .. }) => Self::asc(),
-            (SafeControlStrategy::SS1t { .. }, SafeControlStrategy::STO { .. }) => Self::sto(),
-            (SafeControlStrategy::SS1t { .. }, SafeControlStrategy::ASC { .. }) => Self::asc(),
             (SafeControlStrategy::RampDown { .. }, SafeControlStrategy::RampDown { .. }) => return,
             (SafeControlStrategy::RampDown { .. }, _) => new.clone(),
             _ => return
@@ -146,8 +110,7 @@ impl From<FaultCause> for SafeControlStrategy {
             FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent => SafeControlStrategy::STOf,
             FaultCause::InvalidRotorFeedback => Self::sto(),
             FaultCause::DcOverVoltage => Self::asc(),
-            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature => SafeControlStrategy::RampDown { waited_ms: 0.0 },
-            FaultCause::Overspeed => Self::ss1t(),
+            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0 },
             _ => Self::sto()
         }
     }
@@ -188,7 +151,6 @@ mod tests {
             SafeControlStrategy::STO { .. } => "STO",
             SafeControlStrategy::STOf => "STOf",
             SafeControlStrategy::ASC { .. } => "ASC",
-            SafeControlStrategy::SS1t { .. } => "SS1t",
         }
     }
 
@@ -207,7 +169,7 @@ mod tests {
             (FaultCause::Overtemperature, &["RampDown"]),
             (FaultCause::SetpointTimeout, &["RampDown"]),
             (FaultCause::CANMessageIntegrity, &["RampDown"]),
-            (FaultCause::Overspeed, &["SS1t"]),
+            (FaultCause::Overspeed, &["RampDown"]),
         ];
 
         for (cause, allowed) in mapping {
@@ -282,98 +244,24 @@ mod tests {
         assert!(matches!(strategy, SafeControlStrategy::STOf));
     }
 
-    /// SS1-t hands over to STO or ASC by bus voltage once the deceleration ends.
-    #[test]
-    fn ss1t_decelerates_then_hands_over() {
-        for (bus_v, expected) in [(0.5 * DC_BUS_MAX_V, "STO"), (ABOVE_ASC_ENTRY_V, "ASC")] {
-            let mut strategy = SafeControlStrategy::ss1t();
-            let mut elapsed_ms = 0.0;
-            while matches!(strategy, SafeControlStrategy::SS1t { .. }) {
-                strategy.foc_tick(input(150.0, bus_v));
-                elapsed_ms += DT_MS;
-                assert!(elapsed_ms < 2.0 * DECEL_DURATION_MS, "SS1-t never handed over");
-            }
-            assert_eq!(reaction(&strategy), expected);
-        }
-    }
-
-    /// SS1-t braking torque opposes rotation and stays within the braking limit.
-    #[test]
-    fn ss1t_demand_within_braking_limit_and_opposes_rotation() {
-        for omega in [150.0, -150.0] {
-            let mut strategy = SafeControlStrategy::ss1t();
-            for _ in 0..2000 {
-                let SafeCommand::FOC(FocInputType::TargetTorque(demand)) = strategy.foc_tick(input(omega, 0.5 * DC_BUS_MAX_V)) else {
-                    panic!("SS1-t did not command a torque");
-                };
-                assert!(demand.abs() <= MAX_BRAKING_TORQUE, "demand {demand} above the braking limit");
-                assert!(demand * omega <= 0.0, "demand {demand} does not oppose rotation");
-            }
-        }
-    }
-
-    /// SS1-t releases at the velocity threshold well before the duration expires.
-    #[test]
-    fn ss1t_released_at_the_velocity_threshold() {
-        let mut strategy = SafeControlStrategy::ss1t();
-        let mut elapsed_ms = 0.0;
-        while matches!(strategy, SafeControlStrategy::SS1t { .. }) {
-            strategy.foc_tick(input(0.5 * CUTOFF_OMEGA, 0.5 * DC_BUS_MAX_V));
-            elapsed_ms += DT_MS;
-            assert!(elapsed_ms < DECEL_DURATION_MS, "released on the duration instead");
-        }
-        assert!(matches!(strategy, SafeControlStrategy::STO { .. }));
-    }
-
-    /// SS1-t cannot brake without a valid velocity cutoff and degrades immediately.
-    #[test]
-    fn ss1t_without_a_cutoff_degrades_immediately() {
-        for (bus_v, expected) in [(0.5 * DC_BUS_MAX_V, "STO"), (ABOVE_ASC_ENTRY_V, "ASC")] {
-            let mut strategy = SafeControlStrategy::ss1t();
-            let mut blind = input(150.0, bus_v);
-            blind.deceleration_cutoff_omega = None;
-            strategy.foc_tick(blind);
-            assert_eq!(reaction(&strategy), expected);
-        }
-    }
-
-    /// A fault warranting STO or ASC preempts an in-progress SS1-t.
-    #[test]
-    fn ss1t_preempted_instantly_by_sto_or_asc_fault() {
-        for preempt in [SafeControlStrategy::sto(), SafeControlStrategy::asc()] {
-            let mut strategy = SafeControlStrategy::ss1t();
-            strategy.foc_tick(input(150.0, 0.5 * DC_BUS_MAX_V));
-            strategy.fault_evolve(&preempt);
-            assert_eq!(reaction(&strategy), reaction(&preempt));
-        }
-    }
-
-    /// STOf preempts every reaction, ASC refuses an STO downgrade 
-    /// until its exit conditions allow it and SS1-t or rampdown yield.
+    /// STOf preempts every reaction, ASC refuses an STO downgrade
+    /// until its exit conditions allow it and rampdown yields.
     #[test]
     fn reaction_priority_never_downgrades() {
         let rampdown = || SafeControlStrategy::RampDown { waited_ms: 0.0 };
         let cases = [
             (rampdown(), SafeControlStrategy::sto(), "STO"),
             (rampdown(), SafeControlStrategy::asc(), "ASC"),
-            (rampdown(), SafeControlStrategy::ss1t(), "SS1t"),
             (rampdown(), SafeControlStrategy::STOf, "STOf"),
             (SafeControlStrategy::sto(), rampdown(), "STO"),
             (SafeControlStrategy::sto(), SafeControlStrategy::asc(), "ASC"),
-            (SafeControlStrategy::sto(), SafeControlStrategy::ss1t(), "STO"),
             (SafeControlStrategy::sto(), SafeControlStrategy::STOf, "STOf"),
             (SafeControlStrategy::asc(), rampdown(), "ASC"),
             (SafeControlStrategy::asc(), SafeControlStrategy::sto(), "ASC"),
-            (SafeControlStrategy::asc(), SafeControlStrategy::ss1t(), "ASC"),
             (SafeControlStrategy::asc(), SafeControlStrategy::STOf, "STOf"),
-            (SafeControlStrategy::ss1t(), rampdown(), "SS1t"),
-            (SafeControlStrategy::ss1t(), SafeControlStrategy::sto(), "STO"),
-            (SafeControlStrategy::ss1t(), SafeControlStrategy::asc(), "ASC"),
-            (SafeControlStrategy::ss1t(), SafeControlStrategy::STOf, "STOf"),
             (SafeControlStrategy::STOf, rampdown(), "STOf"),
             (SafeControlStrategy::STOf, SafeControlStrategy::sto(), "STOf"),
             (SafeControlStrategy::STOf, SafeControlStrategy::asc(), "STOf"),
-            (SafeControlStrategy::STOf, SafeControlStrategy::ss1t(), "STOf"),
         ];
 
         for (mut active, requested, expected) in cases {

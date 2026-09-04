@@ -137,7 +137,7 @@ fn foc_step_inner<A, C, M>(
         return (FocStepOutcome::NonConducting, None)
     };
 
-    // During encoder zeroing or hall calibration there may be no valid rotor feedback,
+    // During hall calibration there may be no valid rotor feedback,
     // but feedback is not used anyways, so we can safely default to zero values:
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
@@ -291,7 +291,7 @@ fn foc_step_inner<A, C, M>(
             mode.on_command(Command::AssertFault { cause: fault.into() });
             if let OperatingMode::Fault { safe_strategy, .. } = mode {
                 match safe_strategy {
-                    SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf | SafeControlStrategy::SS1t { .. } | SafeControlStrategy::RampDown { .. } => NonConducting,
+                    SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf | SafeControlStrategy::RampDown { .. } => NonConducting,
                     SafeControlStrategy::ASC { .. } => FocStepOutcome::ActiveShort,
                 }
             } else {
@@ -425,7 +425,7 @@ mod tests {
     }
 
     impl Calibrator for MockCalibrator {
-        fn new(_num_pole_pairs: u8, _max_rotor_mech_rpm: f32, _has_hall: bool, _has_encoder: bool, _dt_s: f32) -> Self {
+        fn new(_num_pole_pairs: u8, _max_rotor_mech_rpm: f32, _has_hall: bool, _dt_s: f32) -> Self {
             Self::at(CalibrationPhase::MotorEstimation)
         }
 
@@ -498,7 +498,7 @@ mod tests {
     }
 
     fn calibrating_at(phase: CalibrationPhase) -> OperatingMode {
-        let mut calibrator = CalibrationRunner::new(POLE_PAIRS, MAX_RPM as f32, true, true, 1.0 / PWM_FREQ_HZ);
+        let mut calibrator = CalibrationRunner::new(POLE_PAIRS, MAX_RPM as f32, true, 1.0 / PWM_FREQ_HZ);
         calibrator.phase = phase;
         OperatingMode::Calibration { calibrator }
     }
@@ -661,14 +661,6 @@ mod tests {
         demanding.target_torque = Some(0.5);
         let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
         assert_eq!(iq_target(outcome), Some(0.0), "rampdown followed the setpoint");
-
-        let mut mode = faulted_with(SafeControlStrategy::ss1t());
-        let mut demanding = nominal_inputs();
-        demanding.target_torque = Some(0.5);
-        demanding.rotor_feedback = Ok(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 50.0 });
-        let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
-        let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
-        assert!(iq <= 0.0, "SS1-t followed the setpoint instead of braking");
 
         // A stage failure hands the same tick over to the fault reaction, not the stage command:
         let mut mode = calibrating_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });

@@ -7,7 +7,6 @@
 
 use stm32g4_firmware as _;
 mod boards;
-mod encoders;
 mod bsp;
 mod can;
 #[cfg(feature = "debug-capture")]
@@ -59,7 +58,6 @@ mod app {
 
     use crate::constants::*;
     use crate::boards::*;
-    use crate::encoders::*;
     use crate::bsp::{
         self, Acceleration, AdcFeedback, CanBus, HallFeedback, Memory,
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
@@ -87,8 +85,6 @@ mod app {
         foc: FOC,
         #[cfg(feature = "hall-feedback")]
         hall_feedback: HallFeedback,
-        #[cfg(not(encoder_none))]
-        encoder_feedback: ActiveEncoder,
         feedback_arbitrator: FeedbackArbitrator,
         phase_current_filter: PhaseCurrentFilter,
         braking_current_filter: CurrentFilter,
@@ -128,12 +124,6 @@ mod app {
         let mut hall_feedback = bsp::HallFeedback::new(
             peripheral_mappings.hall_feedback, PWM_FREQUENCY_HZ.0, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
         );
-
-        #[cfg(not(encoder_none))]
-        let encoder_feedback = ActiveEncoder::new(EncoderInterface::take(
-            #[cfg(feature = "spi-encoder")] peripheral_mappings.spi_encoder,
-            #[cfg(feature = "rs485-encoder")] peripheral_mappings.rs485_encoder,
-        ));
 
         let acceleration = bsp::Acceleration::new(peripheral_mappings.acceleration);
         let mut memory = bsp::Memory::new(peripheral_mappings.memory);
@@ -233,8 +223,6 @@ mod app {
             runtime_values: RuntimeValues::default(),
             #[cfg(feature = "hall-feedback")]
             hall_feedback,
-            #[cfg(not(encoder_none))]
-            encoder_feedback,
             pwm_output,
             memory,
             foc,

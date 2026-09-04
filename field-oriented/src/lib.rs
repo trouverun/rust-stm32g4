@@ -13,7 +13,6 @@ mod math;
 mod pi_control;
 mod estimation;
 mod filtering;
-mod braking;
 mod field_weakening;
 
 pub use crate::math::wrap_to_pi;
@@ -26,5 +25,4 @@ pub use crate::estimation::{
     OrtegaPralyEstimator, OrtegaPralyEstimatorInput
 };
 pub use crate::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
-pub use crate::braking::{BangBangBrake, BangBangBrakeStepInput};
 pub use crate::foc::*;

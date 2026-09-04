@@ -167,10 +167,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
 
         // Do flash writes and tuning outside this ISR:
         match stage_result {
-            Some(StageResult::ZeroEncoderRequest) => {
-                // Placeholder:
-                cx.shared.mode.lock(|mode| mode.on_command(Command::ResumeCalibration));
-            }   
             Some(StageResult::HallCalibration { angle_table }) => {
                 #[cfg(feature = "hall-feedback")]
                 let _ = app::store_hall_table::spawn(angle_table);
