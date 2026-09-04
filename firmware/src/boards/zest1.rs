@@ -136,7 +136,7 @@ impl super::Board for Zest1 {
 
     fn map_peripherals() -> PeripheralMappings {
         let p = rcc_init();
-        let current_feedback = super::AdcFeedbackMappings {
+        let adc_feedback = super::AdcFeedbackMappings {
             opamps: super::ShuntOpAmps {
                 u: OpAmp::new(p.OPAMP3, OpAmpSpeed::HighSpeed).standalone_ext(p.PB0, p.PB2, p.PB1),
                 v: OpAmp::new(p.OPAMP4, OpAmpSpeed::HighSpeed).standalone_ext(p.PB11, p.PB10, p.PB12),
@@ -217,7 +217,7 @@ impl super::Board for Zest1 {
         };
 
         PeripheralMappings {
-            current_feedback,
+            adc_feedback,
             hall_feedback,
             pwm_output,
             acceleration,
