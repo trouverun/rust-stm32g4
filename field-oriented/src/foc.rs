@@ -7,6 +7,8 @@ use crate::{PIController, PIGains, MotorParamsEstimate, ControllerParameters, Hf
 pub use crate::sim::*;
 #[cfg(test)]
 pub use crate::test_utils::*;
+#[cfg(test)]
+pub use crate::test_plotting::*;
 
 struct PrevIterValues {
     u_max: f32,
