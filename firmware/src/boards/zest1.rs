@@ -128,7 +128,7 @@ impl super::Board for Zest1 {
     const INFO: super::BoardInfo = super::BoardInfo {
         current_limit_a: 5.0,
         dc_voltage_limit_v: 25.5,
-        mosfet_deadtime_ns: 300,
+        mosfet_deadtime_ns: 160,
         mosfet_on_delay_ns: 15,
         mosfet_off_delay_ns: 24,
         deadtime_compensation_band_a: 0.1

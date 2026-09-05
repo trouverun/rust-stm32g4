@@ -4,7 +4,7 @@ use crate::boards::BOARD;
 // Main:
 
 /// The frequency of the PWM carrier and the frequency at which the FOC ISR fires at
-pub const PWM_FREQUENCY_HZ: Hertz = Hertz(20_000);
+pub const PWM_FREQUENCY_HZ: Hertz = Hertz(30_000);
 /// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
 pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
 /// Timeout of the hardware watchdog
@@ -25,7 +25,9 @@ pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.9;
 pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 10.0;
 /// Bandwidth of the PLL omega estimator for the ortega sensorless estimator
 pub const ORTEGA_PLL_BANDWIDTH_HZ: f32 = 500.0;
+/// Frequency of the sensorless excitation square wave
 pub const HFI_FREQUENCY_HZ: f32 = 2000.0;
+/// Number of Q-axis pulse pairs used in HFI before a D-axis pulse pair
 pub const HFI_Q_PAIRS_PER_D_PAIR: u16 = 10;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
@@ -75,7 +77,7 @@ pub const ADC_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 // FOC:
 
 /// Tuning goal bandwidth for the current control loop PI gains
-pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 500.0;
+pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 750.0;
 
 /// Number of ticks a board measurement (temperature, DC bus voltage) needs to be out of range before raising a fault
 pub const BOARD_MEASUREMENT_DEBOUNCE_TICKS: u32 = 5;

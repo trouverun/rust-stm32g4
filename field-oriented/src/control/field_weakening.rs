@@ -5,6 +5,7 @@
 use core::f32::consts::TAU;
 use libm::{expf, logf};
 use crate::FocFault;
+use crate::utils::math::clamp;
 
 /// Motors whose full d axis budget leaves more flux than this are not worth weakening
 pub(crate) const MAX_USEFUL_WEAKENING_RATIO: f32 = 0.9;
@@ -85,13 +86,13 @@ impl FieldWeakening {
             if !integral_accum.is_finite() {
                 return Err(FocFault::NumericalError);
             }
-            self.integral_term = (self.integral_term + integral_accum).clamp(lower_bound, 0.0);
+            self.integral_term = clamp(self.integral_term + integral_accum, lower_bound, 0.0);
             let proportional = self.k_p * overmodulation_normalized;
-            Ok((proportional + self.integral_term).clamp(lower_bound, 0.0))
+            Ok(clamp(proportional + self.integral_term, lower_bound, 0.0))
         } else {
             // Ensure its not possible to get stuck with unnecessary i_d current
             self.integral_term *= self.integral_decay_rate;
-            Ok(self.integral_term.clamp(lower_bound, 0.0))
+            Ok(clamp(self.integral_term, lower_bound, 0.0))
         }
     }
 

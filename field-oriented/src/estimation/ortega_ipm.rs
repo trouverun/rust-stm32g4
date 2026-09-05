@@ -163,7 +163,8 @@ impl OrtegaIPMEstimator {
         let x_norm = accelerator.sqrt(dot(x, x));
         let epsilon = 0.5 * pm_flux_linkage;
         let sigma = if x_norm > epsilon {
-            AlphaBeta { alpha: x.alpha / x_norm, beta: x.beta / x_norm }
+            let norm_recip = 1. / x_norm;
+            AlphaBeta { alpha: x.alpha *norm_recip, beta: x.beta * norm_recip }
         } else {
             AlphaBeta { alpha: 0.0, beta: 0.0 }
         };

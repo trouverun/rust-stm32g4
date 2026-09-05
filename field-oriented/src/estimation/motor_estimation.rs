@@ -2,6 +2,7 @@ use crate::{
     ClarkParkValue, FocResult, MotorParamEstimator, MotorParamsEstimate
 };
 use super::utils::Lse;
+use crate::utils::math::clamp;
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
 pub enum EstimationStepFault {
@@ -355,7 +356,7 @@ impl OfflineMotorEstimator {
                 theta: 0.0,
             },
             OfflineEstimatorState::EstF { ran_s, latched_i_q,  .. } => {
-                let ramp = (ran_s / (self.config.max_spin_time_s + 1e-5)).clamp(0.0, 1.0);
+                let ramp = clamp(ran_s / (self.config.max_spin_time_s + 1e-5), 0.0, 1.0);
                 let i_q = if let Some(val) = latched_i_q {
                     *val
                 } else {
@@ -367,7 +368,7 @@ impl OfflineMotorEstimator {
                 }
             },
             OfflineEstimatorState::RampDown { ran_s, latched_i_q, ramp_duration_s, .. } => {
-                let ramp = (1.0 - ran_s / (*ramp_duration_s + 1e-5)).clamp(0.0, 1.0);
+                let ramp = clamp(1.0 - ran_s / (*ramp_duration_s + 1e-5), 0.0, 1.0);
                 let i_q = if let Some(val) = latched_i_q {
                     ramp * (*val)
                 } else {

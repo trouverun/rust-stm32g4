@@ -1,10 +1,7 @@
 use firmware_core::Stamped;
 use field_oriented::HfiParams;
-use rtic_monotonics::{stm32::Tim2, Monotonic};
 use crate::boards::BOARD;
 use crate::constants::*;
-
-pub type Instant = <Tim2 as Monotonic>::Instant;
 
 pub struct BoardStatus {
     pub dc_bus_voltage_v: Option<f32>,
@@ -204,12 +201,15 @@ impl FirmwareConfig {
 }
 
 pub struct RuntimeValues {
-    pub target_torque: Stamped<f32, Instant>,
+    /// FOC ISR tick count, the clock for setpoint freshness
+    pub tick: u64,
+    pub target_torque: Stamped<f32, u64>,
 }
 
 impl Default for RuntimeValues {
     fn default() -> Self {
         Self {
+            tick: 0,
             target_torque: Stamped::new(),
         }
     }

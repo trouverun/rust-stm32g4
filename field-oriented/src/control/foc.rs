@@ -114,7 +114,7 @@ impl FOC {
                 let pm_flux_linkage = motor_params.pm_flux_linkage.ok_or(FocFault::MissingMotorParams)?;
                 let target_i_d = if field_weakening {
                     // Compute target d-axis current based on field weakening need:
-                    let u_mag = accelerator.sqrt(self.prev_values.u_mag_sq).clamp(0.0, self.prev_values.u_max);
+                    let u_mag = clamp(accelerator.sqrt(self.prev_values.u_mag_sq), 0.0, self.prev_values.u_max);
                     let overmodulation = self.config.overmodulation_threshold_ratio*self.prev_values.u_max - u_mag;
                     let d_inductance =  motor_params.d_inductance.ok_or(FocFault::MissingMotorParams)?;
                     let field_weakening_input = FieldWeakeningInput {
@@ -158,14 +158,14 @@ impl FOC {
         let u_mag_sq = u_dq.d*u_dq.d + u_dq.q*u_dq.q;
         let u_max_sq = u_max*u_max;
         let (u_d_sat, u_q_sat) = if u_mag_sq > u_max_sq {
-            let u_d_clamped = u_dq.d.clamp(-u_max, u_max);
+            let u_d_clamped = clamp(u_dq.d, -u_max, u_max);
             let u_d_clampled_sq  = u_d_clamped*u_d_clamped;
             let u_q_limit = if u_max_sq > u_d_clampled_sq {
                 accelerator.sqrt(u_max_sq - u_d_clampled_sq)
             } else {
                 0.0
             };
-            (u_d_clamped, u_dq.q.clamp(-u_q_limit, u_q_limit))
+            (u_d_clamped, clamp(u_dq.q, -u_q_limit, u_q_limit))
         } else {
             (u_dq.d, u_dq.q)
         };
@@ -185,7 +185,7 @@ impl FOC {
         // so that anti-windup and field weakening never see it
         let u_applied = match input.command {
             FocInputType::TargetTorque(_) | FocInputType::TargetCurrents(_) => {
-                let headroom = u_max - accelerator.sqrt(u_mag_sq.min(u_max_sq));
+                let headroom = u_max - accelerator.sqrt(min2(u_mag_sq, u_max_sq));
                 let injection = self.hfi.compute(input.hfi, headroom);
                 ClarkParkValue { d: u_dq.d + injection.d, q: u_dq.q + injection.q }
             }
@@ -212,13 +212,13 @@ impl FOC {
         };
         
         // Dead time compensation (scaled by current magnitude to guard against noise):
-        duty_cycles.u += self.deadtime_ratio * (input.phase_currents.u * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
-        duty_cycles.v += self.deadtime_ratio * (input.phase_currents.v * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
-        duty_cycles.w += self.deadtime_ratio * (input.phase_currents.w * self.deadtime_band_reciprocal).clamp(-1.0, 1.0);
-        
-        duty_cycles.u = duty_cycles.u.clamp(0.0, 1.0);
-        duty_cycles.v = duty_cycles.v.clamp(0.0, 1.0);
-        duty_cycles.w = duty_cycles.w.clamp(0.0, 1.0);
+        duty_cycles.u += self.deadtime_ratio * clamp(input.phase_currents.u * self.deadtime_band_reciprocal, -1.0, 1.0);
+        duty_cycles.v += self.deadtime_ratio * clamp(input.phase_currents.v * self.deadtime_band_reciprocal, -1.0, 1.0);
+        duty_cycles.w += self.deadtime_ratio * clamp(input.phase_currents.w * self.deadtime_band_reciprocal, -1.0, 1.0);
+
+        duty_cycles.u = clamp(duty_cycles.u, 0.0, 1.0);
+        duty_cycles.v = clamp(duty_cycles.v, 0.0, 1.0);
+        duty_cycles.w = clamp(duty_cycles.w, 0.0, 1.0);
 
         Ok(FocResult {
             omega_e,

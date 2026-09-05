@@ -1,4 +1,5 @@
 use crate::{HallCalibration, RotorFeedbackFault};
+use crate::utils::math::clamp;
 
 enum HallInterpolationState {
     Stationary,
@@ -164,14 +165,14 @@ impl HallEstimator {
                 // - allow interpolation up to the midpoint of the current sector
                 //   (prevent being off by a full sector, if oscillating around same edge)
                 // - set omega to zero, to avoid huge values caused by oscillating around same edge rapidly
-                let theta_interpolation = dir as f32 * (prev_span * fraction).clamp(0.0, 0.5 * span);
+                let theta_interpolation = dir as f32 * clamp(prev_span * fraction, 0.0, 0.5 * span);
                 let theta = hall_pattern_to_theta[entry_idx] + theta_interpolation;
                 let omega = 0.0;
                 (theta, omega)
             }
             HallInterpolationState::Normal => {
                 // Interpolate up to the next Hall edge angle:
-                let theta_interpolation = dir as f32 * (prev_span * fraction).clamp(0.0, span);
+                let theta_interpolation = dir as f32 * clamp(prev_span * fraction, 0.0, span);
                 let theta = hall_pattern_to_theta[entry_idx] + theta_interpolation;
                 let signed_prev_span = dir as f32 * prev_span;
                 // Compute angular velocity from: rad * 1/ticks * Hz (ticks/s) = rad/s

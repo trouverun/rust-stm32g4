@@ -179,6 +179,6 @@ BA_ "GenMsgCycleTimeUs" BO_ 304 100000;
 BA_ "GenMsgCycleTimeUs" BO_ 320 100000;
 
 VAL_ 320 mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 4 "Fault" ;
-VAL_ 640 command 0 "Start" 1 "RequestDump" ;
+VAL_ 640 command 0 "Start" 1 "RequestDump" 2 "StartBandwidthTest" ;
 VAL_ 528 requested_mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 3 "CancelCalibration" 4 "FaultClear" ;
 VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 7 "firmware_version" 8 "sensorless_config" 255 "all" ;

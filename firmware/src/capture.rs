@@ -3,17 +3,19 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 pub const CAPTURE_LEN: usize = crate::memory::CAPTURE_RAM_BYTES as usize / size_of::<Record>();
-const WORDS_PER_RECORD: usize = 6;
+const WORDS_PER_RECORD: usize = 8;
 const WORDS_PER_FRAME: usize = 3;
-const DUMP_FRAMES: usize = CAPTURE_LEN * WORDS_PER_RECORD / WORDS_PER_FRAME;
+const DUMP_FRAMES: usize = (CAPTURE_LEN * WORDS_PER_RECORD).div_ceil(WORDS_PER_FRAME);
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Record {
     pub id_meas_ma: i16,
     pub iq_meas_ma: i16,
+    pub id_target_ma: i16,
+    pub iq_target_ma: i16,
     pub theta_mrad: i16,
-    pub sector: i16,
+    pub omega_100mrad: i16,
     pub ud_10mv: i16,
     pub uq_10mv: i16,
 }
@@ -22,7 +24,8 @@ impl Record {
     fn words(&self) -> [i16; WORDS_PER_RECORD] {
         [
             self.id_meas_ma, self.iq_meas_ma,
-            self.theta_mrad, self.sector,
+            self.id_target_ma, self.iq_target_ma,
+            self.theta_mrad, self.omega_100mrad,
             self.ud_10mv, self.uq_10mv,
         ]
     }
@@ -31,8 +34,10 @@ impl Record {
 const EMPTY: Record = Record {
     id_meas_ma: 0,
     iq_meas_ma: 0,
+    id_target_ma: 0,
+    iq_target_ma: 0,
     theta_mrad: 0,
-    sector: 0,
+    omega_100mrad: 0,
     ud_10mv: 0,
     uq_10mv: 0,
 };
@@ -85,9 +90,14 @@ pub fn next_dump_frame() -> Option<(u16, [i16; WORDS_PER_FRAME])> {
     if frame >= DUMP_FRAMES {
         return None;
     }
-    let record = unsafe { (*CAPTURE.get())[frame / 2] };
-    let words = record.words();
-    let offset = (frame % 2) * WORDS_PER_FRAME;
+    let mut words = [0; WORDS_PER_FRAME];
+    for (i, word) in words.iter_mut().enumerate() {
+        let index = frame * WORDS_PER_FRAME + i;
+        if index / WORDS_PER_RECORD < CAPTURE_LEN {
+            let record = unsafe { (*CAPTURE.get())[index / WORDS_PER_RECORD] };
+            *word = record.words()[index % WORDS_PER_RECORD];
+        }
+    }
     DUMP_CURSOR.store(frame + 1, Ordering::Relaxed);
-    Some((frame as u16, [words[offset], words[offset + 1], words[offset + 2]]))
+    Some((frame as u16, words))
 }

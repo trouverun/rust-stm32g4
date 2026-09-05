@@ -5,6 +5,7 @@ version = "0.9.0"
 
 [features]
 debug-capture = []
+bandwidth-test = ["debug-capture"]
 mcu-opamps = []
 overcurrent-comparators = []
 hall-feedback = []
