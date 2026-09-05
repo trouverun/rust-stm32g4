@@ -6,6 +6,8 @@
 #![feature(stmt_expr_attributes)]
 
 use stm32g4_firmware as _;
+#[cfg(feature = "bandwidth-test")]
+mod bandwidth_test;
 mod boards;
 mod bsp;
 mod can;
@@ -92,7 +94,6 @@ mod app {
         current_loop_snapshot: CurrentLoopSnapshot,
         software_watchdog: SoftwareWatchdog,
         can: CanBus,
-        debug_mappings: DebugMappings,
     }
 
     #[local]
@@ -100,6 +101,7 @@ mod app {
         adc_feedback: AdcFeedback,
         acceleration: Acceleration,
         hardware_watchdog: HardwareWatchdog,
+        debug_mappings: DebugMappings,
     }
 
     #[init]
@@ -227,7 +229,6 @@ mod app {
             memory,
             foc,
             motor_parameters,
-            debug_mappings: peripheral_mappings.debug,
             current_loop_snapshot: CurrentLoopSnapshot::default(),
             feedback_arbitrator: FeedbackArbitrator::new(SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA),
             sensorless_estimator: OrtegaIPMEstimator::new(config.ortega_gamma(), config.ortega_alpha(), ORTEGA_PLL_BANDWIDTH_HZ),
@@ -243,6 +244,7 @@ mod app {
             adc_feedback,
             acceleration,
             hardware_watchdog: HardwareWatchdog::new(peripheral_mappings.watchdog.iwdg, IWDG_TIMEOUT_US),
+            debug_mappings: peripheral_mappings.debug,
         })
     }
 
@@ -250,7 +252,7 @@ mod app {
         #[task(
             priority = 6, binds = $foc_irq,
             local = [
-                adc_feedback, acceleration, hardware_watchdog,
+                adc_feedback, acceleration, hardware_watchdog, debug_mappings,
                 prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
                 prev_u_dq: ClarkParkValue = ClarkParkValue { d: 0.0, q: 0.0 },
                 board_overtemp: Debounced = Debounced::new(false),
@@ -259,7 +261,7 @@ mod app {
             ],
             shared = [
                 pwm_output, foc, motor_parameters, feedback_arbitrator, sensorless_estimator,
-                mode, board_status, config, runtime_values, debug_mappings,
+                mode, board_status, config, runtime_values,
                 current_loop_snapshot, phase_current_filter, software_watchdog,
                 braking_current_filter, hall_feedback
             ]
@@ -298,9 +300,8 @@ mod app {
         async fn persist_config(_: persist_config::Context);
     }
 
-    #[task(priority = 6, binds = $watchdog_irq, shared = [software_watchdog, debug_mappings])]
+    #[task(priority = 6, binds = $watchdog_irq, shared = [software_watchdog])]
     fn watchdog_isr(mut cx: watchdog_isr::Context) {
-        cx.shared.debug_mappings.lock(|dm| dm.la_d.set_high());
         cx.shared.software_watchdog.lock(|wd| wd.register_fault());
     }
 
@@ -345,7 +346,7 @@ mod app {
         crate::tasks::store_hall_table(cx, angle_table).await
     }
     
-    #[idle(shared=[debug_mappings])]
+    #[idle()]
     fn idle(mut cx: idle::Context) -> ! {
         loop {
             cortex_m::asm::wfi();

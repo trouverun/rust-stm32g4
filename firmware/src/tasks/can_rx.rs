@@ -1,11 +1,13 @@
 use rtic::Mutex as _;
-use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
+use rtic_monotonics::stm32::{ExtU64, Tim2 as Mono};
 use embedded_can::Id;
 
 use crate::app;
 use crate::constants::PWM_FREQUENCY_HZ;
 #[cfg(feature = "debug-capture")]
 use crate::capture;
+#[cfg(feature = "bandwidth-test")]
+use crate::bandwidth_test;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::ConfigError;
@@ -50,8 +52,10 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 };
                 cx.shared.mode.lock(|mode| {
                     if matches!(command, Command::EnableTorqueControl) && !matches!(mode, OperatingMode::TorqueControl) {
-                        let now = Mono::now();
-                        cx.shared.runtime_values.lock(|rtv| rtv.target_torque.set(0.0, now));
+                        cx.shared.runtime_values.lock(|rtv| {
+                            let now = rtv.tick;
+                            rtv.target_torque.set(0.0, now);
+                        });
                     }
                     mode.on_command(command);
                 });
@@ -59,10 +63,9 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
             Ok(Messages::Setpoint(msg)) => {
                 match cx.local.setpoint_integrity.check(&frame.data()[..3], msg.rolling_counter(), msg.checksum()) {
                     Ok(()) => {
-                        let now = Mono::now();
                         cx.shared.runtime_values.lock(|rtv| {
-                            let torque_demand = msg.target_torque();
-                            rtv.target_torque.set(torque_demand, now);
+                            let now = rtv.tick;
+                            rtv.target_torque.set(msg.target_torque(), now);
                         });
                         cx.local.setpoint_fault.drain();
                     }
@@ -342,6 +345,10 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     CaptureControlCommand::RequestDump => {
                         capture::request_dump();
                     }
+                    #[cfg(feature = "bandwidth-test")]
+                    CaptureControlCommand::StartBandwidthTest => bandwidth_test::arm(),
+                    #[cfg(not(feature = "bandwidth-test"))]
+                    CaptureControlCommand::StartBandwidthTest => {}
                     CaptureControlCommand::_Other(_) => {}
                 }
             }

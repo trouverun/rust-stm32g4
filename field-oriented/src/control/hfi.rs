@@ -35,8 +35,9 @@ impl Hfi {
         self.negative = false;
         self.pair = 0;
     }
-
+    
     /// Voltage to add on the estimated d and q axes this cycle, each pair sized to the headroom at its start
+    #[inline]
     pub fn compute(&mut self, params: HfiParams, headroom_v: f32) -> ClarkParkValue {
         if params.amplitude_v <= 0.0 || params.injection_frequency_hz <= 0.0 {
             self.reset();

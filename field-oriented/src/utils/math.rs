@@ -11,6 +11,7 @@ pub(crate) fn wrapped_diff(a: f32, b: f32) -> f32 {
 }
 
 /// Wrap an angle within one turn of range to `(-PI, PI]`
+#[inline]
 pub fn wrap_to_pi(angle_rad: f32) -> f32 {
     const INV_TAU: f32 = 1.0 / TAU;
     angle_rad - TAU * (angle_rad * INV_TAU).round()
@@ -82,4 +83,12 @@ pub(crate) fn min3(a: f32, b: f32, c: f32) -> f32 {
 pub(crate) fn max3(a: f32, b: f32, c: f32) -> f32 {
     let m = if a > b { a } else { b };
     if m > c { m } else { c }
+}
+
+pub(crate) fn min2(a: f32, b: f32) -> f32 {
+    if a < b { a } else { b }
+}
+
+pub(crate) fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
+    if x < lo { lo } else if x > hi { hi } else { x }
 }

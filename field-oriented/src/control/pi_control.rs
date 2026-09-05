@@ -153,7 +153,7 @@ pub fn compute_current_pi_controller_gains(
     // The phase currents are sampled at the midpoint of a PWM period, 
     // and control voltages are applied at the start of the next PWM period
     // = input delay of half a PWM period
-    let m = 0.5; // Delay as a factor of sampling time, standard modified Z transform convention 
+    let m = 0.5; // (1 - delay as a factor of sampling time), standard modified Z transform convention 
 
     let gains = ControllerParameters {
         d_pi: tune(R, Ld, T, m, bandwidth_hz)?,

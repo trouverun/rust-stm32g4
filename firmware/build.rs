@@ -24,6 +24,9 @@ fn main() {
     generate_memory_layout(&out_dir, &board);
     generate_version(&out_dir);
     generate_can(&out_dir);
+    if env::var_os("CARGO_FEATURE_BANDWIDTH_TEST").is_some() {
+        generate_multisine_table(&out_dir);
+    }
 }
 
 /// The single enabled `board-*` cargo feature
@@ -191,6 +194,40 @@ fn generate_can(out_dir: &str) {
 
     let frames_src = emit_frames(&dbc);
     std::fs::write(&frames_path, frames_src).expect("write frames.rs");
+}
+
+/// Emits MULTISINE_HARMONICS and MULTISINE_TABLE: one fundamental period of a unit-amplitude
+/// multisine, used as the current loop setpoint in the bandwidth test.
+fn generate_multisine_table(out_dir: &str) {
+    const TICKS: usize = 400;
+    // Excitation frequencies as multiples of the fundamental (FOC rate / TICKS),
+    // odd so even-order distortion lands on unmeasured bins
+    const HARMONICS: [u32; 14] = [1, 3, 5, 7, 9, 11, 13, 15, 19, 23, 27, 31, 35, 39];
+    let pi = std::f64::consts::PI;
+
+    let samples: Vec<f64> = (0..TICKS)
+        .map(|t| {
+            HARMONICS
+                .iter()
+                .enumerate()
+                .map(|(k, h)| {
+                    let phase = -pi * (k * (k + 1)) as f64 / HARMONICS.len() as f64;
+                    (2.0 * pi * *h as f64 * t as f64 / TICKS as f64 + phase).sin()
+                })
+                .sum()
+        })
+        .collect();
+    let peak = samples.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+
+    let mut src = String::new();
+    writeln!(src, "pub const MULTISINE_HARMONICS: [u32; {}] = {:?};", HARMONICS.len(), HARMONICS).unwrap();
+    writeln!(src, "pub const MULTISINE_TABLE: [f32; {TICKS}] = [").unwrap();
+    for v in &samples {
+        writeln!(src, "    {:?},", (v / peak) as f32).unwrap();
+    }
+    writeln!(src, "];").unwrap();
+    std::fs::write(std::path::Path::new(out_dir).join("multisine_table.rs"), src)
+        .expect("write multisine_table.rs");
 }
 
 /// Returns each periodic message's transmit period in **microseconds**.

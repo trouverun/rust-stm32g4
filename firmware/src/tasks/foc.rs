@@ -1,13 +1,16 @@
 use rtic::Mutex as _;
 use rtic::mutex::prelude::*;
-use rtic_monotonics::{stm32::{ExtU64, Tim2 as Mono}, Monotonic};
 
 use crate::app;
 use crate::constants::PWM_FREQUENCY_HZ;
 use crate::constants::*;
 #[cfg(feature = "debug-capture")]
 use crate::capture;
+#[cfg(feature = "bandwidth-test")]
+use crate::bandwidth_test;
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
+#[cfg(feature = "bandwidth-test")]
+use firmware_core::SafeControlStrategy;
 use field_oriented::{
     AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback,
     MotorParamEstimator, MotorParamsEstimate, OrtegaIPMEstimatorInput,
@@ -20,7 +23,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
     // if FOC ISR (sampled phase currents):
     if let Some(phase_currents) = cx.local.adc_feedback.read_currents() {
         cx.local.hardware_watchdog.feed();
-        cx.shared.debug_mappings.lock(|dm| dm.la_a.set_high());
+        cx.local.debug_mappings.la_a.set_high();
 
         // Gather inputs:
         let watchdog_fault = cx.shared.software_watchdog.lock(|wd| {
@@ -50,13 +53,15 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
                 cfg.braking_current_limit_a(), cfg.hfi())
             });
+        const TICKS_PER_MS: u64 = PWM_FREQUENCY_HZ.0 as u64 / 1000;
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
-            rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
+            rtv.tick += 1;
+            rtv.target_torque.fresh(rtv.tick, setpoint_timeout_ms as u64 * TICKS_PER_MS)
         });
-        const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;    
+        const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
         const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         
-        cx.shared.debug_mappings.lock(|dm| dm.la_c.set_high());
+        cx.local.debug_mappings.la_c.set_high();
         let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
         
         #[cfg(feature = "hall-feedback")]
@@ -64,25 +69,16 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             (hall_feedback.read(), hall_feedback.get_pattern())
         });
 
-        let sensorless_input = OrtegaIPMEstimatorInput {
-            currents: phase_currents,
-            voltages: *cx.local.prev_u_ab,
-            params,
-            dt_s: DT_S,
-        };
-        let sensorless_feedback = cx.shared.sensorless_estimator.lock(|est| {
-            est.update(sensorless_input, cx.local.acceleration);
-            est.read()
-        });
         let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
-
             #[cfg(feature = "hall-feedback")]
             fa.update_hall(hall_feedback, hall_pattern);
 
-            fa.update_sensorless(sensorless_feedback);
             (fa.read(), fa.get_hall_pattern())
         });
-        cx.shared.debug_mappings.lock(|dm| dm.la_c.set_low());
+        cx.local.debug_mappings.la_c.set_low();
+
+        #[cfg(feature = "bandwidth-test")]
+        let target_torque = bandwidth_test::multisine_torque(target_torque, active_current_limit_a, params.torque_constant());
 
         // FOC compute:
         let inputs = FocStepInputs {
@@ -106,13 +102,13 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             tick_dt_ms: DT_MS,
             hfi,
         };
-        cx.shared.debug_mappings.lock(|dm| dm.la_b.set_high());
+        cx.local.debug_mappings.la_b.set_high();
         let (outcome, stage_result) = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
             |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
         );
-        cx.shared.debug_mappings.lock(|dm| dm.la_b.set_low());
 
         // Apply outputs:
+        let sensorless_u_ab = *cx.local.prev_u_ab;
         let (sector, braking_current) = match outcome {
             FocStepOutcome::Normal { u_ab, u_dq, duty_cycles, snapshot, sector } => {
                 cx.shared.pwm_output.lock(|pwm| {
@@ -122,14 +118,23 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
                 
                 #[cfg(feature = "debug-capture")]
-                capture::record(capture::Record {
+                #[cfg_attr(not(feature = "bandwidth-test"), allow(unused_variables))]
+                let capture_full = capture::record(capture::Record {
                     id_meas_ma: (snapshot.id_meas_a * 1000.0) as i16,
                     iq_meas_ma: (snapshot.iq_meas_a * 1000.0) as i16,
+                    id_target_ma: (snapshot.id_target_a * 1000.0) as i16,
+                    iq_target_ma: (snapshot.iq_target_a * 1000.0) as i16,
                     theta_mrad: (rotor_feedback.map_or(0.0, |fb| fb.theta) * 1000.0) as i16,
-                    sector: sector as i16,
+                    omega_100mrad: (rotor_feedback.map_or(0.0, |fb| fb.omega) * 10.0) as i16,
                     ud_10mv: (u_dq.d * 100.0) as i16,
                     uq_10mv: (u_dq.q * 100.0) as i16,
                 });
+                #[cfg(feature = "bandwidth-test")]
+                if capture_full && bandwidth_test::finish() {
+                    cx.shared.mode.lock(|mode| mode.on_command(Command::Idle {
+                        safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 },
+                    }));
+                }
 
                 *cx.local.prev_u_ab = u_ab;
                 let braking_current = if let Some(dc_v) = dc_bus_reading_v {
@@ -161,9 +166,25 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 *cx.local.prev_u_dq = ClarkParkValue { d: 0.0, q: 0.0 };
                 (0, 0.0)
             }
-        };
-
+        };        
+        cx.local.debug_mappings.la_b.set_low();
         cx.shared.braking_current_filter.lock(|cf| cf.update(braking_current));
+
+        // Do the sensorless update here instead of at the start to minimize the latency to PWM duty application:
+        // (trade one tick of estimator latency for ~5 us more headroom to meet the PWM duty update "deadline")
+        let sensorless_input = OrtegaIPMEstimatorInput {
+            currents: phase_currents,
+            voltages: sensorless_u_ab,
+            params,
+            dt_s: DT_S,
+        };
+        let sensorless_feedback = cx.shared.sensorless_estimator.lock(|est| {
+            est.update(sensorless_input, cx.local.acceleration);
+            est.read()
+        });        
+        cx.shared.feedback_arbitrator.lock(|fa| {
+            fa.update_sensorless(sensorless_feedback);
+        });
 
         // Do flash writes and tuning outside this ISR:
         match stage_result {
@@ -184,7 +205,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
 
         // Always sample something to keep the ADC EOC ISRs running:
         cx.local.adc_feedback.sample_sector(sector);
-        cx.shared.debug_mappings.lock(|dm| dm.la_a.set_low());
+        cx.local.debug_mappings.la_a.set_low();
     }
 
     // if board status ISR (sampled DC bus voltage and board temperature):
