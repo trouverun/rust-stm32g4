@@ -76,6 +76,8 @@ pub struct FocConfig {
     pub deadtime_compensation_band_a: f32,
     /// The ratio of the maximum linear modulation voltage which can be reached before field weakening starts 
     pub overmodulation_threshold_ratio: f32,
+    /// High frequency injection for saliency based position estimation, amplitude 0 for none
+    pub hfi: crate::HfiConfig,
     /// Design bandwidth of the field weakening controller
     pub field_weakening_bandwidth_hz: f32
 }
@@ -119,6 +121,8 @@ pub struct FocResult {
     pub voltage_hexagon_sector: u8,
     pub measured_i_dq: ClarkParkValue,
     pub target_i_dq: ClarkParkValue,
+    /// Clamped control voltage, before injection
     pub u_dq: ClarkParkValue,
+    /// Applied voltage, injection included
     pub u_ab: AlphaBeta,
 }

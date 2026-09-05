@@ -1,7 +1,7 @@
 pub use crate::types::*;
 use crate::{math::*};
 use crate::field_weakening::{FieldWeakening, FieldWeakeningInput};
-use crate::{PIController, PIGains, MotorParamsEstimate, ControllerParameters};
+use crate::{PIController, PIGains, MotorParamsEstimate, ControllerParameters, Hfi};
 
 #[cfg(test)]
 pub use crate::sim::*;
@@ -36,7 +36,8 @@ pub struct FOC {
     deadtime_ratio: f32,
     deadtime_band_reciprocal: f32,
     prev_values: PrevIterValues,
-    current_control_bandwidth_hz: Option<f32>
+    current_control_bandwidth_hz: Option<f32>,
+    hfi: Hfi,
 }
 
 impl FOC {
@@ -44,7 +45,7 @@ impl FOC {
         let sampling_time_s = 1.0 / config.pwm_frequency_hz;
 
         // Slow I controller for calibration steady-state use:
-        let calibration_gains = PIGains { kr: 0.0, kp: 0.0, ki: 1.0, kt: 1.0 };
+        let calibration_gains = PIGains { kr: 0.0, kp: 0.0, ki: 1.0, kt: 1.0, bandwidth_hz: 0.0 };
         let calibration_d_pi = PIController::new(Some(calibration_gains), sampling_time_s);
         let calibration_q_pi = PIController::new(Some(calibration_gains), sampling_time_s);
 
@@ -52,6 +53,7 @@ impl FOC {
         let d_pi = PIController::new(None, sampling_time_s);
         let q_pi = PIController::new(None, sampling_time_s);
         let field_weakening = FieldWeakening::new(config.field_weakening_bandwidth_hz, sampling_time_s);
+        let hfi = Hfi::new(config.hfi, sampling_time_s);
 
         let deadtime_ratio = if config.pwm_frequency_hz != 0.0 {
             let pwm_period_ns = 1e9 / config.pwm_frequency_hz;
@@ -69,7 +71,8 @@ impl FOC {
             deadtime_ratio,
             deadtime_band_reciprocal,
             prev_values: PrevIterValues::default(),
-            current_control_bandwidth_hz: None
+            current_control_bandwidth_hz: None,
+            hfi,
         }
     }
 
@@ -175,7 +178,21 @@ impl FOC {
         };
 
         let u_dq = ClarkParkValue {d: u_d_sat, q: u_q_sat};
-        let u_ab = inverse_park(u_dq, sc_e);
+
+        // Injection rides on top of the clamped voltage within the remaining headroom, 
+        // so that anti-windup and field weakening never see it
+        let u_applied = match input.command {
+            FocInputType::TargetTorque(_) | FocInputType::TargetCurrents(_) => {
+                let headroom = u_max - accelerator.sqrt(u_mag_sq.min(u_max_sq));
+                let injection = self.hfi.compute(headroom);
+                ClarkParkValue { d: u_dq.d + injection.d, q: u_dq.q + injection.q }
+            }
+            _ => {
+                self.hfi.reset();
+                u_dq
+            }
+        };
+        let u_ab = inverse_park(u_applied, sc_e);
         let voltage_hexagon_sector = voltage_sector(&u_ab);
 
         // Space vector modulation:
@@ -231,13 +248,17 @@ impl FOC {
 
     pub fn set_pi_gains(&mut self, gains: Option<ControllerParameters>) -> Result<(), FocFault> {
         self.clear_windup();
-        if let Some(ControllerParameters { d_pi, q_pi , closed_loop_bandwidth_hz }) = gains {
+        if let Some(ControllerParameters { d_pi, q_pi }) = gains {
             self.d_pi.set_gains(Some(d_pi));
             self.q_pi.set_gains(Some(q_pi));
-            self.current_control_bandwidth_hz = closed_loop_bandwidth_hz;
-            if let Some(bandwidth_hz) = closed_loop_bandwidth_hz {
-                self.field_weakening.derive_gains(bandwidth_hz)?;
+
+            let mut closed_loop_bandwidth_hz = d_pi.bandwidth_hz;
+            if q_pi.bandwidth_hz < closed_loop_bandwidth_hz {
+                closed_loop_bandwidth_hz = q_pi.bandwidth_hz;
             }
+
+            self.current_control_bandwidth_hz = Some(closed_loop_bandwidth_hz);
+            self.field_weakening.derive_gains(closed_loop_bandwidth_hz)?;
         } else {
             self.d_pi.set_gains(None);
             self.q_pi.set_gains(None);
@@ -249,8 +270,7 @@ impl FOC {
         if let (Some(d_pi), Some(q_pi)) = (self.d_pi.get_gains(), self.q_pi.get_gains()) {
             Some(ControllerParameters {
                 d_pi,
-                q_pi,
-                closed_loop_bandwidth_hz: self.current_control_bandwidth_hz
+                q_pi
             })
         } else {
             None
