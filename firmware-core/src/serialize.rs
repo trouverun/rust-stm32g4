@@ -3,7 +3,7 @@ use crate::CRC32;
 
 /// Buffer size in **bytes** for one record (4-byte header + postcard payload + 4-byte CRC).
 /// The flash side must ensure this is a multiple of the write granularity and fits within a sector.
-pub const MAX_RECORD_BYTES: usize = 64;
+pub const MAX_RECORD_BYTES: usize = 128;
 const HEADER_BYTES: usize = 4;
 const CRC_BYTES: usize = 4;
 

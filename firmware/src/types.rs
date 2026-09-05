@@ -1,4 +1,5 @@
 use firmware_core::Stamped;
+use field_oriented::HfiParams;
 use rtic_monotonics::{stm32::Tim2, Monotonic};
 use crate::boards::BOARD;
 use crate::constants::*;
@@ -38,10 +39,11 @@ pub struct FirmwareConfig {
     rotor_speed_limit_mech_rpm: u16,
     setpoint_timeout_ms: u16,
     temp_max_c: f32,
-    ss1t_duration_ms: u16,
-    ss1t_velocity_threshold: f32,
     braking_current_limit_a: f32,
     braking_current_fault_a: f32,
+    hfi_amplitude_v: f32,
+    ortega_gamma: f32,
+    ortega_alpha: f32,
 }
 
 impl Default for FirmwareConfig {
@@ -50,7 +52,7 @@ impl Default for FirmwareConfig {
             dc_bus_min_voltage_v: DEFAULT_DC_BUS_MIN_VOLTAGE_V,
             dc_bus_max_voltage_v: DEFAULT_DC_BUS_MAX_VOLTAGE_V,
             calibration_voltage_v: DEFAULT_CALIBRATION_VOLTAGE_V,
-            calibration_current_a: DEFAULT_CALIBRATION_CURRENT_A,
+            calibration_current_a: DEFAULT_CALIBRATION_CURRENT_A.min(DEFAULT_RATED_CURRENT_LIMIT_A),
             calibration_omega: DEFAULT_CALIBRATION_OMEGA,
             rated_current_limit_a: DEFAULT_RATED_CURRENT_LIMIT_A,
             momentary_current_limit_a: DEFAULT_MOMENTARY_CURRENT_LIMIT_A,
@@ -58,10 +60,11 @@ impl Default for FirmwareConfig {
             rotor_speed_limit_mech_rpm: DEFAULT_ROTOR_SPEED_LIMIT_MECH_RPM,
             setpoint_timeout_ms: DEFAULT_SETPOINT_TIMEOUT_MS,
             temp_max_c: DEFAULT_TEMP_MAX_C,
-            ss1t_duration_ms: DEFAULT_SS1T_DURATION_MS,
-            ss1t_velocity_threshold: DEFAULT_SS1T_VELOCITY_THRESHOLD,
             braking_current_limit_a: DEFAULT_BRAKING_CURRENT_LIMIT_A,
             braking_current_fault_a: DEFAULT_BRAKING_CURRENT_FAULT_A,
+            hfi_amplitude_v: DEFAULT_HFI_AMPLITUDE_V,
+            ortega_gamma: DEFAULT_ORTEGA_GAMMA,
+            ortega_alpha: DEFAULT_ORTEGA_ALPHA,
         }
     }
 }
@@ -86,9 +89,10 @@ impl FirmwareConfig {
         momentary_current_limit_a,
         overcurrent_limit_a,
         temp_max_c,
-        ss1t_velocity_threshold,
         braking_current_limit_a,
         braking_current_fault_a,
+        ortega_gamma,
+        ortega_alpha,
     }
 
     #[inline]
@@ -98,7 +102,13 @@ impl FirmwareConfig {
     pub fn rotor_speed_limit_mech_rpm(&self) -> u16 { self.rotor_speed_limit_mech_rpm }
 
     #[inline]
-    pub fn ss1t_duration_ms(&self) -> u16 { self.ss1t_duration_ms }
+    pub fn hfi(&self) -> HfiParams {
+        HfiParams {
+            amplitude_v: self.hfi_amplitude_v,
+            injection_frequency_hz: HFI_FREQUENCY_HZ,
+            q_pairs_per_d_pair: HFI_Q_PAIRS_PER_D_PAIR,
+        }
+    }
 
     /// Set as a pair so min/max aren't validated against each other's stale value.
     pub fn set_dc_bus_limits(&mut self, min_v: f32, max_v: f32) -> Result<(), ConfigError> {
@@ -169,19 +179,14 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_ss1t_duration_ms(&mut self, v: u16) -> Result<(), ConfigError> {
-        if v == 0 || v > SS1T_DURATION_MAX_MS {
+    pub fn set_sensorless(&mut self, hfi_amplitude_v: f32, gamma: f32, alpha: f32) -> Result<(), ConfigError> {
+        let hfi_amplitude_v = in_range(hfi_amplitude_v, HFI_AMPLITUDE_RANGE)?;
+        if gamma <= 0.0 || alpha <= 0.0 || alpha >= ORTEGA_ALPHA_MAX {
             return Err(ConfigError::OutOfRange);
         }
-        self.ss1t_duration_ms = v;
-        Ok(())
-    }
-
-    pub fn set_ss1t_velocity_threshold(&mut self, v: f32) -> Result<(), ConfigError> {
-        if v <= 0.0 || v > SS1T_VELOCITY_THRESHOLD_MAX {
-            return Err(ConfigError::OutOfRange);
-        }
-        self.ss1t_velocity_threshold = v;
+        self.hfi_amplitude_v = hfi_amplitude_v;
+        self.ortega_gamma = gamma;
+        self.ortega_alpha = alpha;
         Ok(())
     }
 

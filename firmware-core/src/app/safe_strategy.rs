@@ -14,10 +14,6 @@ pub struct SafeControlStrategyInput {
     pub back_emf_constant: Option<f32>,
     pub dc_bus_v: f32,
     pub dc_bus_max_v: f32,
-    pub max_braking_torque: f32,
-    pub deceleration_duration_ms: f32,
-    pub deceleration_cutoff_omega: Option<f32>,
-    pub deceleration_ramp_per_ms: f32,
     pub tick_dt_ms: f32,
 }
 
@@ -137,10 +133,6 @@ mod tests {
             back_emf_constant: Some(BEMF_CONSTANT),
             dc_bus_v,
             dc_bus_max_v: DC_BUS_MAX_V,
-            max_braking_torque: MAX_BRAKING_TORQUE,
-            deceleration_duration_ms: DECEL_DURATION_MS,
-            deceleration_cutoff_omega: Some(CUTOFF_OMEGA),
-            deceleration_ramp_per_ms: 0.2,
             tick_dt_ms: DT_MS,
         }
     }

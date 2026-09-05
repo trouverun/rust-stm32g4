@@ -8,7 +8,7 @@ use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
 use field_oriented::{
     AlphaBeta, AngleType, ClarkParkValue, ConstantMotorParameters, DoesFocMath, FOC,
-    FocInput, FocFault, FocResult, MotorParamEstimator, MotorParamsEstimate, PhaseValues,
+    FocInput, FocFault, FocResult, HfiParams, MotorParamEstimator, MotorParamsEstimate, PhaseValues,
     RotorFeedback, RotorFeedbackFault, FocInputType
 };
 
@@ -37,15 +37,12 @@ pub struct FocStepInputs {
     pub target_torque: Option<f32>,
     pub active_current_limit_a: f32,
     pub max_rotor_speed_mech_rpm: u16,
-
-    pub safety_deceleration_duration_ms: f32,
-    pub safety_deceleration_cutoff_omega: f32,
-    pub safety_deceleration_ramp_per_ms: f32,
     pub braking_current_limit_a: f32,
 
     pub dc_bus_min_v: f32,
     pub dc_bus_max_v: f32,
-    pub tick_dt_ms: f32
+    pub tick_dt_ms: f32,
+    pub hfi: HfiParams,
 }
 
 pub enum FocStepOutcome {
@@ -189,15 +186,9 @@ fn foc_step_inner<A, C, M>(
     let safety_foc_command = if gate.use_safety_command {
         let estimate = params.get_estimate();
         let pole_pairs = estimate.num_pole_pairs.map(|pp| pp as f32);
-        let (back_emf_constant, deceleration_cutoff_omega) = match angle_type {
-            AngleType::Electrical => (
-                estimate.pm_flux_linkage,
-                pole_pairs.map(|pp| pp * inputs.safety_deceleration_cutoff_omega),
-            ),
-            AngleType::Mechanical => (
-                estimate.pm_flux_linkage.zip(pole_pairs).map(|(pmf, pp)| pmf * pp),
-                Some(inputs.safety_deceleration_cutoff_omega),
-            ),
+        let back_emf_constant = match angle_type {
+            AngleType::Electrical => estimate.pm_flux_linkage,
+            AngleType::Mechanical => estimate.pm_flux_linkage.zip(pole_pairs).map(|(pmf, pp)| pmf * pp)
         };
 
         let safe_strategy = match mode {
@@ -213,10 +204,6 @@ fn foc_step_inner<A, C, M>(
             back_emf_constant,
             dc_bus_v: dc_bus_voltage_v,
             dc_bus_max_v: inputs.dc_bus_max_v,
-            max_braking_torque,
-            deceleration_duration_ms: inputs.safety_deceleration_duration_ms,
-            deceleration_cutoff_omega: deceleration_cutoff_omega,
-            deceleration_ramp_per_ms: inputs.safety_deceleration_ramp_per_ms,
             tick_dt_ms: inputs.tick_dt_ms,
         };
         let safe_command = safe_strategy.foc_tick(safety_input);
@@ -261,7 +248,8 @@ fn foc_step_inner<A, C, M>(
         theta,
         omega,
         phase_currents: inputs.phase_currents,
-        current_limit_a: inputs.active_current_limit_a
+        current_limit_a: inputs.active_current_limit_a,
+        hfi: inputs.hfi,
     };
 
     // Do FOC computations and process the results:
@@ -479,13 +467,11 @@ mod tests {
             target_torque: Some(0.0),
             active_current_limit_a: CURRENT_LIMIT_A,
             max_rotor_speed_mech_rpm: MAX_RPM,
-            safety_deceleration_duration_ms: 500.0,
-            safety_deceleration_cutoff_omega: 10.0,
-            safety_deceleration_ramp_per_ms: 0.2,
             braking_current_limit_a: BRAKING_LIMIT_A,
             dc_bus_min_v: 20.0,
             dc_bus_max_v: 60.0,
             tick_dt_ms: 1000.0 / PWM_FREQ_HZ,
+            hfi: HfiParams::none(),
         }
     }
 

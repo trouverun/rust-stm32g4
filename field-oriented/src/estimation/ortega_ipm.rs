@@ -28,6 +28,11 @@ impl Filt {
         Self { alpha, inv_alpha: 1.0 / alpha, y: 0.0 }
     }
 
+    fn set_alpha(&mut self, alpha: f32) {
+        self.alpha = alpha;
+        self.inv_alpha = 1.0 / alpha;
+    }
+
     #[inline(always)]
     fn update(&mut self, u: f32, dt: f32) -> FiltOut {
         let dp = self.alpha * (u - self.y);
@@ -47,13 +52,13 @@ fn dot(a: AlphaBeta, b: AlphaBeta) -> f32 {
 
 pub struct OrtegaIPMEstimatorInput {
     pub currents: PhaseValues,
+    /// Applied during the period the currents were sampled in
     pub voltages: AlphaBeta,
     pub params: MotorParamsEstimate,
     pub dt_s: f32,
 }
 
 pub struct OrtegaIPMEstimator {
-    /// Gradient gain gamma of (11)
     gamma: f32,
     inv_alpha: f32,
     pll_kp: f32,
@@ -68,10 +73,9 @@ pub struct OrtegaIPMEstimator {
     disturbance_filter: Filt,
     /// Stator flux estimate lambda_hat
     flux: AlphaBeta,
-    /// Voltages of the two preceding periods and the previous current sample: the current is
-    /// sampled mid period, so the flux change between two samples is driven by the mean of the
-    /// two periods voltages and the mean of the two currents
-    prev_voltages: [AlphaBeta; 2],
+    /// Currents are sampled mid period, so the flux change between two samples is driven by the
+    /// mean of the two periods' voltages and the mean of the two currents
+    prev_voltages: AlphaBeta,
     prev_current: AlphaBeta,
     theta_est: f32,
     theta_pll: f32,
@@ -93,7 +97,7 @@ impl OrtegaIPMEstimator {
             cross_filter: Filt::new(alpha),
             disturbance_filter: Filt::new(alpha),
             flux: AlphaBeta { alpha: 0.0, beta: 0.0 },
-            prev_voltages: [AlphaBeta { alpha: 0.0, beta: 0.0 }; 2],
+            prev_voltages: AlphaBeta { alpha: 0.0, beta: 0.0 },
             prev_current: AlphaBeta { alpha: 0.0, beta: 0.0 },
             theta_est: 0.0,
             theta_pll: 0.0,
@@ -104,6 +108,16 @@ impl OrtegaIPMEstimator {
 
     pub fn set_stator_flux(&mut self, flux: AlphaBeta) {
         self.flux = flux;
+    }
+
+    pub fn set_tuning(&mut self, gamma: f32, alpha: f32) {
+        self.gamma = gamma;
+        self.inv_alpha = 1.0 / alpha;
+        for filter in self.emf_filter.iter_mut().chain(self.current_filter.iter_mut()) {
+            filter.set_alpha(alpha);
+        }
+        self.cross_filter.set_alpha(alpha);
+        self.disturbance_filter.set_alpha(alpha);
     }
 
     pub fn update<A>(&mut self,
@@ -118,7 +132,7 @@ impl OrtegaIPMEstimator {
         );
         let (Some(R), Some(Ld), Some(Lq), Some(pm_flux_linkage)) = params else {
             self.fault = Some(RotorFeedbackFault::MissingParameter);
-            self.prev_voltages = [self.prev_voltages[1], input.voltages];
+            self.prev_voltages = input.voltages;
             self.prev_current = forward_clarke(input.currents);
             return
         };
@@ -128,8 +142,8 @@ impl OrtegaIPMEstimator {
         let i = forward_clarke(input.currents);
         // Flux derivative over the interval between the previous and this current sample:
         let flux_rate = AlphaBeta {
-            alpha: 0.5 * (self.prev_voltages[0].alpha + self.prev_voltages[1].alpha - R * (self.prev_current.alpha + i.alpha)),
-            beta: 0.5 * (self.prev_voltages[0].beta + self.prev_voltages[1].beta - R * (self.prev_current.beta + i.beta)),
+            alpha: 0.5 * (self.prev_voltages.alpha + input.voltages.alpha - R * (self.prev_current.alpha + i.alpha)),
+            beta: 0.5 * (self.prev_voltages.beta + input.voltages.beta - R * (self.prev_current.beta + i.beta)),
         };
 
         // Measurable signals of the linear regression (9)
@@ -170,7 +184,7 @@ impl OrtegaIPMEstimator {
         self.theta_pll = wrap_to_pi(self.theta_pll + dt * (self.pll_kp * angle_error + self.omega_pll));
 
         self.fault = None;
-        self.prev_voltages = [self.prev_voltages[1], input.voltages];
+        self.prev_voltages = input.voltages;
         self.prev_current = i;
     }
 }
@@ -194,7 +208,7 @@ mod test {
     use core::f32::consts::TAU;
     use super::*;
     use crate::{
-        CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, HfiConfig, Motor, MotorSim, PWM_FREQUENCY_HZ, Recorder,
+        CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, HfiParams, Motor, MotorSim, PWM_FREQUENCY_HZ, Recorder,
         TestBench, angle_error, record_interval, reference_motors,
     };
     use std::vec::Vec;
@@ -214,12 +228,13 @@ mod test {
             .with_current_noise(motor.current_noise_a, 987)
             .with_load_torque(0.5*motor.torque_at_current_limit());
         // Square wave injection above the current loop, ripple at a fifth of the current limit:
-        let hfi = HfiConfig {
+        let hfi = HfiParams {
             amplitude_v: 4.0*INJECTION_HZ*c.d_inductance*0.2*motor.current_limit_a,
             injection_frequency_hz: INJECTION_HZ,
             q_pairs_per_d_pair: 4,
         };
-        let mut bench = TestBench::with_hfi(sim, motor.current_limit_a, hfi);
+        let mut bench = TestBench::new(sim, motor.current_limit_a);
+        bench.hfi = hfi;
         bench.tune_pi(bench.params);
         bench.field_weakening = false;
 
@@ -235,6 +250,7 @@ mod test {
         let profile = [0.0, 0.0, top, top, -top, -top, 0.0, 0.0];
         let mut recorder = Recorder::new(plot_path, dt, record_interval(2_000.0, dt));
         let mut errors = Vec::new();
+        let mut prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
         let mut turned = 0.0;
         let mut t = 0.0;
         while t < (profile.len() - 1) as f32 * SEGMENT_S {
@@ -245,10 +261,11 @@ mod test {
             let step = bench.step_torque(torque);
             estimator.update(OrtegaIPMEstimatorInput {
                 currents: step.input.phase_currents,
-                voltages: step.result.u_ab,
+                voltages: prev_u_ab,
                 params,
                 dt_s: dt,
             }, &mut bench.accelerator);
+            prev_u_ab = step.result.u_ab;
             let estimate = estimator.read().unwrap();
             assert!(estimate.theta.is_finite() && estimate.omega.is_finite(), "{}: estimator diverged", motor.name);
             t += dt;

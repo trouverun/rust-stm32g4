@@ -55,7 +55,7 @@ impl FOC {
         let d_pi = PIController::new(None, sampling_time_s);
         let q_pi = PIController::new(None, sampling_time_s);
         let field_weakening = FieldWeakening::new(config.field_weakening_bandwidth_hz, sampling_time_s);
-        let hfi = Hfi::new(config.hfi, sampling_time_s);
+        let hfi = Hfi::new(sampling_time_s);
 
         let deadtime_ratio = if config.pwm_frequency_hz != 0.0 {
             let pwm_period_ns = 1e9 / config.pwm_frequency_hz;
@@ -186,7 +186,7 @@ impl FOC {
         let u_applied = match input.command {
             FocInputType::TargetTorque(_) | FocInputType::TargetCurrents(_) => {
                 let headroom = u_max - accelerator.sqrt(u_mag_sq.min(u_max_sq));
-                let injection = self.hfi.compute(headroom);
+                let injection = self.hfi.compute(input.hfi, headroom);
                 ClarkParkValue { d: u_dq.d + injection.d, q: u_dq.q + injection.q }
             }
             _ => {

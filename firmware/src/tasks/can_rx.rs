@@ -141,16 +141,18 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     Err(_) => {},
                 }
             }
-            Ok(Messages::SafeStopConfig(msg)) => {
+            Ok(Messages::SensorlessConfig(msg)) => {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
-                    candidate.set_ss1t_duration_ms(msg.ss1t_duration_ms())?;
-                    candidate.set_ss1t_velocity_threshold(msg.ss1t_velocity_thresh())?;
+                    candidate.set_sensorless(msg.hfi_amplitude(), msg.ortega_gamma(), msg.ortega_alpha())?;
                     *cfg = candidate;
-                    Ok::<(), ConfigError>(())
+                    Ok::<(f32, f32), ConfigError>((candidate.ortega_gamma(), candidate.ortega_alpha()))
                 });
                 match applied {
-                    Ok(()) => { let _ = app::persist_config::spawn(); }
+                    Ok((gamma, alpha)) => {
+                        cx.shared.sensorless_estimator.lock(|est| est.set_tuning(gamma, alpha));
+                        let _ = app::persist_config::spawn();
+                    }
                     Err(_) => {},
                 }
             }
@@ -246,11 +248,12 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         }
                     }
                 }
-                if all || matches!(block, ConfigQueryBlockId::SafeStopConfig) {
+                if all || matches!(block, ConfigQueryBlockId::SensorlessConfig) {
                     let cfg = cx.shared.config.lock(|c| *c);
-                    let f = SafeStopConfigReport::try_from(SafeStopConfigReportInit {
-                        ss1t_duration_ms: cfg.ss1t_duration_ms(),
-                        ss1t_velocity_thresh: cfg.ss1t_velocity_threshold(),
+                    let f = SensorlessConfigReport::try_from(SensorlessConfigReportInit {
+                        hfi_amplitude: cfg.hfi().amplitude_v,
+                        ortega_gamma: cfg.ortega_gamma(),
+                        ortega_alpha: cfg.ortega_alpha(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));
