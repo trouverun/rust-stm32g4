@@ -22,13 +22,13 @@ pub struct PIGains {
     pub ki: f32,
     /// Anti-windup "gain" (1 / time constant)
     pub kt: f32,
+    pub bandwidth_hz: f32
 }
 
 #[derive(Clone, Copy, defmt::Format, serde::Serialize, serde::Deserialize)]
 pub struct ControllerParameters {
     pub d_pi: PIGains,
-    pub q_pi: PIGains,
-    pub closed_loop_bandwidth_hz: Option<f32>
+    pub q_pi: PIGains
 }
 
 pub struct PIController {
@@ -84,32 +84,12 @@ impl PIController {
     }
 }
 
-// PI autotuning for a closed loop bandwidth goal using discrete-time pole-placement
-pub fn compute_current_pi_controller_gains(
-    params: MotorParamsEstimate, pwm_freq_hz: f32, bandwidth_hz: f32
-) -> Result<ControllerParameters, PITuningFault> {
-    let R = params.stator_resistance.ok_or(PITuningFault::MissingMotorParameters)?;
-    let L = params.q_inductance.ok_or(PITuningFault::MissingMotorParameters)?;
-    let T = 1.0 / pwm_freq_hz;
-
-    if R <= 0.0 || L <= 0.0 || T <= 0.0 {
-        return Err(PITuningFault::InfeasibleMotorParameters)
-    }
-    if !(bandwidth_hz > 0.0) {
-        return Err(PITuningFault::InvalidTuningGoals)
-    }
-
-    // The phase currents are sampled at the midpoint of a PWM period, 
-    // and control voltages are applied at the start of the next PWM period
-    // = input delay of half a PWM period
-    let m = 0.5; // Delay as a factor of sampling time, standard modified Z transform convention
-
+fn tune(R: f32, L: f32, T: f32, m: f32, bandwidth_hz: f32) -> Result<PIGains, PITuningFault> {   
     // Fixed damping ratio: makes the -3 dB bandwidth equal omega_n exactly (~4% ideal overshoot)
     let zeta = 0.70710678;
     // Goal slower than the plant pole R/L would demand negative kp
     let omega_n = (TAU*bandwidth_hz).max(R/L);
-    let closed_loop_bandwidth_hz = omega_n * sqrtf( 1.0 - 2.0*zeta*zeta + sqrtf(4.0*zeta*zeta*zeta*zeta - 4.0*zeta*zeta + 2.0) ) / TAU;
-
+    let closed_loop_bandwidth_hz = omega_n * sqrtf( 1.0 - 2.0*zeta*zeta + sqrtf(4.0*zeta*zeta*zeta*zeta - 4.0*zeta*zeta + 2.0) ) / TAU; 
     // Polar form of the complex pole pair which creates the desired 2nd order system:
     // - placed complex pole pair magnitude:
     let r = expf(-zeta * omega_n * T); 
@@ -119,8 +99,7 @@ pub fn compute_current_pi_controller_gains(
     if !(theta > 0.0 && theta < PI) || !(r < 1.0) {
         return Err(PITuningFault::Unstable)
     }
-    let placed_pole = Complex32::new(r*cosf(theta), r*sinf(theta));
-
+    let placed_pole = Complex32::new(r*cosf(theta), r*sinf(theta)); 
     // P(s) = 1 / (L*s + R)
     // P_zoh(s) = (1-exp(-T*s))/s * P(s)
     //          = (1-exp(-T*s)) * (P(s)/s)
@@ -139,8 +118,7 @@ pub fn compute_current_pi_controller_gains(
     // -> kp = re{(Cz)} - re{T*ki*z/(z - 1)} (kp has to produce the residual of the real part)
     let integrator_at_placed_pole = T*placed_pole / (placed_pole-1.0);
     let ki = Cz_at_placed_pole.im / integrator_at_placed_pole.im;
-    let kp = Cz_at_placed_pole.re - ki*integrator_at_placed_pole.re;
-
+    let kp = Cz_at_placed_pole.re - ki*integrator_at_placed_pole.re;    
     if !(kp > 0.0) {
         return Err(PITuningFault::InvalidTuningGoals)
     }
@@ -149,27 +127,55 @@ pub fn compute_current_pi_controller_gains(
     // Needs to be much faster (3x) than the placed poles, so it does not affect response:
     if !(p < r*r*r) { // r is constrained < 1 above, so this is also a stability check
         return Err(PITuningFault::InvalidTuningGoals)
+    }   
+    let z0 = kp/(kp+T*ki); // Controller zero cancellation setpoint filter  
+
+    Ok(PIGains { kr: z0, kp, ki, kt: 1.0/kp, bandwidth_hz: closed_loop_bandwidth_hz })
+}
+
+// PI autotuning for a closed loop bandwidth goal using discrete-time pole-placement
+pub fn compute_current_pi_controller_gains(
+    params: MotorParamsEstimate, pwm_freq_hz: f32, bandwidth_hz: f32
+) -> Result<ControllerParameters, PITuningFault> {
+    let R = params.stator_resistance.ok_or(PITuningFault::MissingMotorParameters)?;
+    let Ld = params.d_inductance.ok_or(PITuningFault::MissingMotorParameters)?;
+    let Lq = params.q_inductance.ok_or(PITuningFault::MissingMotorParameters)?;
+    let T = 1.0 / pwm_freq_hz;
+
+    if R <= 0.0 || Ld <= 0.0 || Lq <= 0.0 || T <= 0.0 {
+        return Err(PITuningFault::InfeasibleMotorParameters)
+    }
+    if !(bandwidth_hz > 0.0) {
+        return Err(PITuningFault::InvalidTuningGoals)
     }
 
-    let z0 = kp/(kp+T*ki); // Controller zero cancellation setpoint filter
+    // The phase currents are sampled at the midpoint of a PWM period, 
+    // and control voltages are applied at the start of the next PWM period
+    // = input delay of half a PWM period
+    let m = 0.5; // Delay as a factor of sampling time, standard modified Z transform convention 
+
     let gains = ControllerParameters {
-        d_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp },
-        q_pi: PIGains { kr: z0, kp, ki, kt: 1.0/kp },
-        closed_loop_bandwidth_hz: Some(closed_loop_bandwidth_hz)
+        d_pi: tune(R, Ld, T, m, bandwidth_hz)?,
+        q_pi: tune(R, Lq, T, m, bandwidth_hz)?,
     };
 
     // 20c to 120c temperature change causes roughly 40% resistive gain in copper
     // (assume additional 10% in estimation error)
     // (assume system identification happens with windings at ambient temperature)
-    let R_perturb = [0.9, 1.0, 1.25, 1.5];
+    let R_perturb = (0.9, 1.5);
     // Assume 25% inductance drop due to saturation at max current
     // (assume additional 10% in estimation error)
     // (assume system identification routine which does not saturate)
-    let L_perturb = [0.65, 0.825, 1.0, 1.1];
+    let L_perturb = (0.65, 1.1);
 
-    if perturbed_stability_check(
-        R, L, T, m, &gains.q_pi, &R_perturb, &L_perturb
-    ) {
+    let d_stable = perturbed_stability_check(
+        R, Ld, T, m, &gains.d_pi, R_perturb, L_perturb
+    );
+    let q_stable = perturbed_stability_check(
+        R, Lq, T, m, &gains.q_pi, R_perturb, L_perturb
+    );
+
+    if d_stable && q_stable {
         Ok(gains)
     } else {
         Err(PITuningFault::NotRobust)
@@ -186,27 +192,32 @@ fn jury_test(a0: f32, a1: f32, a2: f32, a3: f32) -> bool {
     && (a0 * a0 - a3 * a3).abs() > (a0 * a2 - a3 * a1).abs()
 }
 
-/// Robust stability check using a grid search over parameter variations,
-/// checking the Jury stability criterion for each of combination
+/// Grid points per perturbed parameter (R and L): the check covers the square of their product
+const STABILITY_CHECK_POINTS_PER_AXIS: usize = 10;
+
+/// Robust stability check over a grid of parameter variations, linearly interpolated
+/// between the (min, max) scaler bounds, checking the Jury stability criterion at each combination
 fn perturbed_stability_check(
-    R: f32, L: f32, T: f32, m: f32, gains: &PIGains, R_perturb: &[f32], L_perturb: &[f32]
+    R: f32, L: f32, T: f32, m: f32, gains: &PIGains, R_perturb: (f32, f32), L_perturb: (f32, f32)
 ) -> bool {
-    // Iterate over a grid of parameter perturbations and check the Jury stability test passes
-    for R_scaler in R_perturb {
-        for L_scaler in L_perturb {
-            let Rp = R_scaler * R;
-            let Lp = L_scaler * L;
+    let interpolate = |(lo, hi): (f32, f32), i: usize| {
+        lo + (hi - lo) * i as f32 / (STABILITY_CHECK_POINTS_PER_AXIS - 1) as f32
+    };
+
+    for i in 0..STABILITY_CHECK_POINTS_PER_AXIS {
+        let Rp = interpolate(R_perturb, i) * R;
+        for j in 0..STABILITY_CHECK_POINTS_PER_AXIS {
+            let Lp = interpolate(L_perturb, j) * L;
 
             let C1 = expf(-(Rp/Lp)*m*T);
             let C2 = expf(-(Rp/Lp)*T);
-            // Charasteristic polynomial numerator polynomial coefficients:
+            // Characteristic polynomial coefficients of 1 + P(z)C(z) = 0:
             let a3 = Rp;
             let a2 = gains.kp - Rp - C1*gains.kp + T*gains.ki - C2*Rp - C1*T*gains.ki;
             let a1 = 2.0*C1*gains.kp - gains.kp - C2*gains.kp + C2*Rp + C1*T*gains.ki - C2*T*gains.ki;
             let a0 = C2*gains.kp - C1*gains.kp;
 
-            let stable = jury_test(a0, a1, a2, a3);
-            if !stable {
+            if !jury_test(a0, a1, a2, a3) {
                 return false
             }
         }
@@ -246,7 +257,7 @@ mod tests {
     /// rotor held, as one continuous stepped-sine run
     fn run_sine_sweep(motor: &Motor, gains: ControllerParameters, omegas: &[f32], plot_path: &str) -> SineSweep {
         let dt = 1.0/PWM_FREQUENCY_HZ;
-        let sim = PMSMSim::new(dt, motor.config)
+        let sim = MotorSim::new(dt, motor.config)
             .with_current_noise(motor.current_noise_a, 123)
             .with_load_torque(2.0*motor.torque_at_current_limit());
         let mut bench = TestBench::new(sim, motor.current_limit_a);
@@ -294,7 +305,7 @@ mod tests {
             let gains = compute_current_pi_controller_gains(motor.params(), PWM_FREQUENCY_HZ, CURRENT_LOOP_BANDWIDTH_HZ)
                 .unwrap_or_else(|fault| panic!("{} failed to tune: {:?}", motor.name, fault));
             // The plant cutoff clamp can legitimately raise the achieved bandwidth above the goal:
-            let bandwidth_rad_s = TAU*gains.closed_loop_bandwidth_hz.unwrap();
+            let bandwidth_rad_s = TAU*gains.q_pi.bandwidth_hz;
 
             let omegas: Vec<f32> = (0..SWEEP_POINTS)
                 .map(|i| bandwidth_rad_s * powf(10.0, -1.0 + 1.5*i as f32/(SWEEP_POINTS - 1) as f32))
@@ -340,13 +351,13 @@ mod tests {
             let target = 10.0*u_max/motor.config.stator_resistance;
             // Load the motor cannot overcome even at the unreachable target:
             let load = 2.0*motor.params().torque_constant().unwrap()*target;
-            let sim = PMSMSim::new(dt, motor.config).with_load_torque(load);
+            let sim = MotorSim::new(dt, motor.config).with_load_torque(load);
             let mut bench = TestBench::new(sim, 2.0*target);
             bench.field_weakening = false;
             bench.tune_pi(bench.params);
 
             let mut t = 0.0;
-            while t < 10.0*motor.config.inductance/motor.config.stator_resistance {
+            while t < 10.0*motor.config.q_inductance/motor.config.stator_resistance {
                 bench.step_measured(FocInputType::TargetCurrents(ClarkParkValue { d: 0.0, q: target }));
                 t += dt;
             }

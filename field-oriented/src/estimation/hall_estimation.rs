@@ -200,7 +200,7 @@ mod test {
     use super::HallEstimator;
     use crate::{
         AngleType, ClarkParkValue, EstimatorRecord, FocInputType, HallCalibrator, HallEncoder,
-        MOONS_R57BLB50L2, PMSMSim, PWM_FREQUENCY_HZ, Recorder, SimulatedHallTimer, TestBench,
+        MOONS_R57BLB50L2, MotorSim, PWM_FREQUENCY_HZ, Recorder, SimulatedHallTimer, TestBench,
         angle_error, ideal_hall_table, record_interval,
     };
 
@@ -251,8 +251,8 @@ mod test {
             estimate = estimator.get_estimate(timer.sample(pattern_at(theta_e))).unwrap();
             t += dt;
         }
-        assert!(angle_error(estimate.theta, theta_e).abs() < 0.1, "tracking while moving");
-        assert!((estimate.omega - omega_e).abs() / omega_e < 0.05, "omega while moving: {}", estimate.omega);
+        assert!(angle_error(estimate.theta, theta_e).abs() < 0.01, "tracking while moving");
+        assert!((estimate.omega - omega_e).abs() / omega_e < 0.01, "omega while moving: {}", estimate.omega);
 
         // Freeze the rotor mid-sector and keep sampling:
         let frozen_theta = theta_e;

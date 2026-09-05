@@ -4,8 +4,8 @@ use std::string::String;
 use plotly::{Plot, Scatter, Layout};
 use plotly::common::{DashType, Fill, Line, LineShape, Mode};
 use plotly::layout::Axis;
-use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, compute_current_pi_controller_gains};
-use crate::sim::{HallEncoder, PMSMConfig, PMSMSim, SimOutput};
+use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiConfig, compute_current_pi_controller_gains};
+use crate::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
 use crate::types::*;
 use crate::estimation::{MotorParams, MotorParamsEstimate};
 
@@ -18,18 +18,14 @@ pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 200.0;
 pub const PWM_FREQUENCY_HZ: f32 = 40_000.0;
 /// Current loop bandwidth goal of the bench FOC config
 pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
-/// Observer gain of the bench ortega estimator
-pub const OBSERVER_GAIN: f32 = 1500.0;
-/// PLL bandwidth of the bench ortega estimator
-pub const PLL_BANDWIDTH_HZ: f32 = 500.0;
 
 /// Nominal parameter estimate matching a sim config exactly
-pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {
+pub fn nominal_params(config: MotorConfig) -> MotorParamsEstimate {
     MotorParamsEstimate::from_nominal(MotorParams {
         num_pole_pairs: config.num_pole_pairs as u8,
         stator_resistance: config.stator_resistance,
-        d_inductance: config.inductance,
-        q_inductance: config.inductance,
+        d_inductance: config.d_inductance,
+        q_inductance: config.q_inductance,
         pm_flux_linkage: config.pm_flux_linkage,
     })
 }
@@ -38,7 +34,7 @@ pub fn nominal_params(config: PMSMConfig) -> MotorParamsEstimate {
 #[derive(Clone, Copy)]
 pub struct Motor {
     pub name: &'static str,
-    pub config: PMSMConfig,
+    pub config: MotorConfig,
     pub current_limit_a: f32,
     pub current_noise_a: f32,
     /// Drive levels and spin target for the offline estimation routine
@@ -67,67 +63,17 @@ impl Motor {
     }
 }
 
-// Moons' R57BLB50L2, 4 pole 57 mm servo
-pub const MOONS_R57BLB50L2: PMSMConfig = PMSMConfig {
+pub const MOONS_R57BLB50L2: MotorConfig = MotorConfig {
     dc_bus_voltage: 24.0,
     num_pole_pairs: 2.0,
     stator_resistance: 0.66,
-    inductance: 1.84e-3,
+    d_inductance: 0.733e-3,
+    q_inductance: 0.996e-3,
     pm_flux_linkage: 16.7e-3,
     rotor_inertia: 6.7e-6,
 };
 
-// Faulhaber 3268 G 024 BX4, 4 pole inrunner
-pub const FAULHABER_3268G024BX4: PMSMConfig = PMSMConfig {
-    dc_bus_voltage: 24.0,
-    num_pole_pairs: 2.0,
-    stator_resistance: 0.735,
-    inductance: 55.0e-6,
-    pm_flux_linkage: 12.5e-3,
-    rotor_inertia: 6.3e-6,
-};
-
-// Nanotec DB59S024035-A, 6 pole NEMA 23 servo
-pub const NANOTEC_DB59S024035A: PMSMConfig = PMSMConfig {
-    dc_bus_voltage: 24.0,
-    num_pole_pairs: 3.0,
-    stator_resistance: 0.285,
-    inductance: 315.0e-6,
-    pm_flux_linkage: 10.0e-3,
-    rotor_inertia: 7.5e-6,
-};
-
-// TQ RoboDrive ILM 25x08, frameless robot joint
-pub const TQ_ILM25X08: PMSMConfig = PMSMConfig {
-    dc_bus_voltage: 24.0,
-    num_pole_pairs: 7.0,
-    stator_resistance: 0.37,
-    inductance: 165.0e-6,
-    pm_flux_linkage: 1.4e-3,
-    rotor_inertia: 2.3e-7,
-};
-
-// TQ RoboDrive ILM 70x18, frameless robot joint
-pub const TQ_ILM70X18: PMSMConfig = PMSMConfig {
-    dc_bus_voltage: 48.0,
-    num_pole_pairs: 10.0,
-    stator_resistance: 0.33,
-    inductance: 730.0e-6,
-    pm_flux_linkage: 12.5e-3,
-    rotor_inertia: 3.21e-5,
-};
-
-// TQ RoboDrive ILM 115x25, frameless robot joint
-pub const TQ_ILM115X25: PMSMConfig = PMSMConfig {
-    dc_bus_voltage: 48.0,
-    num_pole_pairs: 15.0,
-    stator_resistance: 0.07,
-    inductance: 300.0e-6,
-    pm_flux_linkage: 12.5e-3,
-    rotor_inertia: 3.93e-4,
-};
-
-pub fn reference_motors() -> [Motor; 6] {
+pub fn reference_motors() -> [Motor; 1] {
     [
         Motor {
             name: "moons_r57blb50l2",
@@ -137,52 +83,7 @@ pub fn reference_motors() -> [Motor; 6] {
             calibration_current_a: 1.5,
             calibration_voltage_v: 12.0,
             calibration_omega: 100.0,
-        },
-        Motor {
-            name: "faulhaber_3268bx4",
-            config: FAULHABER_3268G024BX4,
-            current_limit_a: 2.0,
-            current_noise_a: 0.015,
-            calibration_current_a: 1.2,
-            calibration_voltage_v: 6.0,
-            calibration_omega: 120.0,
-        },
-        Motor {
-            name: "nanotec_db59s",
-            config: NANOTEC_DB59S024035A,
-            current_limit_a: 5.0,
-            current_noise_a: 0.04,
-            calibration_current_a: 2.5,
-            calibration_voltage_v: 2.3,
-            calibration_omega: 100.0,
-        },
-        Motor {
-            name: "ilm25x08",
-            config: TQ_ILM25X08,
-            current_limit_a: 4.3,
-            current_noise_a: 0.03,
-            calibration_current_a: 2.0,
-            calibration_voltage_v: 3.0,
-            calibration_omega: 300.0,
-        },
-        Motor {
-            name: "ilm70x18",
-            config: TQ_ILM70X18,
-            current_limit_a: 6.7,
-            current_noise_a: 0.05,
-            calibration_current_a: 3.0,
-            calibration_voltage_v: 2.6,
-            calibration_omega: 50.0,
-        },
-        Motor {
-            name: "ilm115x25",
-            config: TQ_ILM115X25,
-            current_limit_a: 14.0,
-            current_noise_a: 0.1,
-            calibration_current_a: 3.0,
-            calibration_voltage_v: 0.6,
-            calibration_omega: 35.0,
-        },
+        }
     ]
 }
 
@@ -266,7 +167,7 @@ impl DoesFocMath for DummyAccelerator {
 
 /// Closed loop rig pairing a sim with a FOC wired to the standard test config
 pub struct TestBench {
-    pub sim: PMSMSim,
+    pub sim: MotorSim,
     pub foc: FOC,
     pub accelerator: DummyAccelerator,
     /// Motor params handed to the FOC each step, nominal for the sim config by default
@@ -288,7 +189,11 @@ pub struct BenchStep {
 }
 
 impl TestBench {
-    pub fn new(sim: PMSMSim, current_limit_a: f32) -> Self {
+    pub fn new(sim: MotorSim, current_limit_a: f32) -> Self {
+        Self::with_hfi(sim, current_limit_a, HfiConfig { amplitude_v: 0.0, injection_frequency_hz: 0.0, q_pairs_per_d_pair: 0 })
+    }
+
+    pub fn with_hfi(sim: MotorSim, current_limit_a: f32, hfi: HfiConfig) -> Self {
         let config = sim.config();
         let dt = sim.dt();
         let foc = FOC::new(FocConfig {
@@ -299,6 +204,7 @@ impl TestBench {
             deadtime_compensation_band_a: 1.0,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
             field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,
+            hfi,
         });
         let out = sim.state();
         Self {

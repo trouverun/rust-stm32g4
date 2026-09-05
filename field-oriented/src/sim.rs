@@ -86,7 +86,7 @@ impl HallEncoder {
 }
 
 #[derive(Clone, Copy)]
-struct PMSMState {
+struct MotorState {
     /// Direct axis current
     i_d: f32,
     /// Quadrature axis current
@@ -98,13 +98,20 @@ struct PMSMState {
 }
 
 #[derive(Clone, Copy)]
-pub struct PMSMConfig {
+pub struct MotorConfig {
     pub dc_bus_voltage: f32,
     pub num_pole_pairs: f32,
     pub stator_resistance: f32,
-    pub inductance: f32,
+    pub d_inductance: f32,
+    pub q_inductance: f32,
     pub pm_flux_linkage: f32,
     pub rotor_inertia: f32,
+}
+
+impl MotorConfig {
+    pub fn torque(&self, i_d: f32, i_q: f32) -> f32 {
+        1.5 * self.num_pole_pairs * (self.pm_flux_linkage + (self.d_inductance - self.q_inductance) * i_d) * i_q
+    }
 }
 
 /// Gaussian measurement noise
@@ -130,12 +137,12 @@ struct FeedbackNoise {
     rng: StdRng,
 }
 
-pub struct PMSMSim {
+pub struct MotorSim {
     /// Simulation timestep in seconds, represents one PWM period: duties take effect at the
     /// step start (the update event) and sensors sample mid-step (the carrier peak)
     dt: f32,
-    state: PMSMState,
-    config: PMSMConfig,
+    state: MotorState,
+    config: MotorConfig,
     pub hall_encoder: Option<HallEncoder>,
     /// Load torque in Nm, opposes rotation and holds the rotor when the machine cannot overcome it
     pub load_torque: f32,
@@ -143,19 +150,19 @@ pub struct PMSMSim {
     feedback_noise: Option<FeedbackNoise>,
 }
 
-impl PMSMSim {
+impl MotorSim {
     pub fn dt(&self) -> f32 {
         self.dt
     }
 
-    pub fn config(&self) -> PMSMConfig {
+    pub fn config(&self) -> MotorConfig {
         self.config
     }
 
-    pub fn new(dt: f32, config: PMSMConfig) -> Self {
+    pub fn new(dt: f32, config: MotorConfig) -> Self {
         Self {
             dt,
-            state: PMSMState { i_d: 0.0, i_q: 0.0, omega: 0.0, theta: 0.0 },
+            state: MotorState { i_d: 0.0, i_q: 0.0, omega: 0.0, theta: 0.0 },
             config,
             hall_encoder: None,
             load_torque: 0.0,
@@ -212,7 +219,7 @@ impl PMSMSim {
     fn substep(&mut self, duties: crate::PhaseValues) -> f32 {
         let cfg = &self.config;
         let h = 0.5 * self.dt;
-        let PMSMState { i_d, i_q, omega, theta } = self.state;
+        let MotorState { i_d, i_q, omega, theta } = self.state;
 
         // Electrical angles:
         let omega_e = cfg.num_pole_pairs * omega;
@@ -226,15 +233,15 @@ impl PMSMSim {
         };
         let v = crate::math::forward_clark_park(voltages, sc);
 
-        // Euler integration of dq current dynamics:
-        //   di_d/dt = v_d/L - R*i_d/L + omega_e*i_q
-        //   di_q/dt = v_q/L - R*i_q/L - omega_e*i_d - omega_e*pm_flux_linkage/L
-        let di_d = (v.d - cfg.stator_resistance * i_d + cfg.inductance * omega_e * i_q) / cfg.inductance;
-        let di_q = (v.q - cfg.stator_resistance * i_q - cfg.inductance * omega_e * i_d - omega_e * cfg.pm_flux_linkage) / cfg.inductance;
+        // Euler integration of the salient machine dq current dynamics:
+        //   Ld*di_d/dt = v_d - R*i_d + omega_e*Lq*i_q
+        //   Lq*di_q/dt = v_q - R*i_q - omega_e*(Ld*i_d + pm_flux_linkage)
+        let di_d = (v.d - cfg.stator_resistance * i_d + cfg.q_inductance * omega_e * i_q) / cfg.d_inductance;
+        let di_q = (v.q - cfg.stator_resistance * i_q - omega_e * (cfg.d_inductance * i_d + cfg.pm_flux_linkage)) / cfg.q_inductance;
         let i_d = i_d + h * di_d;
         let i_q = i_q + h * di_q;
 
-        let torque = 1.5 * cfg.num_pole_pairs * cfg.pm_flux_linkage * i_q;
+        let torque = cfg.torque(i_d, i_q);
         let theta = (theta + h * omega).rem_euclid(TAU);
         let load = if omega != 0.0 {
             self.load_torque * omega.signum()
@@ -245,13 +252,13 @@ impl PMSMSim {
         // A load which cannot be overcome holds the rotor rather than reversing it:
         let omega = if self.load_torque > 0.0 && omega * next_omega < 0.0 { 0.0 } else { next_omega };
 
-        self.state = PMSMState { i_d, i_q, omega, theta };
+        self.state = MotorState { i_d, i_q, omega, theta };
         torque
     }
 
     fn snapshot(&self, torque: f32) -> SimSnapshot {
         let cfg = &self.config;
-        let PMSMState { i_d, i_q, omega, theta } = self.state;
+        let MotorState { i_d, i_q, omega, theta } = self.state;
         let theta_e = cfg.num_pole_pairs * theta;
         let sc = crate::SinCosResult { sin: sinf32(theta_e), cos: cosf32(theta_e) };
         let i_dq = ClarkParkValue { d: i_d, q: i_q };

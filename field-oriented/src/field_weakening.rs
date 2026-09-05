@@ -127,10 +127,10 @@ impl FieldWeakening {
 mod test {
     use super::*;
     use crate::{
-        FIELD_WEAKENING_BANDWIDTH_HZ, Motor, OVERMODULATION_THRESHOLD_RATIO, PMSMSim, PWM_FREQUENCY_HZ,
+        FIELD_WEAKENING_BANDWIDTH_HZ, Motor, OVERMODULATION_THRESHOLD_RATIO, MotorSim, PWM_FREQUENCY_HZ,
         Recorder, TestBench, Windowed, record_interval, reference_motors
     };
-    use crate::sim::PMSMConfig;
+    use crate::sim::MotorConfig;
     use std::vec::Vec;
 
     const SETTLING_S: f32 = 3.0/(TAU*FIELD_WEAKENING_BANDWIDTH_HZ);
@@ -179,9 +179,9 @@ mod test {
 
     /// Run full torque demand with weakening disabled until speed and currents settle,
     /// recording a torque as a function of speed curve
-    fn no_weakening_baseline(motor: &Motor, config: PMSMConfig) -> (Vec<(f32, f32)>, Recorder) {
+    fn no_weakening_baseline(motor: &Motor, config: MotorConfig) -> (Vec<(f32, f32)>, Recorder) {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
-        let mut bench = TestBench::new(PMSMSim::new(dt, config), motor.current_limit_a);
+        let mut bench = TestBench::new(MotorSim::new(dt, config), motor.current_limit_a);
         bench.tune_pi(bench.params);
         bench.field_weakening = false;
 
@@ -214,7 +214,7 @@ mod test {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
         let mut sim_cfg = motor.config;
         sim_cfg.rotor_inertia += load.inertia;
-        let mut sim = PMSMSim::new(dt, sim_cfg)
+        let mut sim = MotorSim::new(dt, sim_cfg)
             .with_current_noise(motor.current_noise_a, 333)
             .with_load_torque(load.torque_nm);
         if feedback_noise {
@@ -256,7 +256,7 @@ mod test {
         config.rotor_inertia = (command - load_torque) * ramp_s / motor.base_omega();
 
         let (i_d_bound, flux_ratio) = FieldWeakening::lower_bound_ratio(
-            config.inductance, config.pm_flux_linkage, motor.current_limit_a
+            config.d_inductance, config.pm_flux_linkage, motor.current_limit_a
         );
         let cannot_weaken = flux_ratio >= MAX_USEFUL_WEAKENING_RATIO;
         // Sweep target, kept under the ideal weakened ceiling base_omega/flux_ratio:
@@ -269,7 +269,7 @@ mod test {
         let baseline_max_omega = baseline.last().unwrap().0;
 
         let mut bench = TestBench::new(
-            PMSMSim::new(dt, config).with_load_torque(load_torque),
+            MotorSim::new(dt, config).with_load_torque(load_torque),
             motor.current_limit_a,
         );
         bench.tune_pi(bench.params);
@@ -333,7 +333,7 @@ mod test {
             config.rotor_inertia = config.rotor_inertia.max(command * ramp_s / motor.base_omega());
 
             let (baseline, baseline_recorder) = no_weakening_baseline(&motor, config);
-            let mut bench = TestBench::new(PMSMSim::new(dt, config), motor.current_limit_a);
+            let mut bench = TestBench::new(MotorSim::new(dt, config), motor.current_limit_a);
             bench.tune_pi(bench.params);
             let mut comparison = RunComparison {
                 path: std::format!("field_weakening_extends_the_speed_range_{}.html", motor.name),
@@ -342,7 +342,7 @@ mod test {
             };
 
             let (i_d_bound, flux_ratio) = FieldWeakening::lower_bound_ratio(
-                config.inductance, config.pm_flux_linkage, motor.current_limit_a
+                config.d_inductance, config.pm_flux_linkage, motor.current_limit_a
             );
             let cannot_weaken = flux_ratio >= MAX_USEFUL_WEAKENING_RATIO;
             let mut signals = Windowed::new(TORQUE_WINDOW_S, dt);
@@ -437,7 +437,7 @@ mod test {
             // This test is only valid if the rotor never broke away:
             assert!(run.final_omega.abs() < 1e-3, "{}: rotor was not stalled, {:.1} rad/s", motor.name, run.final_omega);
             let (i_d_bound, _) = FieldWeakening::lower_bound_ratio(
-                motor.config.inductance, motor.config.pm_flux_linkage, motor.current_limit_a
+                motor.config.d_inductance, motor.config.pm_flux_linkage, motor.current_limit_a
             );
             assert!(run.worst_i_d > 0.05 * i_d_bound,
                 "{}: weakening current spent on a stalled rotor, i_d target {:.3}",

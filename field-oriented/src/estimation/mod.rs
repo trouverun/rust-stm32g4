@@ -3,7 +3,7 @@ mod hall_estimation;
 mod motor_estimation;
 mod arbitration;
 pub(crate) mod utils;
-mod ortega_nonlinear;
+mod ortega_ipm;
 
 pub use hall_calibration::{HallCalibrator, HallCalibrationFault};
 pub use hall_estimation::{HallEstimator, HallEstimatorInput, HallEstimatorOutput};
@@ -12,7 +12,7 @@ pub use motor_estimation::{
     OfflineEstimatorConfig, OfflineEstimatorInput, EstimationStepFault
 };
 pub use arbitration::FeedbackArbitrator;
-pub use ortega_nonlinear::{OrtegaPralyEstimator, OrtegaPralyEstimatorInput};
+pub use ortega_ipm::{OrtegaIPMEstimator, OrtegaIPMEstimatorInput};
 use crate::types::{FocResult};
 
 #[derive(Clone, Copy)]
