@@ -6,6 +6,8 @@ extern crate std;
 mod sim;
 #[cfg(test)]
 mod test_utils;
+#[cfg(test)]
+mod test_plotting;
 
 mod foc;
 mod types;
