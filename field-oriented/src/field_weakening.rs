@@ -1,7 +1,6 @@
 // Bedetti, N., Calligaro, S., & Petrella, R. (2019). 
 // Analytical design and autotuning of adaptive flux-weakening voltage regulation loop in IPMSM drives with accurate torque regulation. 
 // IEEE Transactions on Industry Applications, 56(1), 301-313.
-// (applied for SPM case of Ld == Lq)
 
 use core::f32::consts::TAU;
 use libm::{expf, logf};

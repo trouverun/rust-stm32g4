@@ -28,5 +28,5 @@ pub use crate::estimation::{
     OrtegaIPMEstimator, OrtegaIPMEstimatorInput
 };
 pub use crate::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
-pub use crate::hfi::{Hfi, HfiConfig};
+pub use crate::hfi::{Hfi, HfiParams};
 pub use crate::foc::*;

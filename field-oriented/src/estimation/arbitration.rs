@@ -52,11 +52,6 @@ impl FeedbackArbitrator {
 
 impl HasRotorFeedback for FeedbackArbitrator {
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
-        /*if let Some(encoder_feedback) = self.encoder_feedback {
-            if encoder_feedback.is_ok() {
-                return encoder_feedback
-            }
-        }*/
         if let Some(hall_feedback) = self.hall_feedback {
             if let Ok(values) = hall_feedback {
                 if values.omega.abs() > self.min_sensorless_omega {

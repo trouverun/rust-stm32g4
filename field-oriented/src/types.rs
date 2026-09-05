@@ -1,3 +1,5 @@
+use crate::hfi::HfiParams;
+
 #[derive(Clone, Copy)]
 pub enum AngleType {
     Mechanical,
@@ -76,8 +78,6 @@ pub struct FocConfig {
     pub deadtime_compensation_band_a: f32,
     /// The ratio of the maximum linear modulation voltage which can be reached before field weakening starts 
     pub overmodulation_threshold_ratio: f32,
-    /// High frequency injection for saliency based position estimation, amplitude 0 for none
-    pub hfi: crate::HfiConfig,
     /// Design bandwidth of the field weakening controller
     pub field_weakening_bandwidth_hz: f32
 }
@@ -104,6 +104,7 @@ pub struct FocInput {
     pub omega: f32,
     pub phase_currents: PhaseValues,
     pub current_limit_a: f32,
+    pub hfi: HfiParams,
 }
 
 #[derive(Clone, Copy, defmt::Format, Debug)]

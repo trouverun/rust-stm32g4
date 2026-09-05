@@ -4,7 +4,7 @@ use crate::boards::BOARD;
 // Main:
 
 /// The frequency of the PWM carrier and the frequency at which the FOC ISR fires at
-pub const PWM_FREQUENCY_HZ: Hertz = Hertz(40_000);
+pub const PWM_FREQUENCY_HZ: Hertz = Hertz(20_000);
 /// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
 pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
 /// Timeout of the hardware watchdog
@@ -21,12 +21,12 @@ pub const BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ: f32 = 100.0;
 /// Multiplier which multiplies the PWM rate to give the minimum rate at which the FOC ISR must run at
 pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.9;
 
-/// The electrical angular rotor velocity required before sensorless feedback is considered valid (enough back-EMF) 
-pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 100.0;
-/// Gain of the ortega praly sensorless estimator
-pub const ORTEGA_PRALY_GAIN: f32 = 1500.0;
-/// Bandwidth of the PLL omega estimator for the ortega praly sensorless estimator
-pub const ORTEGA_PRALY_BANDWIDTH_HZ: f32 = 500.0;
+/// The electrical angular rotor velocity required before sensorless feedback is prioritized over alternatives
+pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 10.0;
+/// Bandwidth of the PLL omega estimator for the ortega sensorless estimator
+pub const ORTEGA_PLL_BANDWIDTH_HZ: f32 = 500.0;
+pub const HFI_FREQUENCY_HZ: f32 = 2000.0;
+pub const HFI_Q_PAIRS_PER_D_PAIR: u16 = 10;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
@@ -52,10 +52,11 @@ pub const DEFAULT_MOMENTARY_CURRENT_LIMIT_A: f32 = 0.5;
 pub const DEFAULT_ROTOR_SPEED_LIMIT_MECH_RPM: u16 = 1000;
 pub const DEFAULT_SETPOINT_TIMEOUT_MS: u16 = 50;
 pub const DEFAULT_TEMP_MAX_C: f32 = 80.0;
-pub const DEFAULT_SS1T_DURATION_MS: u16 = 500;
-pub const DEFAULT_SS1T_VELOCITY_THRESHOLD: f32 = 1.0;
 pub const DEFAULT_BRAKING_CURRENT_LIMIT_A: f32 = 0.0;
 pub const DEFAULT_BRAKING_CURRENT_FAULT_A: f32 = 0.1;
+pub const DEFAULT_HFI_AMPLITUDE_V: f32 = 0.0;
+pub const DEFAULT_ORTEGA_GAMMA: f32 = 10.0;
+pub const DEFAULT_ORTEGA_ALPHA: f32 = 20.0;
 
 pub const DC_BUS_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
 pub const CALIBRATION_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
@@ -63,8 +64,8 @@ pub const CALIBRATION_OMEGA_RANGE: (f32, f32) = (0.0, 1000.0);
 pub const CURRENT_LIMIT_RANGE: (f32, f32) = (0.0, BOARD.current_limit_a);
 pub const TEMP_MAX_RANGE: (f32, f32) = (-40.0, 150.0);
 pub const SETPOINT_TIMEOUT_MAX_MS: u16 = 60_000;
-pub const SS1T_DURATION_MAX_MS: u16 = 60_000;
-pub const SS1T_VELOCITY_THRESHOLD_MAX: f32 = 1000.0;
+pub const HFI_AMPLITUDE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
+pub const ORTEGA_ALPHA_MAX: f32 = PWM_FREQUENCY_HZ.0 as f32;
 
 // BSP:
 
@@ -74,11 +75,9 @@ pub const ADC_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 // FOC:
 
 /// Tuning goal bandwidth for the current control loop PI gains
-pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
+pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 500.0;
 
 /// Number of ticks a board measurement (temperature, DC bus voltage) needs to be out of range before raising a fault
 pub const BOARD_MEASUREMENT_DEBOUNCE_TICKS: u32 = 5;
-/// Rate at which the SS1-t safety brake torque ramps up from 0 to the max
-pub const SAFETY_DECEL_RAMP_PER_MS: f32 = 0.1;
 /// The mechanical rotor angular velocity below which the rotor is considered "stopped" for the purposes of disabling brake torque limiting
 pub const BRAKE_LIMIT_STATIONARY_THRESHOLD_MECH_OMEGA: f32 = 0.5;

@@ -1,6 +1,6 @@
 extern crate std;
 use std::vec::Vec;
-use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiConfig, compute_current_pi_controller_gains};
+use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, compute_current_pi_controller_gains};
 use crate::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
 use crate::types::*;
 use crate::estimation::{MotorParams, MotorParamsEstimate};
@@ -171,6 +171,7 @@ pub struct TestBench {
     pub current_limit_a: f32,
     /// Field weakening allowance handed to the FOC each step, on by default
     pub field_weakening: bool,
+    pub hfi: HfiParams,
     /// Latest sim output, also the feedback source for the next step
     pub out: SimOutput,
     dc_bus_voltage: f32,
@@ -186,10 +187,6 @@ pub struct BenchStep {
 
 impl TestBench {
     pub fn new(sim: MotorSim, current_limit_a: f32) -> Self {
-        Self::with_hfi(sim, current_limit_a, HfiConfig { amplitude_v: 0.0, injection_frequency_hz: 0.0, q_pairs_per_d_pair: 0 })
-    }
-
-    pub fn with_hfi(sim: MotorSim, current_limit_a: f32, hfi: HfiConfig) -> Self {
         let config = sim.config();
         let dt = sim.dt();
         let foc = FOC::new(FocConfig {
@@ -200,7 +197,6 @@ impl TestBench {
             deadtime_compensation_band_a: 1.0,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
             field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,
-            hfi,
         });
         let out = sim.state();
         Self {
@@ -210,6 +206,7 @@ impl TestBench {
             params: nominal_params(config),
             current_limit_a,
             field_weakening: true,
+            hfi: HfiParams::none(),
             out,
             dc_bus_voltage: config.dc_bus_voltage,
             dt,
@@ -233,6 +230,7 @@ impl TestBench {
             omega,
             phase_currents: self.out.measurement.currents,
             current_limit_a: self.current_limit_a,
+            hfi: self.hfi,
         };
         let result = self.foc.compute(input, self.params, &mut self.accelerator, self.field_weakening).unwrap();
         self.out = self.sim.step(result);

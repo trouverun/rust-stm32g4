@@ -23,7 +23,7 @@ enum StepResult {
 
 const MIN_SOLVE_SAMPLES: u32 = 1000;
 /// Ticks to hold each polarity of the EstL square wave
-const EST_L_HOLD_TICKS: u32 = 3;
+const EST_L_HOLD_TICKS: u32 = 2;
 
 #[derive(Clone, Copy)]
 pub struct OfflineEstimatorConfig {

@@ -10,7 +10,7 @@ use crate::capture;
 use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
 use field_oriented::{
     AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback,
-    MotorParamEstimator, MotorParamsEstimate, OrtegaPralyEstimatorInput,
+    MotorParamEstimator, MotorParamsEstimate, OrtegaIPMEstimatorInput,
     PhaseValues, compute_current_pi_controller_gains
 };
 
@@ -42,14 +42,13 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             calibration_voltage_v, calibration_current_a,
             calibration_omega, max_rotor_speed_mech_rpm,
             setpoint_timeout_ms, active_current_limit_a, 
-            dc_bus_min_v,  dc_bus_max_v, ss1t_duration_ms, 
-            ss1t_velocity_threshold, braking_current_limit_a,
+            dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a, hfi,
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
-                cfg.calibration_omega(), cfg.rotor_speed_limit_mech_rpm(), 
-                cfg.setpoint_timeout_ms(), cfg.rated_current_limit_a(), 
-                cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(), cfg.ss1t_duration_ms(), 
-                cfg.ss1t_velocity_threshold(), cfg.braking_current_limit_a())
+                cfg.calibration_omega(), cfg.rotor_speed_limit_mech_rpm(),
+                cfg.setpoint_timeout_ms(), cfg.rated_current_limit_a(),
+                cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
+                cfg.braking_current_limit_a(), cfg.hfi())
             });
         let target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.target_torque.fresh(Mono::now(), (setpoint_timeout_ms as u64).millis())
@@ -65,19 +64,22 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             (hall_feedback.read(), hall_feedback.get_pattern())
         });
 
-        let sensorless_input = OrtegaPralyEstimatorInput {
+        let sensorless_input = OrtegaIPMEstimatorInput {
             currents: phase_currents,
             voltages: *cx.local.prev_u_ab,
             params,
             dt_s: DT_S,
         };
-        cx.local.sensorless_estimator.update(sensorless_input, cx.local.acceleration);
+        let sensorless_feedback = cx.shared.sensorless_estimator.lock(|est| {
+            est.update(sensorless_input, cx.local.acceleration);
+            est.read()
+        });
         let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
-            
+
             #[cfg(feature = "hall-feedback")]
             fa.update_hall(hall_feedback, hall_pattern);
 
-            fa.update_sensorless(cx.local.sensorless_estimator.read());
+            fa.update_sensorless(sensorless_feedback);
             (fa.read(), fa.get_hall_pattern())
         });
         cx.shared.debug_mappings.lock(|dm| dm.la_c.set_low());
@@ -98,13 +100,11 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             target_torque,
             active_current_limit_a,
             max_rotor_speed_mech_rpm,
-            safety_deceleration_duration_ms: ss1t_duration_ms as f32,
-            safety_deceleration_cutoff_omega: ss1t_velocity_threshold,
-            safety_deceleration_ramp_per_ms: SAFETY_DECEL_RAMP_PER_MS,
             braking_current_limit_a,
             dc_bus_min_v,
             dc_bus_max_v,
             tick_dt_ms: DT_MS,
+            hfi,
         };
         cx.shared.debug_mappings.lock(|dm| dm.la_b.set_high());
         let (outcome, stage_result) = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(

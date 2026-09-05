@@ -69,7 +69,7 @@ mod app {
     use crate::types::*;
     use field_oriented::{
         AlphaBeta, ClarkParkValue, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator, 
-        FocConfig, HallCalibration, MotorParamsEstimate, OrtegaPralyEstimator, PhaseCurrentFilter
+        FocConfig, HallCalibration, MotorParamsEstimate, OrtegaIPMEstimator, PhaseCurrentFilter
     };
     use crate::tasks::*;
 
@@ -86,6 +86,7 @@ mod app {
         #[cfg(feature = "hall-feedback")]
         hall_feedback: HallFeedback,
         feedback_arbitrator: FeedbackArbitrator,
+        sensorless_estimator: OrtegaIPMEstimator,
         phase_current_filter: PhaseCurrentFilter,
         braking_current_filter: CurrentFilter,
         current_loop_snapshot: CurrentLoopSnapshot,
@@ -97,8 +98,7 @@ mod app {
     #[local]
     struct Local {
         adc_feedback: AdcFeedback,
-        acceleration: Acceleration,        
-        sensorless_estimator: OrtegaPralyEstimator,
+        acceleration: Acceleration,
         hardware_watchdog: HardwareWatchdog,
     }
 
@@ -172,7 +172,7 @@ mod app {
             mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
             deadtime_compensation_band_a: BOARD.deadtime_compensation_band_a,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
-            field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ
+            field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,
         };
         let mut foc = FOC::new(foc_cfg);
 
@@ -230,6 +230,7 @@ mod app {
             debug_mappings: peripheral_mappings.debug,
             current_loop_snapshot: CurrentLoopSnapshot::default(),
             feedback_arbitrator: FeedbackArbitrator::new(SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA),
+            sensorless_estimator: OrtegaIPMEstimator::new(config.ortega_gamma(), config.ortega_alpha(), ORTEGA_PLL_BANDWIDTH_HZ),
             phase_current_filter,
             braking_current_filter,
             software_watchdog: SoftwareWatchdog::new(
@@ -241,7 +242,6 @@ mod app {
         Local {
             adc_feedback,
             acceleration,
-            sensorless_estimator: OrtegaPralyEstimator::new(ORTEGA_PRALY_GAIN, ORTEGA_PRALY_BANDWIDTH_HZ),
             hardware_watchdog: HardwareWatchdog::new(peripheral_mappings.watchdog.iwdg, IWDG_TIMEOUT_US),
         })
     }
@@ -256,10 +256,9 @@ mod app {
                 board_overtemp: Debounced = Debounced::new(false),
                 dc_undervolt: Debounced = Debounced::new(false),
                 dc_overvolt: Debounced = Debounced::new(false),
-                sensorless_estimator
             ],
             shared = [
-                pwm_output, foc, motor_parameters, feedback_arbitrator,
+                pwm_output, foc, motor_parameters, feedback_arbitrator, sensorless_estimator,
                 mode, board_status, config, runtime_values, debug_mappings,
                 current_loop_snapshot, phase_current_filter, software_watchdog,
                 braking_current_filter, hall_feedback
@@ -280,7 +279,8 @@ mod app {
             priority = 1,
             shared = [
                 can, mode, runtime_values, config, phase_current_filter,
-                braking_current_filter, foc, motor_parameters, pwm_output, memory
+                braking_current_filter, foc, motor_parameters, pwm_output, memory,
+                sensorless_estimator
             ],
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
