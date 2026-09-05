@@ -9,7 +9,6 @@
 - Sensorless rotor angle/velocity estimation
 - Automatic motor parameter identification
 - Current control PI autotuning
-- Digital Hall sensor support
 - Fault diagnostics and fault handling with per-fault reactions
 - CAN interface
 - Firmware update via CAN
@@ -72,7 +71,7 @@ The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 
   <summary><h2>Adding support for a new board</h2></summary>
   
   A new board needs to satisfy the following prerequisites hardware-wise to be compatible:
-  - STM32G4 MCU with dual-bank RAM
+  - STM32G4 MCU with dual-bank flash
   - Low side 3-shunt sensing through two ADCs (sharing one of the phases)
   - "Dumb" gate driver, i.e. deadtime is handled by the MCU timer peripheral, not by the gate driver
 

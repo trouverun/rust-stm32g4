@@ -231,7 +231,7 @@ impl MotorSim {
             v: cfg.dc_bus_voltage * duties.v,
             w: cfg.dc_bus_voltage * duties.w,
         };
-        let v = crate::math::forward_clark_park(voltages, sc);
+        let v = crate::utils::math::forward_clark_park(voltages, sc);
 
         // Euler integration of the salient machine dq current dynamics:
         //   Ld*di_d/dt = v_d - R*i_d + omega_e*Lq*i_q
@@ -265,7 +265,7 @@ impl MotorSim {
         SimSnapshot {
             theta,
             omega,
-            currents: crate::math::inverse_clark_park(i_dq, sc),
+            currents: crate::utils::math::inverse_clark_park(i_dq, sc),
             i_dq,
             torque,
             hall_pattern: self.hall_encoder.map(|e| e.read(theta, cfg.num_pole_pairs)),
@@ -284,7 +284,7 @@ impl MotorSim {
             let theta_e = self.config.num_pole_pairs * snapshot.theta;
             let sc = crate::SinCosResult { sin: sinf32(theta_e), cos: cosf32(theta_e) };
             snapshot.currents = noise.apply(snapshot.currents);
-            snapshot.i_dq = crate::math::forward_clark_park(snapshot.currents, sc);
+            snapshot.i_dq = crate::utils::math::forward_clark_park(snapshot.currents, sc);
         }
         snapshot
     }

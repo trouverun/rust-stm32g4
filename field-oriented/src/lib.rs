@@ -2,24 +2,14 @@
 
 #[cfg(test)]
 extern crate std;
-#[cfg(test)]
-mod sim;
-#[cfg(test)]
-mod test_utils;
-#[cfg(test)]
-mod test_plotting;
 
-mod foc;
-mod types;
-mod math;
-mod pi_control;
+mod control;
 mod estimation;
-mod filtering;
-mod field_weakening;
-mod hfi;
+mod types;
+mod utils;
 
-pub use crate::math::wrap_to_pi;
-pub use crate::pi_control::{PIController, PIGains, PITuningFault, ControllerParameters, compute_current_pi_controller_gains};
+pub use crate::utils::math::wrap_to_pi;
+pub use crate::control::pi_control::{PIController, PIGains, PITuningFault, ControllerParameters, compute_current_pi_controller_gains};
 pub use crate::estimation::{
     ConstantMotorParameters, HallCalibrator, HallCalibrationFault, OfflineMotorEstimator, OfflineEstimatorInput,
     OfflineEstimatorCommand, OfflineEstimatorOutput, OfflineEstimatorConfig,
@@ -27,6 +17,6 @@ pub use crate::estimation::{
     HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator,
     OrtegaIPMEstimator, OrtegaIPMEstimatorInput
 };
-pub use crate::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
-pub use crate::hfi::{Hfi, HfiParams};
-pub use crate::foc::*;
+pub use crate::utils::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
+pub use crate::control::hfi::{Hfi, HfiParams};
+pub use crate::control::foc::*;

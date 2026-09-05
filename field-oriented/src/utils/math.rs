@@ -1,4 +1,4 @@
-use super::types::*;
+use crate::types::*;
 use num_traits::Float;
 use core::f32::consts::{TAU};
 

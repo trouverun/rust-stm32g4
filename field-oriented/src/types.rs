@@ -1,4 +1,4 @@
-use crate::hfi::HfiParams;
+use crate::control::hfi::HfiParams;
 
 #[derive(Clone, Copy)]
 pub enum AngleType {

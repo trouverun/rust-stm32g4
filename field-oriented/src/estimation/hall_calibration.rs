@@ -1,6 +1,6 @@
 use core::f32::consts::PI;
 use crate::HallCalibration;
-use crate::math::{wrap_to_2pi, wrapped_diff};
+use crate::utils::math::{wrap_to_2pi, wrapped_diff};
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
 pub enum HallCalibrationFault {

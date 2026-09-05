@@ -49,7 +49,8 @@ impl PIController {
             sampling_time_s
         }
     }
-
+    
+    #[inline]
     pub fn compute(&mut self, reference: f32, measurement: f32, saturation_error: f32) -> Result<f32, FocFault> {
         let gains = self.gains.ok_or(FocFault::MissingControllerGains)?;
 
