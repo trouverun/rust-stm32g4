@@ -1,7 +1,7 @@
 extern crate std;
 use std::vec::Vec;
 use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, compute_current_pi_controller_gains};
-use crate::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
+use crate::utils::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
 use crate::types::*;
 use crate::estimation::{MotorParams, MotorParamsEstimate};
 

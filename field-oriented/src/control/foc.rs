@@ -1,14 +1,14 @@
 pub use crate::types::*;
-use crate::{math::*};
-use crate::field_weakening::{FieldWeakening, FieldWeakeningInput};
+use crate::utils::math::*;
+use crate::control::field_weakening::{FieldWeakening, FieldWeakeningInput};
 use crate::{PIController, PIGains, MotorParamsEstimate, ControllerParameters, Hfi};
 
 #[cfg(test)]
-pub use crate::sim::*;
+pub use crate::utils::sim::*;
 #[cfg(test)]
-pub use crate::test_utils::*;
+pub use crate::utils::test_utils::*;
 #[cfg(test)]
-pub use crate::test_plotting::*;
+pub use crate::utils::test_plotting::*;
 
 struct PrevIterValues {
     u_max: f32,

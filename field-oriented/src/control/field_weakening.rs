@@ -129,7 +129,7 @@ mod test {
         FIELD_WEAKENING_BANDWIDTH_HZ, Motor, OVERMODULATION_THRESHOLD_RATIO, MotorSim, PWM_FREQUENCY_HZ,
         Recorder, TestBench, Windowed, record_interval, reference_motors
     };
-    use crate::sim::MotorConfig;
+    use crate::utils::sim::MotorConfig;
     use std::vec::Vec;
 
     const SETTLING_S: f32 = 3.0/(TAU*FIELD_WEAKENING_BANDWIDTH_HZ);

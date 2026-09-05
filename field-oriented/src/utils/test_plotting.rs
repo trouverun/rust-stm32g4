@@ -5,8 +5,8 @@ use plotly::{Plot, Scatter, Layout};
 use plotly::common::{DashType, Fill, Line, LineShape, Mode};
 use plotly::layout::Axis;
 use crate::{FocInput, FocInputType, FocResult};
-use crate::sim::SimOutput;
-use crate::test_utils::{BenchStep, SQRT3_RECIPROCAL};
+use crate::utils::sim::SimOutput;
+use crate::utils::test_utils::{BenchStep, SQRT3_RECIPROCAL};
 
 pub struct SimRecord {
     pub input: FocInput,

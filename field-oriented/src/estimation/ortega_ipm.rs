@@ -4,7 +4,7 @@
 
 use core::f32::consts::TAU;
 use crate::{
-    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, PhaseValues, RotorFeedback, RotorFeedbackFault, math::{forward_clarke, wrap_to_2pi, wrapped_diff}, wrap_to_pi
+    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, PhaseValues, RotorFeedback, RotorFeedbackFault, utils::math::{forward_clarke, wrap_to_2pi, wrapped_diff}, wrap_to_pi
 };
 
 ///   lp:  alpha/(p+alpha)[u]
@@ -33,7 +33,7 @@ impl Filt {
         self.inv_alpha = 1.0 / alpha;
     }
 
-    #[inline(always)]
+    #[inline]
     fn update(&mut self, u: f32, dt: f32) -> FiltOut {
         let dp = self.alpha * (u - self.y);
         self.y += dt * dp;
@@ -45,7 +45,7 @@ impl Filt {
     }
 }
 
-#[inline(always)]
+#[inline]
 fn dot(a: AlphaBeta, b: AlphaBeta) -> f32 {
     a.alpha * b.alpha + a.beta * b.beta
 }
@@ -73,8 +73,6 @@ pub struct OrtegaIPMEstimator {
     disturbance_filter: Filt,
     /// Stator flux estimate lambda_hat
     flux: AlphaBeta,
-    /// Currents are sampled mid period, so the flux change between two samples is driven by the
-    /// mean of the two periods' voltages and the mean of the two currents
     prev_voltages: AlphaBeta,
     prev_current: AlphaBeta,
     theta_est: f32,
@@ -120,6 +118,7 @@ impl OrtegaIPMEstimator {
         self.disturbance_filter.set_alpha(alpha);
     }
 
+    #[inline]
     pub fn update<A>(&mut self,
         input: OrtegaIPMEstimatorInput,
         accelerator: &mut A
