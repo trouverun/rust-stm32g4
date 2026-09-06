@@ -34,28 +34,59 @@ The firmware was tested on the setup shown below:
 [B-MOTOR-PMSMA1](https://www.st.com/en/evaluation-tools/b-motor-pmsma1.html)
 
 The firmware configuration used was as follows:
-- 40 kHz FOC rate
-- Motor parameters were identified using the self-commissioning routine built to the firmware
+- 40 kHz FOC rate (matching the PWM switching rate, i.e. single update PWM)
+- Motor parameters were identified using the (fully sensorless) self-commissioning routine built to the firmware
 - Current loop PI controllers were autotuned with a closed-loop bandwidth tuning goal of 1 kHz
-- Hall sensor feedback
+- Rotor angle from sensorless feedback (rotor angle from a digital Hall sensor was recorded for comparison only)
 
-First, during operation in torque control mode, GPIO pins were toggled from the FOC ISR to measure the execution time using a logic analyser:
+### Execution rate and jitter
+First, during operation in torque control mode, GPIO pins were toggled at various points of the FOC ISR to measure the execution time and jitter using a logic analyser:
 
 <img width="1451" height="500" alt="image" src="https://github.com/user-attachments/assets/d60e2209-ba86-4de9-96d2-509b2a2e16d1" />
 
-The real-time constraint at 40 kHz FOC rate is satisfied, with the full FOC ISR (estimation + FOC) executing on average in 14.72 µs (min: 14.59 µs, max: 14.98 µs, N=400), always well within the 25 µs budget.
+The measured execution timings are summarized in the below table:
 
-Next, the closed-loop current control performance was evaluated using the branch "bandwidth-test", which includes a firmware-level routine for injecting sine wave torque setpoints, composed of the specified frequencies and the given amplitude. The derived q-axis current setpoint and the measured q-axis current was recorded to RAM at the full 40 kHz FOC rate and retrieved with probe-rs.
+| Metric (N=80000 ISRs) | Budget (40 kHz FOC) | Avg | Min | Max |
+|---|---|---|---|---|
+| Latency from ISR firing to duty cycles written to timer preload register | 12.5 µs | 9.94 µs | 9.90 µs | 10.06 µs |
+| Full ISR (FOC + sensorless estimation) execution time | 25 µs | 15.74 µs | 15.70 µs | 15.99 µs |
+| Delay of ISR entry from nominal schedule (derived from ISR period jitter) | 12.5 µs | - | -| 0.85 µs |
 
-The plot below shows the response to a 300 Hz sine wave setpoint, showing good tracking performance with some phase lag:
+At 40 kHz FOC rate around 64 % of the available CPU cycles are used, leaving plenty of CPU cycles for CAN interfacing. 
 
-  <img width="1800" height="1050" alt="tracking" src="https://github.com/user-attachments/assets/ab43a091-d069-4650-b012-c66bb56e5263" />
+The main constraint for the FOC rate is the latency from current measurement at the PWM midpoint to the start of the next PWM period, which is quite tight at 40 kHz:
 
-For a more comprehensive test, a sum of sine waves at 14 odd harmonics of 100 Hz, spanning from 100 Hz to 3.9 kHz was fed as setpoint instead. The setpoints and the measured response were coherently averaged across 15 periods of excitation, and a discrete fourier transform was applied to them. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
+|  | Value |
+|---|---|
+| Time budget (half of the PWM period) | 12.5 µs |
+| Max latency from ISR firing to duty cycles written | -10.06 µs |
+| Max delay of ISR entry | -0.85 µs |
+| **Worst-case margin** | **1.59 µs** |
 
-<img width="1800" height="1650" alt="bandwidth" src="https://github.com/user-attachments/assets/32ccd71a-9e6c-4431-be7c-722a0888878d" />
+Part of the remaining margin is consumed by the ADC conversion which starts at the exact midpoint of the PWM period and triggers the FOC ISR after complete.
 
-The estimated bandwidth value of 939 Hz lands near the specified tuning goal of 1 kHz (deviation of 6%), indicating that the self-commissioning routine works sufficiently well.
+### Current control loop bandwidth
+Next, the current control loop performance was evaluated using firwmare built with the cargo feature `bandwidth-test`, which includes a routine for injecting high frequency sine wave torque setpoints to the FOC loop. The firmware also records the d,q-axis current setpoints and the measured currents into RAM at the full 40 kHz FOC rate.
+
+To estimate the current control bandwidth, a sum of sine waves (multisine) with 14 odd harmonics of 100 Hz (spanning from 100 Hz to 2.7 kHz) was fed as the torque setpoint. The multisine was applied for a total of 7 periods (7*10 ms). The multisine has DC bias, so during the test the rotor was mechanically locked to prevent the torque from rotating the rotor:
+
+
+
+To mitigate current measurement noise, the recorded data was post processed with `scripts/analysis.py` to coherently average the 7 periods of setpoint->output data. Afterwards a discrete fourier transform was applied to the averaged result. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
+
+
+
+The estimated current control loop bandwidth of 921 Hz deviates from the targeted bandwidth of 1 kHz by around 8 %. The target bandwidth is specified for an ideal first order system so some real-world deviation was expected.
+
+### Sensorless angle tracking performance
+The performance of the sensorless rotor angle estimation was evaluated using the following test sequence:
+
+1. The rotor shaft was rotated by hand at very low angular velocity for ~2 mechanical revolutions with a pause inbetween, without any torque commanded from the motor
+2. Torque was commanded to spin up the motor from standstill all the way to the field weakening region
+3. External torque was applied to the rotor shaft to bring it to a stop, after which it was allowed to accelerate again
+
+The angle derived from a digital Hall sensor was not used during control, but is shown as a rough ground truth reference. The below plot visualizes the experiment using data collected via CAN:
+
 
 </details>
 
