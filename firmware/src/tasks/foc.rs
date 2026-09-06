@@ -66,9 +66,12 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         
         let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
-        let (rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
+        let (mut rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
             (fa.read(), fa.get_hall_pattern())
         });
+        if let Ok(mut feedback) = &mut rotor_feedback {
+            feedback.latency_compensate(DT_S);
+        }
 
         #[cfg(feature = "bandwidth-test")]
         let (target_torque, rotor_feedback) = bandwidth_test::multisine_torque(target_torque, rotor_feedback, active_current_limit_a, params.torque_constant());
@@ -125,7 +128,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 #[cfg(feature = "bandwidth-test")]
                 if capture_full && bandwidth_test::finish() {
                     cx.shared.mode.lock(|mode| mode.on_command(Command::Idle {
-                        safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 },
+                        safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false },
                     }));
                 }
 
@@ -275,8 +278,8 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
             cx.shared.foc.lock(|foc| {
                 if let Err(f) = foc.set_pi_gains(Some(pi_gains)) {
                     cx.shared.mode.lock(|mode| {
-                        mode.on_command(Command::AssertFault {
-                        cause: f.into(),
+                            mode.on_command(Command::AssertFault {
+                            cause: f.into(),
                         });
                     });
                 }

@@ -1,4 +1,4 @@
-use crate::control::hfi::HfiParams;
+use crate::{control::hfi::HfiParams};
 
 #[derive(Clone, Copy)]
 pub enum AngleType {
@@ -10,7 +10,7 @@ pub enum AngleType {
 pub enum RotorFeedbackFault {
     NotCalibrated,
     MissingParameter,
-    NoResponse,
+    NoFeedback,
     ErroneousValue,
     Unobservable
 }
@@ -20,6 +20,12 @@ pub struct RotorFeedback {
     pub angle_type: AngleType,
     pub theta: f32,
     pub omega: f32
+}
+
+impl RotorFeedback {
+    pub fn latency_compensate(&mut self, dt: f32) {
+        self.theta = self.theta + dt*self.omega;
+    } 
 }
 
 pub trait HasRotorFeedback {
