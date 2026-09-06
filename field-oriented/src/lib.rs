@@ -15,7 +15,7 @@ pub use crate::estimation::{
     OfflineEstimatorCommand, OfflineEstimatorOutput, OfflineEstimatorConfig,
     MotorParams, MotorParamsEstimate, MotorParamEstimator, EstimationStepFault,
     HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator,
-    OrtegaIPMEstimator, OrtegaIPMEstimatorInput
+    SensorlessEstimator, SensorlessEstimatorInput, OrtegaIPMEstimator
 };
 pub use crate::utils::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
 pub use crate::control::hfi::{Hfi, HfiParams};

@@ -4,7 +4,9 @@
 
 use core::f32::consts::TAU;
 use crate::{
-    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, PhaseValues, RotorFeedback, RotorFeedbackFault, utils::math::{forward_clarke, wrap_to_2pi, wrapped_diff}, wrap_to_pi
+    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, RotorFeedback, 
+    RotorFeedbackFault, estimation::{SensorlessEstimator, SensorlessEstimatorInput}, 
+    utils::math::{forward_clarke, wrap_to_2pi, wrapped_diff}, wrap_to_pi
 };
 
 ///   lp:  alpha/(p+alpha)[u]
@@ -48,14 +50,6 @@ impl Filt {
 #[inline]
 fn dot(a: AlphaBeta, b: AlphaBeta) -> f32 {
     a.alpha * b.alpha + a.beta * b.beta
-}
-
-pub struct OrtegaIPMEstimatorInput {
-    pub currents: PhaseValues,
-    /// Applied during the period the currents were sampled in
-    pub voltages: AlphaBeta,
-    pub params: MotorParamsEstimate,
-    pub dt_s: f32,
 }
 
 pub struct OrtegaIPMEstimator {
@@ -127,10 +121,12 @@ impl OrtegaIPMEstimator {
         self.cross_filter.set_alpha(alpha);
         self.disturbance_filter.set_alpha(alpha);
     }
+}
 
+impl SensorlessEstimator for OrtegaIPMEstimator {
     #[inline]
-    pub fn update<A>(&mut self,
-        input: OrtegaIPMEstimatorInput,
+    fn update<A>(&mut self,
+        input: SensorlessEstimatorInput,
         accelerator: &mut A
     ) where A: DoesFocMath {
         let params = (

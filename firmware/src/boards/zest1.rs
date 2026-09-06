@@ -11,7 +11,7 @@ use embassy_stm32::opamp::{OpAmp, OpAmpSpeed};
 use embassy_stm32::pac::timer::vals::{Bkinp, Bkp};
 use embassy_stm32::peripherals::{
     ADC3, ADC4, COMP5, COMP6, COMP7, DAC4, OPAMP3, OPAMP4, 
-    OPAMP5, TIM3, TIM6, TIM8, SPI1, TIM7
+    OPAMP5, TIM3, TIM6, TIM8, TIM7
 };
 use embassy_stm32::timer::hall::{Config as HallConfig, HallSensor};
 use embassy_stm32::timer::{

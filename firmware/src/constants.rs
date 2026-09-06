@@ -6,7 +6,7 @@ use crate::boards::BOARD;
 /// The frequency of the PWM carrier and the frequency at which the FOC ISR fires at
 pub const PWM_FREQUENCY_HZ: Hertz = Hertz(40_000);
 /// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
-pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
+pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(1_000);
 /// Timeout of the hardware watchdog
 pub const IWDG_TIMEOUT_US: u32 = 10_000;
 

@@ -12,8 +12,8 @@ pub use motor_estimation::{
     OfflineEstimatorConfig, OfflineEstimatorInput, EstimationStepFault
 };
 pub use arbitration::FeedbackArbitrator;
-pub use ortega_ipm::{OrtegaIPMEstimator, OrtegaIPMEstimatorInput};
-use crate::types::{FocResult};
+pub use ortega_ipm::{OrtegaIPMEstimator};
+use crate::types::{FocResult, AlphaBeta, PhaseValues, DoesFocMath};
 
 #[derive(Clone, Copy)]
 pub struct MotorParams {
@@ -109,4 +109,19 @@ impl MotorParamEstimator for ConstantMotorParameters {
     fn get_estimate(&self) -> MotorParamsEstimate {
         self.params
     }
+}
+
+pub struct SensorlessEstimatorInput {
+    pub currents: PhaseValues,
+    /// Applied during the period the currents were sampled in
+    pub voltages: AlphaBeta,
+    pub params: MotorParamsEstimate,
+    pub dt_s: f32,
+}
+
+pub trait SensorlessEstimator {
+    fn update<A>(&mut self,
+        input: SensorlessEstimatorInput,
+        accelerator: &mut A
+    ) where A: DoesFocMath;
 }

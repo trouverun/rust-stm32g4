@@ -16,8 +16,8 @@ use firmware_core::{
 use firmware_core::SafeControlStrategy;
 use field_oriented::{
     AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback,
-    MotorParamEstimator, MotorParamsEstimate, OrtegaIPMEstimatorInput,
-    PhaseValues, compute_current_pi_controller_gains
+    MotorParamEstimator, MotorParamsEstimate, SensorlessEstimatorInput,
+    PhaseValues, compute_current_pi_controller_gains, SensorlessEstimator
 };
 
 #[link_section = ".ccmram"]
@@ -187,7 +187,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             OperatingMode::Calibration { calibrator } => calibrator.get_estimator().get_estimate(),
             _ => params,
         });
-        let sensorless_input = OrtegaIPMEstimatorInput {
+        let sensorless_input = SensorlessEstimatorInput {
             currents: phase_currents,
             voltages: sensorless_u_ab,
             params: params_estimate,
