@@ -221,7 +221,7 @@ mod test {
     use super::*;
     use crate::{
         CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, HfiParams, Motor, MotorSim, PWM_FREQUENCY_HZ, Recorder,
-        TestBench, angle_error, record_interval, reference_motors,
+        TestBench, angle_error, record_interval, reference_motors, MotorParamsEstimate
     };
     use std::vec::Vec;
 
@@ -271,7 +271,7 @@ mod test {
             let omega_ref = profile[segment] + rate*(t - segment as f32 * SEGMENT_S);
             let torque = c.rotor_inertia*(rate + speed_gain*(omega_ref - bench.out.measurement.omega));
             let step = bench.step_torque(torque);
-            estimator.update(OrtegaIPMEstimatorInput {
+            estimator.update(SensorlessEstimatorInput {
                 currents: step.input.phase_currents,
                 voltages: prev_u_ab,
                 params,
