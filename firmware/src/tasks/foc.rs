@@ -71,7 +71,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         });
 
         #[cfg(feature = "bandwidth-test")]
-        let target_torque = bandwidth_test::multisine_torque(target_torque, active_current_limit_a, params.torque_constant());
+        let (target_torque, rotor_feedback) = bandwidth_test::multisine_torque(target_torque, rotor_feedback, active_current_limit_a, params.torque_constant());
 
         // FOC compute:
         let inputs = FocStepInputs {

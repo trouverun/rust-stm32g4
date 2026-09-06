@@ -139,22 +139,23 @@ fn foc_step_inner<A, C, M>(
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
+    // Mechanical speed limits scaled to the feedback's angle domain:
+    let mech_to_feedback = match angle_type {
+        AngleType::Mechanical => Some(1.0),
+        AngleType::Electrical => params.get_estimate().num_pole_pairs.map(|pp| pp as f32),
+    };
+
     // Rotor overspeed checked only with valid feedback:
     if !rotor_feedback_fault {
         const RPM_TO_RADS: f32 = PI / 30.0;
-        let mut max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS;
-        let mut skip = false;
-        if matches!(angle_type, AngleType::Electrical) {
-            if let Some(pole_pairs) = params.get_estimate().num_pole_pairs {
-                max_omega *= pole_pairs as f32;
-            } else {
-                skip = true;
+        if let Some(scale) = mech_to_feedback {
+            let max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS * scale;
+            if omega.abs() > max_omega {
+                mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
             }
         }
-        if !skip && omega.abs() > max_omega {
-            mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
-        }
     }
+    let stationary_omega_threshold = inputs.stationary_omega_threshold * mech_to_feedback.unwrap_or(1.0);
 
     let torque_constant = params.get_estimate().torque_constant().unwrap_or(0.0);
     let max_braking_torque = torque_constant * inputs.braking_current_limit_a;
@@ -232,9 +233,9 @@ fn foc_step_inner<A, C, M>(
     } else {
         // Normal torque control:
         let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
-        if omega > inputs.stationary_omega_threshold && torque_demand < -max_braking_torque {
+        if omega > stationary_omega_threshold && torque_demand < -max_braking_torque {
             torque_demand = -max_braking_torque;
-        } else if omega < -inputs.stationary_omega_threshold && torque_demand > max_braking_torque {
+        } else if omega < -stationary_omega_threshold && torque_demand > max_braking_torque {
             torque_demand = max_braking_torque;
         }
 

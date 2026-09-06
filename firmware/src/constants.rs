@@ -4,7 +4,7 @@ use crate::boards::BOARD;
 // Main:
 
 /// The frequency of the PWM carrier and the frequency at which the FOC ISR fires at
-pub const PWM_FREQUENCY_HZ: Hertz = Hertz(30_000);
+pub const PWM_FREQUENCY_HZ: Hertz = Hertz(40_000);
 /// The frequency at which the board status analog signals (DC bus voltage, board temperature) are sampled at
 pub const BOARD_STATUS_FREQUENCY_HZ: Hertz = Hertz(100);
 /// Timeout of the hardware watchdog
@@ -79,9 +79,9 @@ pub const ADC_CALIBRATION_SAMPLE_COUNT: u32 = 100;
 // FOC:
 
 /// Tuning goal bandwidth for the current control loop PI gains
-pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 750.0;
+pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
 
 /// Number of ticks a board measurement (temperature, DC bus voltage) needs to be out of range before raising a fault
 pub const BOARD_MEASUREMENT_DEBOUNCE_TICKS: u32 = 5;
 /// The mechanical rotor angular velocity below which the rotor is considered "stopped" for the purposes of disabling brake torque limiting
-pub const BRAKE_LIMIT_STATIONARY_THRESHOLD_MECH_OMEGA: f32 = 0.5;
+pub const BRAKE_LIMIT_STATIONARY_THRESHOLD_MECH_OMEGA: f32 = 10.0;
