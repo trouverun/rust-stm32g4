@@ -138,6 +138,11 @@ impl OfflineEstimatorState {
                 *ran_s += dt_s;
                 if *ran_s >= config.test_time_s {
                     let resistance = lse.solve(MIN_SOLVE_SAMPLES)?;
+
+                    if resistance <= 0.0  {
+                        return Err(EstimationStepFault::ParameterOutOfBounds);
+                    }
+
                     let result = Some(StepResult::EstimateR {
                         resistance,
                         next: Self::EstLd {
@@ -181,6 +186,11 @@ impl OfflineEstimatorState {
                 *ran_s += dt_s;
                 if *ran_s >= config.test_time_s {
                     let d_inductance = 1.0 / lse.solve(MIN_SOLVE_SAMPLES)?;
+
+                    if d_inductance <= 0.0  {
+                        return Err(EstimationStepFault::ParameterOutOfBounds);
+                    }
+
                     let result = Some(StepResult::EstimateLd {
                         d_inductance,
                         next: Self::EstLq {
@@ -224,6 +234,11 @@ impl OfflineEstimatorState {
                 *ran_s += dt_s;
                 if *ran_s >= config.test_time_s {
                     let q_inductance = 1.0 / lse.solve(MIN_SOLVE_SAMPLES)?;
+
+                    if q_inductance <= 0.0  {
+                        return Err(EstimationStepFault::ParameterOutOfBounds);
+                    }
+
                     let result = Some(StepResult::EstimateLq {
                         q_inductance,
                         next: Self::TuningRequired { resistance: *resistance },
@@ -257,6 +272,11 @@ impl OfflineEstimatorState {
                         Ok(pmf_sq) => (Some(sqrtf(pmf_sq)), None),
                         Err(e) => (None, Some(e)),
                     };
+
+                    if pm_flux_linkage.is_some_and(|pmf| pmf <= 0.0) {
+                        return Err(EstimationStepFault::ParameterOutOfBounds);
+                    }
+
                     let result = Some(StepResult::EstimateF {
                         next: Self::RampDown {
                             pm_flux_linkage, pending_fault, ran_s: 0.0,
@@ -370,13 +390,6 @@ impl OfflineMotorEstimator {
         }
     }
 
-    pub fn using_calibration_pi(&self) -> bool {
-        match self.state {
-            OfflineEstimatorState::EstF { .. } | OfflineEstimatorState::RampDown { .. } => false,
-            _ => true
-        }
-    }
-
     pub fn estimation_done(&self) -> bool {
         matches!(self.state, OfflineEstimatorState::Done)
     }
@@ -424,10 +437,6 @@ impl OfflineMotorEstimator {
 }
 
 impl MotorParamEstimator for OfflineMotorEstimator {
-    fn using_calibration_pi(&self) -> bool {
-        self.using_calibration_pi()
-    }
-
     fn after_foc_iteration(&mut self, data: FocResult) {
         if self.params.num_pole_pairs.is_none() {
             self.state = OfflineEstimatorState::Failure { fault: EstimationStepFault::MissingParameter }
