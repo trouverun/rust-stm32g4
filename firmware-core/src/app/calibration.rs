@@ -1,4 +1,3 @@
-use core::f32::consts::PI;
 
 use field_oriented::{
     AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibration, HallCalibrationFault,
@@ -73,7 +72,7 @@ pub struct CalibrationConfig {
 }
 
 impl CalibrationConfig {
-    pub fn new(max_rotor_mech_rpm: f32, dt_s: f32) -> Self {
+    pub fn new(spin_omega: f32, dt_s: f32) -> Self {
         Self {
             dt_s,
             hall_align_s: HALL_ALIGN_DURATION_S,
@@ -83,8 +82,7 @@ impl CalibrationConfig {
                 settle_time_s: MOTOR_ESTIMATOR_SETTLING_DURATION_S,
                 test_time_s: MOTOR_ESTIMATION_SINGLE_TEST_DURATION_S,
                 max_spin_time_s: MOTOR_ESTIMATION_SPINUP_DURATION_S,
-                // 75% of the max mechanical rotor RPM to ensure good back-EMF
-                min_spin_omega_mech: 0.75 * (PI / 30.0 * max_rotor_mech_rpm),
+                spin_omega,
             },
         }
     }
@@ -99,8 +97,8 @@ pub struct CalibrationRunner<H = HallCalibrator, E = OfflineMotorEstimator> {
 }
 
 impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
-    pub fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, has_hall: bool, dt_s: f32) -> Self {
-        let config = CalibrationConfig::new(max_rotor_mech_rpm, dt_s);
+    pub fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self {
+        let config = CalibrationConfig::new(spin_omega, dt_s);
         let mut hall_calibrator = H::new(config.hall_align_s, dt_s);
         let mut motor_estimator = E::new(config.estimator, num_pole_pairs);
 
@@ -198,7 +196,6 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
             dc_bus_voltage: inputs.dc_bus_voltage_v,
             target_voltage: inputs.target_voltage_v,
             target_current: inputs.target_current_a,
-            theta: inputs.theta,
         };
         let estimator_command = self.motor_estimator.get_command(step_input);
         let foc_command = match estimator_command.output {
@@ -329,7 +326,7 @@ impl EstimatesMotorParams for OfflineMotorEstimator {
 
 /// Trait to enable test mocking
 pub trait Calibrator {
-    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, has_hall: bool, dt_s: f32) -> Self where Self: Sized;
+    fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self where Self: Sized;
     fn resume(&mut self);
     fn phase(&self) -> CalibrationPhase;
     fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>);
@@ -337,8 +334,8 @@ pub trait Calibrator {
 }
 
 impl<H: HallCalibrates, E: EstimatesMotorParams> Calibrator for CalibrationRunner<H, E> {
-    fn new(num_pole_pairs: u8, max_rotor_mech_rpm: f32, has_hall: bool, dt_s: f32) -> Self {
-        CalibrationRunner::new(num_pole_pairs, max_rotor_mech_rpm, has_hall, dt_s)
+    fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self {
+        CalibrationRunner::new(num_pole_pairs, spin_omega, has_hall, dt_s)
     }
 
     fn resume(&mut self) {
@@ -365,12 +362,12 @@ mod tests {
     use field_oriented::FocResult;
 
     const POLE_PAIRS: u8 = 7;
-    const MAX_RPM: f32 = 3000.0;
+    const SPIN_OMEGA: f32 = 100.0;
     const DT_S: f32 = 1.0 / 20_000.0;
     const TARGET_CURRENT_A: f32 = 1.5;
 
     fn runner_at(phase: CalibrationPhase) -> CalibrationRunner {
-        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, DT_S);
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,true, DT_S);
         runner.phase = phase;
         runner
     }
@@ -483,7 +480,7 @@ mod tests {
     }
 
     fn mock_runner_at(phase: CalibrationPhase) -> CalibrationRunner<MockHall, MockEstimator> {
-        let mut runner = CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, DT_S);
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,true, DT_S);
         runner.phase = phase;
         runner
     }
@@ -522,12 +519,12 @@ mod tests {
     #[test]
     fn hall_stage_only_runs_when_hall_present() {
         let runner: CalibrationRunner<MockHall, MockEstimator> =
-            CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, DT_S);
+            CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,true, DT_S);
         assert_eq!(phase_name(&runner.phase), "HallCalibration");
         assert!(runner.hall_calibrator.started);
 
         let mut runner: CalibrationRunner<MockHall, MockEstimator> =
-            CalibrationRunner::new(POLE_PAIRS, MAX_RPM, false, DT_S);
+            CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,false, DT_S);
         assert_eq!(phase_name(&runner.phase), "MotorEstimation");
         assert!(runner.motor_estimator.started);
         assert!(!runner.hall_calibrator.started);

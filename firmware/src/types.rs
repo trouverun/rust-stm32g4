@@ -29,7 +29,8 @@ pub struct FirmwareConfig {
     dc_bus_max_voltage_v: f32,
     calibration_voltage_v: f32,
     calibration_current_a: f32,
-    calibration_omega: f32,
+    calibration_sweep_omega: f32,
+    calibration_spin_omega: f32,
     rated_current_limit_a: f32,
     momentary_current_limit_a: f32,
     overcurrent_limit_a: f32,
@@ -39,6 +40,7 @@ pub struct FirmwareConfig {
     braking_current_limit_a: f32,
     braking_current_fault_a: f32,
     hfi_amplitude_v: f32,
+    hfi_frequency_hz: f32,
     ortega_gamma: f32,
     ortega_alpha: f32,
 }
@@ -50,7 +52,8 @@ impl Default for FirmwareConfig {
             dc_bus_max_voltage_v: DEFAULT_DC_BUS_MAX_VOLTAGE_V,
             calibration_voltage_v: DEFAULT_CALIBRATION_VOLTAGE_V,
             calibration_current_a: DEFAULT_CALIBRATION_CURRENT_A.min(DEFAULT_RATED_CURRENT_LIMIT_A),
-            calibration_omega: DEFAULT_CALIBRATION_OMEGA,
+            calibration_sweep_omega: DEFAULT_CALIBRATION_SWEEP_OMEGA,
+            calibration_spin_omega: DEFAULT_CALIBRATION_SPIN_OMEGA,
             rated_current_limit_a: DEFAULT_RATED_CURRENT_LIMIT_A,
             momentary_current_limit_a: DEFAULT_MOMENTARY_CURRENT_LIMIT_A,
             overcurrent_limit_a: BOARD.current_limit_a,
@@ -60,6 +63,7 @@ impl Default for FirmwareConfig {
             braking_current_limit_a: DEFAULT_BRAKING_CURRENT_LIMIT_A,
             braking_current_fault_a: DEFAULT_BRAKING_CURRENT_FAULT_A,
             hfi_amplitude_v: DEFAULT_HFI_AMPLITUDE_V,
+            hfi_frequency_hz: DEFAULT_HFI_FREQUENCY_HZ,
             ortega_gamma: DEFAULT_ORTEGA_GAMMA,
             ortega_alpha: DEFAULT_ORTEGA_ALPHA,
         }
@@ -81,7 +85,8 @@ impl FirmwareConfig {
         dc_bus_max_voltage_v,
         calibration_voltage_v,
         calibration_current_a,
-        calibration_omega,
+        calibration_sweep_omega,
+        calibration_spin_omega,
         rated_current_limit_a,
         momentary_current_limit_a,
         overcurrent_limit_a,
@@ -102,7 +107,7 @@ impl FirmwareConfig {
     pub fn hfi(&self) -> HfiParams {
         HfiParams {
             amplitude_v: self.hfi_amplitude_v,
-            injection_frequency_hz: HFI_FREQUENCY_HZ,
+            injection_frequency_hz: self.hfi_frequency_hz,
             q_pairs_per_d_pair: HFI_Q_PAIRS_PER_D_PAIR,
         }
     }
@@ -130,8 +135,13 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_calibration_omega(&mut self, v: f32) -> Result<(), ConfigError> {
-        self.calibration_omega = in_range(v, CALIBRATION_OMEGA_RANGE)?;
+    pub fn set_calibration_sweep_omega(&mut self, v: f32) -> Result<(), ConfigError> {
+        self.calibration_sweep_omega = in_range(v, CALIBRATION_SWEEP_OMEGA_RANGE)?;
+        Ok(())
+    }
+
+    pub fn set_calibration_spin_omega(&mut self, v: f32) -> Result<(), ConfigError> {
+        self.calibration_spin_omega = in_range(v, CALIBRATION_SPIN_OMEGA_RANGE)?;
         Ok(())
     }
 
@@ -176,12 +186,14 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_sensorless(&mut self, hfi_amplitude_v: f32, gamma: f32, alpha: f32) -> Result<(), ConfigError> {
+    pub fn set_sensorless(&mut self, hfi_amplitude_v: f32, hfi_frequency_hz: f32, gamma: f32, alpha: f32) -> Result<(), ConfigError> {
         let hfi_amplitude_v = in_range(hfi_amplitude_v, HFI_AMPLITUDE_RANGE)?;
+        let hfi_frequency_hz = in_range(hfi_frequency_hz, HFI_FREQUENCY_RANGE)?;
         if gamma <= 0.0 || alpha <= 0.0 || alpha >= ORTEGA_ALPHA_MAX {
             return Err(ConfigError::OutOfRange);
         }
         self.hfi_amplitude_v = hfi_amplitude_v;
+        self.hfi_frequency_hz = hfi_frequency_hz;
         self.ortega_gamma = gamma;
         self.ortega_alpha = alpha;
         Ok(())

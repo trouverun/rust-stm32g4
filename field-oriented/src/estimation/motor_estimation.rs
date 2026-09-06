@@ -2,7 +2,8 @@ use crate::{
     ClarkParkValue, FocResult, MotorParamEstimator, MotorParamsEstimate
 };
 use super::utils::Lse;
-use crate::utils::math::clamp;
+use crate::utils::math::{clamp, wrap_to_2pi};
+use libm::sqrtf;
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
 pub enum EstimationStepFault {
@@ -31,7 +32,7 @@ pub struct OfflineEstimatorConfig {
     pub settle_time_s: f32,
     pub test_time_s: f32,
     pub max_spin_time_s: f32,
-    pub min_spin_omega_mech: f32,
+    pub spin_omega: f32,
     pub dt_s: f32,
 }
 
@@ -79,22 +80,29 @@ enum OfflineEstimatorState {
     },
     /// Need to tune current controller before proceeding
     TuningRequired { resistance: f32 },
-    /// Constant-speed rotation using rotor angle feedback:
-    /// pm_flux = (v_q - R*i_q) / omega_e
+    /// Open loop rotation: d-axis current in a frame forced to rotate at omega, the rotor follows
+    /// with a load angle. The back-EMF magnitude is independent of that angle:
+    /// e_d = v_d - R*i_d + omega*L_q*i_q
+    /// e_q = v_q - R*i_q - omega*L_d*i_d
+    /// e_d^2 + e_q^2 = pm_flux^2 * omega^2
     EstF {
         ran_s: f32,
-        latched_i_q: Option<f32>,
+        theta: f32,
+        omega: f32,
         resistance: f32,
-        /// Solves pm_flux from the LSE problem:
-        /// v_q - R*i_q = pm_flux * omega_e
+        d_inductance: f32,
+        q_inductance: f32,
+        /// Solves pm_flux^2 from the LSE problem:
+        /// |e|^2 = pm_flux^2 * omega^2
         lse: Lse,
     },
-    /// Slowly ramp down the current after EstF to avoid abrupt stop
+    /// Ramp the current down at constant omega so the rotor coasts instead of braking
     RampDown {
         pm_flux_linkage: Option<f32>,
         pending_fault: Option<EstimationStepFault>,
         ran_s: f32,
-        latched_i_q: Option<f32>,
+        theta: f32,
+        omega: f32,
         ramp_duration_s: f32
     },
     Failure{fault: EstimationStepFault},
@@ -106,8 +114,6 @@ impl OfflineEstimatorState {
         &mut self,
         data: &FocResult,
         config: &OfflineEstimatorConfig,
-        omega_e: f32,
-        num_pole_pairs: u8
     ) -> Result<Option<StepResult>, EstimationStepFault> {
         let dt_s = config.dt_s;
         match self {
@@ -232,46 +238,38 @@ impl OfflineEstimatorState {
                 Ok(None)
             }
             Self::EstF {
-                ran_s, latched_i_q, resistance, lse
+                ran_s, theta, omega, resistance, d_inductance, q_inductance, lse
             } => {
-                // v_q - R*i_q = pm_flux * omega_e
-                let x = omega_e;
-                let y = data.u_dq.q - *resistance * data.measured_i_dq.q;
-                if omega_e.abs() >= config.min_spin_omega_mech * num_pole_pairs as f32 {
-                    lse.accumulate(x, y);
-                    if latched_i_q.is_none() {
-                        *latched_i_q = Some(data.target_i_dq.q);
-                    }
+                let spinning_up = *ran_s < config.max_spin_time_s;
+                if spinning_up {
+                    *omega = config.spin_omega * *ran_s / config.max_spin_time_s;
+                } else {
+                    let i = data.measured_i_dq;
+                    let e_d = data.u_dq.d - *resistance * i.d + *omega * *q_inductance * i.q;
+                    let e_q = data.u_dq.q - *resistance * i.q - *omega * *d_inductance * i.d;
+                    lse.accumulate(*omega * *omega, e_d * e_d + e_q * e_q);
                 }
-                
+                *theta = wrap_to_2pi(*theta + *omega * dt_s);
+
                 *ran_s += dt_s;
-                if *ran_s >= config.max_spin_time_s || lse.get_num_data() > MIN_SOLVE_SAMPLES {
-                    let pm_flux_linkage = lse.solve(MIN_SOLVE_SAMPLES);
-                    let result = match pm_flux_linkage {
-                        Ok(pmf) => {
-                            Some(StepResult::EstimateF {
-                                next: Self::RampDown { 
-                                    pm_flux_linkage: Some(pmf), ran_s: 0.0, pending_fault: None, 
-                                    latched_i_q: *latched_i_q, ramp_duration_s: *ran_s
-                                }
-                            })
-                        }
-                        // Delegate the fault to the rampdown, so it still gets to execute:
-                        Err(e) => {
-                            Some(StepResult::EstimateF {
-                                next: Self::RampDown { 
-                                    pm_flux_linkage: None, ran_s: 0.0, pending_fault: Some(e),
-                                    latched_i_q: *latched_i_q, ramp_duration_s: *ran_s
-                                }
-                            })
-                        }
+                if *ran_s >= config.max_spin_time_s + config.test_time_s {
+                    let (pm_flux_linkage, pending_fault) = match lse.solve(MIN_SOLVE_SAMPLES) {
+                        Ok(pmf_sq) => (Some(sqrtf(pmf_sq)), None),
+                        Err(e) => (None, Some(e)),
                     };
+                    let result = Some(StepResult::EstimateF {
+                        next: Self::RampDown {
+                            pm_flux_linkage, pending_fault, ran_s: 0.0,
+                            theta: *theta, omega: *omega, ramp_duration_s: config.test_time_s
+                        }
+                    });
                     Ok(result)
                 } else {
                     Ok(None)
                 }
             }
-            Self::RampDown { pm_flux_linkage, pending_fault, ran_s, ramp_duration_s, .. } => {
+            Self::RampDown { pm_flux_linkage, pending_fault, ran_s, theta, omega, ramp_duration_s } => {
+                *theta = wrap_to_2pi(*theta + *omega * dt_s);
                 *ran_s += dt_s;
                 if *ran_s >= *ramp_duration_s{
                     if let Some(fault) = *pending_fault {
@@ -297,7 +295,6 @@ pub struct OfflineEstimatorInput {
     pub target_voltage: f32,
     pub target_current: f32,
     pub dc_bus_voltage: f32,
-    pub theta: f32
 }
 
 pub struct OfflineEstimatorCommand {
@@ -355,28 +352,15 @@ impl OfflineMotorEstimator {
                 output: OfflineEstimatorOutput::CalibrationVoltage(ClarkParkValue { d: 0.0, q:  *sign * input.target_voltage }),
                 theta: 0.0,
             },
-            OfflineEstimatorState::EstF { ran_s, latched_i_q,  .. } => {
-                let ramp = clamp(ran_s / (self.config.max_spin_time_s + 1e-5), 0.0, 1.0);
-                let i_q = if let Some(val) = latched_i_q {
-                    *val
-                } else {
-                    ramp * input.target_current
-                };
-                OfflineEstimatorCommand {
-                    output: OfflineEstimatorOutput::Current(ClarkParkValue { d: 0.0, q: i_q }),
-                    theta: input.theta,
-                }
+            OfflineEstimatorState::EstF { theta, .. } => OfflineEstimatorCommand {
+                output: OfflineEstimatorOutput::Current(ClarkParkValue { d: input.target_current, q: 0.0 }),
+                theta: *theta,
             },
-            OfflineEstimatorState::RampDown { ran_s, latched_i_q, ramp_duration_s, .. } => {
+            OfflineEstimatorState::RampDown { ran_s, theta, ramp_duration_s, .. } => {
                 let ramp = clamp(1.0 - ran_s / (*ramp_duration_s + 1e-5), 0.0, 1.0);
-                let i_q = if let Some(val) = latched_i_q {
-                    ramp * (*val)
-                } else {
-                    ramp * input.target_current
-                };
                 OfflineEstimatorCommand {
-                    output: OfflineEstimatorOutput::Current(ClarkParkValue { d: 0.0, q: i_q }),
-                    theta: input.theta,
+                    output: OfflineEstimatorOutput::Current(ClarkParkValue { d: ramp * input.target_current, q: 0.0 }),
+                    theta: *theta,
                 }
             }
             _ => OfflineEstimatorCommand {
@@ -408,11 +392,17 @@ impl OfflineMotorEstimator {
 
     pub fn acknowledge_tuning_request(&mut self) {
         if let OfflineEstimatorState::TuningRequired { resistance } = self.state {
-            self.state = OfflineEstimatorState::EstF {
-                ran_s: 0.0,
-                latched_i_q: None,
-                resistance,
-                lse: Lse::new(),
+            self.state = match (self.params.d_inductance, self.params.q_inductance) {
+                (Some(d_inductance), Some(q_inductance)) => OfflineEstimatorState::EstF {
+                    ran_s: 0.0,
+                    theta: 0.0,
+                    omega: 0.0,
+                    resistance,
+                    d_inductance,
+                    q_inductance,
+                    lse: Lse::new(),
+                },
+                _ => OfflineEstimatorState::Failure { fault: EstimationStepFault::MissingParameter },
             }
         }
     }
@@ -432,7 +422,7 @@ impl MotorParamEstimator for OfflineMotorEstimator {
             self.state = OfflineEstimatorState::Failure { fault: EstimationStepFault::MissingParameter }
         }
         
-        match self.state.step(&data, &self.config, data.omega_e, self.params.num_pole_pairs.unwrap_or(1)) {
+        match self.state.step(&data, &self.config) {
             Err(fault) => {
                 self.state = OfflineEstimatorState::Failure { fault };
                 self.should_unwind_controller = true;
@@ -479,37 +469,29 @@ mod test {
     use super::*;
     use core::f32::consts::TAU;
     use crate::{
-        AngleType, EstimatorRecord, FocInputType, HallEncoder, HallEstimator, Motor, MotorSim,
-        PWM_FREQUENCY_HZ, Recorder, SimulatedHallTimer, TestBench, ideal_hall_table,
-        record_interval, reference_motors
+        AngleType, EstimatorRecord, FocInputType, Motor, MotorSim,
+        PWM_FREQUENCY_HZ, Recorder, TestBench, record_interval, reference_motors
     };
 
     /// Run the estimation routine against a motor, using noisy current measurements and
-    /// imperfect hall feedback
+    /// no rotor feedback
     fn run_estimation(motor: Motor, plot_path: &str) -> MotorParamsEstimate {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
         let timeout_s = 60.0;
         let sim_cfg = motor.config;
         let sim = MotorSim::new(dt, sim_cfg)
-            .with_current_noise(motor.current_noise_a, 777)
-            .with_hall_encoder(HallEncoder::noisy(0.05, 0.1, 42));
+            .with_current_noise(motor.current_noise_a, 777);
         let mut bench = TestBench::new(sim, motor.current_limit_a);
 
         let est_config = OfflineEstimatorConfig {
             settle_time_s: 2.5,
             test_time_s: 3.0,
             max_spin_time_s: 20.0,
-            min_spin_omega_mech: motor.calibration_omega,
+            spin_omega: motor.calibration_omega * sim_cfg.num_pole_pairs,
             dt_s: dt,
         };
         let mut estimator = OfflineMotorEstimator::new(est_config, sim_cfg.num_pole_pairs as u8);
         estimator.start(sim_cfg.num_pole_pairs as u8);
-
-        // Rotor feedback through the hall pipeline:
-        let mut hall_estimator = HallEstimator::new();
-        hall_estimator.set_calibration(ideal_hall_table());
-        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, bench.out.measurement.hall_pattern.unwrap());
-        let mut hall = hall_estimator.get_estimate(timer.sample(bench.out.measurement.hall_pattern.unwrap())).unwrap();
 
         let mut recorder = Recorder::new(plot_path, dt, record_interval(2_000.0, dt));
         let mut t = 0.0;
@@ -518,7 +500,6 @@ mod test {
                 target_voltage: motor.calibration_voltage_v,
                 target_current: motor.calibration_current_a,
                 dc_bus_voltage: sim_cfg.dc_bus_voltage,
-                theta: hall.theta
             };
             let cmd = estimator.get_command(step_in);
 
@@ -529,7 +510,7 @@ mod test {
             };
 
             bench.params = estimator.get_estimate();
-            let step = bench.step(command, cmd.theta, AngleType::Electrical, hall.omega);
+            let step = bench.step(command, cmd.theta, AngleType::Electrical, 0.0);
             estimator.after_foc_iteration(step.result);
 
             if estimator.should_unwind_controller() {
@@ -540,13 +521,12 @@ mod test {
                 estimator.acknowledge_tuning_request();
             }
 
-            hall = hall_estimator.get_estimate(timer.sample(step.out.measurement.hall_pattern.unwrap())).unwrap();
             // Electrical to mechanical for plotting:
             let branch = (step.out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
             recorder.record(&step, &[EstimatorRecord {
-                name: "hall",
-                theta: (hall.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
-                omega: hall.omega / sim_cfg.num_pole_pairs,
+                name: "forced",
+                theta: (cmd.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
+                omega: 0.0,
             }]);
 
             t += dt;

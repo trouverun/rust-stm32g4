@@ -33,11 +33,11 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     },
                     OperatingModeRequestRequestedMode::Calibration => {
                         const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
-                        let max_rotor_rpm_mech = cx.shared.config.lock(|cfg| cfg.rotor_speed_limit_mech_rpm()) as f32;
+                        let spin_omega = cx.shared.config.lock(|cfg| cfg.calibration_spin_omega());
                         match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
                             Some(num_pole_pairs) => {
-                                Command::StartCalibration { 
-                                    num_pole_pairs, max_rotor_rpm_mech, 
+                                Command::StartCalibration {
+                                    num_pole_pairs, spin_omega,
                                     has_hall: cfg!(feature = "hall-feedback"),
                                     dt_s: DT_S 
                                 }
@@ -135,7 +135,8 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     let mut candidate = *cfg;
                     candidate.set_calibration_voltage_v(msg.target_voltage())?;
                     candidate.set_calibration_current_a(msg.target_current())?;
-                    candidate.set_calibration_omega(msg.target_velocity())?;
+                    candidate.set_calibration_sweep_omega(msg.sweep_velocity())?;
+                    candidate.set_calibration_spin_omega(msg.spin_velocity())?;
                     *cfg = candidate;
                     Ok::<(), ConfigError>(())
                 });
@@ -147,7 +148,9 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
             Ok(Messages::SensorlessConfig(msg)) => {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
-                    candidate.set_sensorless(msg.hfi_amplitude(), msg.ortega_gamma(), msg.ortega_alpha())?;
+                    candidate.set_sensorless(
+                        msg.hfi_amplitude(), msg.hfi_frequency() as f32, msg.ortega_gamma(), msg.ortega_alpha() as f32
+                    )?;
                     *cfg = candidate;
                     Ok::<(f32, f32), ConfigError>((candidate.ortega_gamma(), candidate.ortega_alpha()))
                 });
@@ -201,7 +204,8 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     let f = CalibrationTargetsReport::try_from(CalibrationTargetsReportInit {
                         target_voltage: cfg.calibration_voltage_v(),
                         target_current: cfg.calibration_current_a(),
-                        target_velocity: cfg.calibration_omega(),
+                        sweep_velocity: cfg.calibration_sweep_omega(),
+                        spin_velocity: cfg.calibration_spin_omega(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));
@@ -255,8 +259,9 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     let cfg = cx.shared.config.lock(|c| *c);
                     let f = SensorlessConfigReport::try_from(SensorlessConfigReportInit {
                         hfi_amplitude: cfg.hfi().amplitude_v,
+                        hfi_frequency: cfg.hfi().injection_frequency_hz as u16,
                         ortega_gamma: cfg.ortega_gamma(),
-                        ortega_alpha: cfg.ortega_alpha(),
+                        ortega_alpha: cfg.ortega_alpha() as u16,
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));

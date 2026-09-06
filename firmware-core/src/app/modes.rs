@@ -12,11 +12,11 @@ pub struct FocGate {
 #[derive(Clone, defmt::Format)]
 pub enum Command {
     Idle { safe_strategy: SafeControlStrategy },
-    StartCalibration { 
-        num_pole_pairs: u8, 
-        max_rotor_rpm_mech: f32, 
+    StartCalibration {
+        num_pole_pairs: u8,
+        spin_omega: f32,
         has_hall: bool,
-        dt_s: f32 
+        dt_s: f32
     },
     ResumeCalibration,
     FinishCalibration,
@@ -63,8 +63,8 @@ impl<C: Calibrator> OperatingMode<C> {
                 trace[0] = cause;
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
-            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, max_rotor_rpm_mech, has_hall, dt_s }) => {
-                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, max_rotor_rpm_mech, has_hall, dt_s) }
+            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, spin_omega, has_hall, dt_s }) => {
+                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, spin_omega, has_hall, dt_s) }
             }
             (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
@@ -97,8 +97,7 @@ impl<C: Calibrator> OperatingMode<C> {
                     CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
                 ),
                 use_safety_command: false,
-                // Hall calibration phase does not use rotor feedback:
-                feedback_optional: matches!(calibrator.phase(), CalibrationPhase::HallCalibration { .. }),
+                feedback_optional: true,
             },
             OperatingMode::TorqueControl => FocGate {
                 active: true,
@@ -135,7 +134,7 @@ mod tests {
     use super::*;
 
     const POLE_PAIRS: u8 = 7;
-    const MAX_RPM: f32 = 3000.0;
+    const SPIN_OMEGA: f32 = 100.0;
     const DT_S: f32 = 1.0 / 20_000.0;
 
     fn faulted_with(safe_strategy: SafeControlStrategy) -> OperatingMode {
@@ -143,7 +142,7 @@ mod tests {
     }
 
     fn calibrating() -> OperatingMode {
-        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, MAX_RPM, true, DT_S) }
+        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA, true, DT_S) }
     }
 
     fn faulted(cause: FaultCause) -> OperatingMode {
@@ -153,7 +152,7 @@ mod tests {
     }
 
     fn start_calibration() -> Command {
-        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, max_rotor_rpm_mech: MAX_RPM, has_hall: true, dt_s: DT_S }
+        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, spin_omega: SPIN_OMEGA, has_hall: true, dt_s: DT_S }
     }
 
     /// Calibration can be entered from idle and from nowhere else.
@@ -323,7 +322,7 @@ mod tests {
         const CALIBRATION_NO_FEEDBACK: FocGate =
             FocGate { active: true, use_safety_command: false, feedback_optional: true };
         const CALIBRATION_HOLD: FocGate =
-            FocGate { active: false, use_safety_command: false, feedback_optional: false };
+            FocGate { active: false, use_safety_command: false, feedback_optional: true };
         const SAFETY_HOLD: FocGate =
             FocGate { active: false, use_safety_command: true, feedback_optional: true };
         const SAFETY_RAMPDOWN: FocGate =
@@ -353,10 +352,10 @@ mod tests {
 
         let phases = [
             (CalibrationPhase::HallCalibration { time_passed_s: 0.0 }, CALIBRATION_NO_FEEDBACK, "hall calibration"),
-            (CalibrationPhase::MotorEstimation, CLOSED_LOOP_CONTROL, "motor estimation"),
+            (CalibrationPhase::MotorEstimation, CALIBRATION_NO_FEEDBACK, "motor estimation"),
             (CalibrationPhase::WaitingHallCompletion, CALIBRATION_HOLD, "waiting hall completion"),
             (CalibrationPhase::WaitingTuning, CALIBRATION_HOLD, "waiting tuning"),
-            (CalibrationPhase::Done, CLOSED_LOOP_CONTROL, "done"),
+            (CalibrationPhase::Done, CALIBRATION_NO_FEEDBACK, "done"),
         ];
 
         for (phase, expected, label) in phases {

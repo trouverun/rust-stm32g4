@@ -63,6 +63,8 @@ impl HasRotorFeedback for FeedbackArbitrator {
                 }
             }
             hall_feedback
+        } else if let Some(sensorless_feedback) = self.sensorless_feedback {
+            sensorless_feedback
         } else {
             Err(RotorFeedbackFault::NoResponse)
         }

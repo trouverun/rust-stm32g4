@@ -6,10 +6,11 @@ BS_:
 
 BU_: Firmware Host
 
-BO_ 576 CalibrationTargets: 6 Host
+BO_ 576 CalibrationTargets: 8 Host
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Firmware
  SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Firmware
- SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Firmware
+ SG_ sweep_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Firmware
+ SG_ spin_velocity : 48|16@1+ (0.1,0) [0|6553.5] "rad/s" Firmware
 
 BO_ 640 CaptureControl: 1 Host
  SG_ command : 0|8@1+ (1,0) [0|255] "" Firmware
@@ -52,18 +53,20 @@ BO_ 608 ProtectionLimits2: 4 Host
 
 BO_ 688 SensorlessConfig: 8 Host
  SG_ hfi_amplitude : 0|16@1+ (0.01,0) [0|655.35] "V" Firmware
- SG_ ortega_gamma : 16|24@1+ (0.001,0) [0|16777.215] "" Firmware
- SG_ ortega_alpha : 40|24@1+ (0.01,0) [0|167772.15] "rad/s" Firmware
+ SG_ hfi_frequency : 16|16@1+ (1,0) [0|65535] "Hz" Firmware
+ SG_ ortega_gamma : 32|16@1+ (0.1,0) [0|6553.5] "" Firmware
+ SG_ ortega_alpha : 48|16@1+ (1,0) [0|65535] "rad/s" Firmware
 
 BO_ 512 Setpoint: 4 Host
  SG_ target_torque : 0|16@1- (0.001,0) [-32.768|32.767] "Nm" Firmware
  SG_ rolling_counter : 16|4@1+ (1,0) [0|15] "" Firmware
  SG_ checksum : 24|8@1+ (1,0) [0|255] "" Firmware
 
-BO_ 368 CalibrationTargetsReport: 6 Firmware
+BO_ 368 CalibrationTargetsReport: 8 Firmware
  SG_ target_voltage : 0|16@1+ (0.01,0) [0|655.35] "V" Host
  SG_ target_current : 16|16@1+ (0.001,0) [0|65.535] "A" Host
- SG_ target_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Host
+ SG_ sweep_velocity : 32|16@1- (0.001,0) [-32.768|32.767] "rad/s" Host
+ SG_ spin_velocity : 48|16@1+ (0.1,0) [0|6553.5] "rad/s" Host
 
 BO_ 480 CaptureDump: 8 Firmware
  SG_ seq : 0|16@1+ (1,0) [0|65535] "" Host
@@ -158,8 +161,9 @@ BO_ 272 RotorEstimates: 8 Firmware
 
 BO_ 488 SensorlessConfigReport: 8 Firmware
  SG_ hfi_amplitude : 0|16@1+ (0.01,0) [0|655.35] "V" Host
- SG_ ortega_gamma : 16|24@1+ (0.001,0) [0|16777.215] "" Host
- SG_ ortega_alpha : 40|24@1+ (0.01,0) [0|167772.15] "rad/s" Host
+ SG_ hfi_frequency : 16|16@1+ (1,0) [0|65535] "Hz" Host
+ SG_ ortega_gamma : 32|16@1+ (0.1,0) [0|6553.5] "" Host
+ SG_ ortega_alpha : 48|16@1+ (1,0) [0|65535] "rad/s" Host
 
 CM_ "0x100-0x1FF device reports, 0x200-0x2FF host commands. Messages are listed Host-transmitted first, then Firmware-transmitted, alphabetical within each group.";
 CM_ BO_ 512 "Checksum = CRC-8 (SAE J1850) over data bytes 0-2.";

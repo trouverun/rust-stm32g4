@@ -22,13 +22,11 @@ pub const BRAKING_CURRENT_FILTER_LOWPASS_CUTOFF_HZ: f32 = 100.0;
 pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.9;
 
 /// The electrical angular rotor velocity required before sensorless feedback is prioritized over alternatives
-pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 10.0;
+pub const SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA: f32 = 0.0;
 /// Bandwidth of the PLL omega estimator for the ortega sensorless estimator
 pub const ORTEGA_PLL_BANDWIDTH_HZ: f32 = 500.0;
-/// Frequency of the sensorless excitation square wave
-pub const HFI_FREQUENCY_HZ: f32 = 2000.0;
 /// Number of Q-axis pulse pairs used in HFI before a D-axis pulse pair
-pub const HFI_Q_PAIRS_PER_D_PAIR: u16 = 10;
+pub const HFI_Q_PAIRS_PER_D_PAIR: u16 = 9;
 
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
@@ -48,7 +46,8 @@ pub const DEFAULT_DC_BUS_MIN_VOLTAGE_V: f32 = 0.0;
 pub const DEFAULT_DC_BUS_MAX_VOLTAGE_V: f32 = 25.0;
 pub const DEFAULT_CALIBRATION_VOLTAGE_V: f32 = 12.0;
 pub const DEFAULT_CALIBRATION_CURRENT_A: f32 = 1.5;
-pub const DEFAULT_CALIBRATION_OMEGA: f32 = 1.0;
+pub const DEFAULT_CALIBRATION_SWEEP_OMEGA: f32 = 1.0;
+pub const DEFAULT_CALIBRATION_SPIN_OMEGA: f32 = 1.0;
 pub const DEFAULT_RATED_CURRENT_LIMIT_A: f32 = 0.5;
 pub const DEFAULT_MOMENTARY_CURRENT_LIMIT_A: f32 = 0.5;
 pub const DEFAULT_ROTOR_SPEED_LIMIT_MECH_RPM: u16 = 1000;
@@ -57,16 +56,19 @@ pub const DEFAULT_TEMP_MAX_C: f32 = 80.0;
 pub const DEFAULT_BRAKING_CURRENT_LIMIT_A: f32 = 0.0;
 pub const DEFAULT_BRAKING_CURRENT_FAULT_A: f32 = 0.1;
 pub const DEFAULT_HFI_AMPLITUDE_V: f32 = 0.0;
+pub const DEFAULT_HFI_FREQUENCY_HZ: f32 = 2500.0;
 pub const DEFAULT_ORTEGA_GAMMA: f32 = 10.0;
 pub const DEFAULT_ORTEGA_ALPHA: f32 = 20.0;
 
 pub const DC_BUS_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
 pub const CALIBRATION_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
-pub const CALIBRATION_OMEGA_RANGE: (f32, f32) = (0.0, 1000.0);
+pub const CALIBRATION_SWEEP_OMEGA_RANGE: (f32, f32) = (0.0, 1000.0);
+pub const CALIBRATION_SPIN_OMEGA_RANGE: (f32, f32) = (0.0, 6553.5);
 pub const CURRENT_LIMIT_RANGE: (f32, f32) = (0.0, BOARD.current_limit_a);
 pub const TEMP_MAX_RANGE: (f32, f32) = (-40.0, 150.0);
 pub const SETPOINT_TIMEOUT_MAX_MS: u16 = 60_000;
 pub const HFI_AMPLITUDE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
+pub const HFI_FREQUENCY_RANGE: (f32, f32) = (0.0, PWM_FREQUENCY_HZ.0 as f32 / 4.0);
 pub const ORTEGA_ALPHA_MAX: f32 = PWM_FREQUENCY_HZ.0 as f32;
 
 // BSP:

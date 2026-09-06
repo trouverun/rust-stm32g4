@@ -8,7 +8,10 @@ use crate::constants::*;
 use crate::capture;
 #[cfg(feature = "bandwidth-test")]
 use crate::bandwidth_test;
-use firmware_core::{Command, CurrentLoopSnapshot, FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step};
+use firmware_core::{
+    OperatingMode, Command, CurrentLoopSnapshot,
+    FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step
+};
 #[cfg(feature = "bandwidth-test")]
 use firmware_core::SafeControlStrategy;
 use field_oriented::{
@@ -43,12 +46,12 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let dc_bus_reading_v = cx.shared.board_status.lock(|bs| bs.dc_bus_voltage_v);
         let (
             calibration_voltage_v, calibration_current_a,
-            calibration_omega, max_rotor_speed_mech_rpm,
-            setpoint_timeout_ms, active_current_limit_a, 
+            calibration_sweep_omega, max_rotor_speed_mech_rpm,
+            setpoint_timeout_ms, active_current_limit_a,
             dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a, hfi,
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
-                cfg.calibration_omega(), cfg.rotor_speed_limit_mech_rpm(),
+                cfg.calibration_sweep_omega(), cfg.rotor_speed_limit_mech_rpm(),
                 cfg.setpoint_timeout_ms(), cfg.rated_current_limit_a(),
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
                 cfg.braking_current_limit_a(), cfg.hfi())
@@ -92,7 +95,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             stationary_omega_threshold: BRAKE_LIMIT_STATIONARY_THRESHOLD_MECH_OMEGA,
             calibration_voltage_v,
             calibration_current_a,
-            calibration_omega,
+            calibration_sweep_omega,
             target_torque,
             active_current_limit_a,
             max_rotor_speed_mech_rpm,
@@ -103,7 +106,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             hfi,
         };
         cx.local.debug_mappings.la_b.set_high();
-        let (outcome, stage_result) = (&mut cx.shared.mode, cx.shared.motor_parameters, cx.shared.foc).lock(
+        let (outcome, stage_result) = (&mut cx.shared.mode, &mut cx.shared.motor_parameters, cx.shared.foc).lock(
             |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
         );
 
@@ -172,10 +175,14 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
 
         // Do the sensorless update here instead of at the start to minimize the latency to PWM duty application:
         // (trade one tick of estimator latency for ~5 us more headroom to meet the PWM duty update "deadline")
+        let params_estimate = cx.shared.mode.lock(|mode| match mode {
+            OperatingMode::Calibration { calibrator } => calibrator.get_estimator().get_estimate(),
+            _ => params,
+        });
         let sensorless_input = OrtegaIPMEstimatorInput {
             currents: phase_currents,
             voltages: sensorless_u_ab,
-            params,
+            params: params_estimate,
             dt_s: DT_S,
         };
         let sensorless_feedback = cx.shared.sensorless_estimator.lock(|est| {
