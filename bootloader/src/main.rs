@@ -30,14 +30,16 @@ fn main() -> ! {
         DecodeResult::Valid(status) => {
             match status.state {
                 BootloaderState::DfuFreshlyWritten => {
-                    bootloader.perform_swap(SwapMode::Normal);
-                    bootloader.write_status(BootloaderState::SwappedImageTrialBooted);
+                    if bootloader.perform_swap(SwapMode::Normal).is_ok() {
+                        bootloader.write_status(BootloaderState::SwappedImageTrialBooted);
+                    }
                 },
                 BootloaderState::SwappedImageTrialBooted => {
                     let watchdog_reboot = embassy_stm32::pac::RCC.csr().read().iwdgrstf();
                     if watchdog_reboot {
-                        bootloader.perform_swap(SwapMode::Revert);
-                        bootloader.write_status(BootloaderState::SwappedImageBootTimeout);
+                        if bootloader.perform_swap(SwapMode::Revert).is_ok() {
+                            bootloader.write_status(BootloaderState::SwappedImageBootTimeout);
+                        }
                     }
                 },
                 _ => {}
