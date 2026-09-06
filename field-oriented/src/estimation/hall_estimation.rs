@@ -42,14 +42,21 @@ pub struct HallEstimatorOutput {
     pub omega: f32
 }
 
-pub struct HallEstimator {
-    hall_pattern_to_theta: Option<HallCalibration>,
-    /// Unsigned angular span of each hall sector, indexed by pattern - 1.
+/// Lookup tables derived from a hall calibration, indexed by pattern - 1.
+struct HallTables {
+    hall_pattern_to_theta: HallCalibration,
+    /// Unsigned angular span of each hall sector.
     /// Computed from the calibration table: distance from this edge to the next edge in the forward direction.
-    sector_span: Option<[f32; 6]>,
+    sector_span: [f32; 6],
+    /// 1 / sector_span, precomputed so the per-tick estimate needs no division.
+    sector_span_reciprocal: [f32; 6],
     /// Forward hall sequence: sector_span[pattern] leads to forward_next[pattern].
     /// Used to determine rotation direction from pattern transitions.
-    forward_next: Option<[u8; 6]>,
+    forward_next: [u8; 6],
+}
+
+pub struct HallEstimator {
+    tables: Option<HallTables>,
     state: HallInterpolationState,
     prev_pattern: u8,
     prev_dir: i8,
@@ -58,9 +65,7 @@ pub struct HallEstimator {
 impl HallEstimator {
     pub fn new() -> Self {
         Self {
-            hall_pattern_to_theta: None,
-            sector_span: None,
-            forward_next: None,
+            tables: None,
             state: HallInterpolationState::Stationary,
             prev_pattern: 0,
             prev_dir: 0
@@ -68,8 +73,6 @@ impl HallEstimator {
     }
 
     pub fn set_calibration(&mut self, calibrations: HallCalibration) {
-        self.hall_pattern_to_theta = Some(calibrations);
-
         // Build (angle, pattern) pairs and sort by angle.
         // This gives the forward (increasing angle) sequence.
         // Hall patterns are 1..6, stored at index pattern-1.
@@ -88,6 +91,7 @@ impl HallEstimator {
         //  - the angular distance to that next pattern (wrapping around at 2pi)
         let mut forward_next = [0; 6];
         let mut sector_span = [0.0; 6];
+        let mut sector_span_reciprocal = [0.0; 6];
         for i in 0..6 {
             let (angle, pattern) = by_angle[i];
             let (next_angle, next_pattern) = by_angle[(i + 1) % 6];
@@ -100,14 +104,19 @@ impl HallEstimator {
                 span += core::f32::consts::TAU;
             }
             sector_span[idx] = span;
+            sector_span_reciprocal[idx] = if span > 0.0 { 1.0 / span } else { 0.0 };
         }
-        self.forward_next = Some(forward_next);
-        self.sector_span = Some(sector_span);
+        self.tables = Some(HallTables {
+            hall_pattern_to_theta: calibrations,
+            sector_span,
+            sector_span_reciprocal,
+            forward_next,
+        });
     }
 
     /// Determine rotation direction from a pattern transition.
     /// Returns 1 for forward, -1 for reverse, 0 if patterns are equal.
-    fn direction(&self, forward_next: [u8; 6], prev_pattern: u8, pattern: u8) -> i8 {
+    fn direction(forward_next: &[u8; 6], prev_pattern: u8, pattern: u8) -> i8 {
         if prev_pattern == pattern {
             return 0;
         }
@@ -120,10 +129,11 @@ impl HallEstimator {
     }
 
     pub fn get_estimate(&mut self, input: HallEstimatorInput) -> Result<HallEstimatorOutput, RotorFeedbackFault> {
-        // Return fault if this has not been calibrated yet:
-        let hall_pattern_to_theta = self.hall_pattern_to_theta.ok_or(RotorFeedbackFault::NotCalibrated)?;
-        let forward_next = self.forward_next.ok_or(RotorFeedbackFault::NotCalibrated)?;
-        let sector_span = self.sector_span.ok_or(RotorFeedbackFault::NotCalibrated)?;
+        // Return fault if this has not been calibrated yet.
+        // Borrowed, not copied: this runs every FOC tick.
+        let tables = self.tables.as_ref().ok_or(RotorFeedbackFault::NotCalibrated)?;
+        let hall_pattern_to_theta = &tables.hall_pattern_to_theta;
+        let sector_span = &tables.sector_span;
 
         if input.hall_pattern == 0 || input.hall_pattern == 7 {
             return Err(RotorFeedbackFault::ErroneousValue);
@@ -133,7 +143,7 @@ impl HallEstimator {
         if self.prev_pattern == 0 {
             self.prev_pattern = input.hall_pattern;
         }
-        let dir = self.direction(forward_next, input.prev_hall_pattern, input.hall_pattern);
+        let dir = Self::direction(&tables.forward_next, input.prev_hall_pattern, input.hall_pattern);
         let prev_idx = (input.prev_hall_pattern.wrapping_sub(1) as usize).min(5);
         let idx = (input.hall_pattern.wrapping_sub(1) as usize).min(5);
 
@@ -146,9 +156,9 @@ impl HallEstimator {
         };
 
         // Size of the Hall sector corresponding to the period (i.e. previous sector), in electrical angle radians:
-        let prev_span = sector_span[prev_idx] as f32;
+        let prev_span = sector_span[prev_idx];
         // Size of the current Hall sector, in electrical angle radians:
-        let span = sector_span[idx] as f32;
+        let span = sector_span[idx];
         // Fraction of previous period elapsed:
         let fraction = input.tick_counter as f32 * input.previous_period_reciprocal;
 
@@ -156,7 +166,7 @@ impl HallEstimator {
         let (theta, omega) = match self.state {
             HallInterpolationState::Stationary => {
                 // Best standstill guess, midpoint of the current sector:
-                let theta = hall_pattern_to_theta[entry_idx] + 0.5 * sector_span[idx];
+                let theta = hall_pattern_to_theta[idx] + 0.5 * span;
                 let omega = 0.0;
                 (theta, omega)
             }
@@ -178,7 +188,7 @@ impl HallEstimator {
                 // Compute angular velocity from: rad * 1/ticks * Hz (ticks/s) = rad/s
                 let mut omega = signed_prev_span * input.previous_period_reciprocal * input.tick_frequency_hz;
                 // The fraction of the current hall sector we should have traveled, accounting for different size of span vs prev span:
-                let effective_fraction = (prev_span / span) * fraction;
+                let effective_fraction = prev_span * tables.sector_span_reciprocal[idx] * fraction;
                 // If we should have reached the next hall edge already, we need to taper down the overestimated velocity:
                 if effective_fraction > 1.0 {
                     omega /= effective_fraction;
@@ -205,26 +215,34 @@ mod test {
         angle_error, ideal_hall_table, record_interval,
     };
 
-    /// Before any hall edge has been observed, the best estimate is the midpoint
-    /// of the current sector with zero velocity.
+    /// Before the estimator has observed any hall edge, the best estimate is the midpoint
+    /// of the current sector with zero velocity
     #[test]
     fn standstill_from_startup_estimates_sector_midpoint() {
         let encoder = HallEncoder::ideal();
-        let mut estimator = HallEstimator::new();
-        estimator.set_calibration(ideal_hall_table());
 
         // Rotor sits inside an arbitrary sector, bounded by the entry edges of
         // two forward-adjacent patterns, so the best estimate is the midpoint:
-        let (pattern, next_pattern) = (encoder.patterns[2], encoder.patterns[3]);
+        let (prev_pattern, pattern, next_pattern) = (encoder.patterns[1], encoder.patterns[2], encoder.patterns[3]);
         let sector_start = encoder.edge_theta(pattern).unwrap();
         let sector_end = encoder.edge_theta(next_pattern).unwrap();
         let expected_theta = 0.5 * (sector_start + sector_end);
-        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, pattern);
-        for _ in 0..1000 {
-            let estimate = estimator.get_estimate(timer.sample(pattern)).unwrap();
-            assert_eq!(estimate.omega, 0.0);
-            let err = angle_error(estimate.theta, expected_theta);
-            assert!(err.abs() < 1e-3, "expected sector midpoint {expected_theta:.3}, got {:.3}", estimate.theta);
+
+        // Pattern the timer held before the rotor came to rest in `pattern`:
+        let histories = [("no edge", pattern), ("forward edge", prev_pattern), ("reverse edge", next_pattern)];
+        for (history, timer_start) in histories {
+            let mut estimator = HallEstimator::new();
+            estimator.set_calibration(ideal_hall_table());
+            let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, timer_start);
+            for _ in 0..1000 {
+                let estimate = estimator.get_estimate(timer.sample(pattern)).unwrap();
+                assert_eq!(estimate.omega, 0.0, "{history}");
+                let err = angle_error(estimate.theta, expected_theta);
+                assert!(
+                    err.abs() < 1e-3,
+                    "{history}: expected sector midpoint {expected_theta:.3}, got {:.3}", estimate.theta
+                );
+            }
         }
     }
 

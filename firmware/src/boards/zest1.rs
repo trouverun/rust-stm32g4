@@ -64,7 +64,7 @@ fn rcc_init() -> embassy_stm32::Peripherals {
         mul: PllMul::MUL85,
         divr: Some(PllRDiv::DIV2),
         divq: Some(PllQDiv::DIV4),
-        divp: Some(PllPDiv::DIV8),
+        divp: Some(PllPDiv::DIV6),
     });
     rcc_config.rcc.sys = Sysclk::PLL1_R;
     rcc_config.rcc.ahb_pre = AHBPrescaler::DIV1;
@@ -109,7 +109,8 @@ impl super::Board for Zest1 {
     type SoftWatchdogTimer = TIM7;
 
     fn current_adc_to_a(counts: i16) -> f32 {
-        -adc_count_to_v(counts) / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM)
+        const CURRENT_A_PER_COUNT: f32 = -ADC_SCALER / OPAMP_GAIN * (1000.0 / SHUNT_RESISTANCE_MOHM);
+        counts as f32 * CURRENT_A_PER_COUNT
     }
 
     #[cfg(feature = "overcurrent-comparators")]

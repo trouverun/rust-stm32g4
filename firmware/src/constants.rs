@@ -13,7 +13,7 @@ pub const IWDG_TIMEOUT_US: u32 = 10_000;
 /// Bitrate of the CAN bus (bit/s)
 pub const CAN_BIT_RATE: u32 = 1_000_000;
 /// Cutoff frequency for the lowpass filter used on the hall-derived rotor angular velocity
-pub const HALL_VELOCITY_LOW_PASS_CUTOFF_HZ: f32 = 500.0;
+pub const HALL_VELOCITY_LOWPASS_CUTOFF_HZ: f32 = 500.0;
 /// Cutoff frequency for the lowpass filter used on the phase current measurements (to detect overcurrent from SW)
 pub const PHASE_CURRENT_FILTER_LOWPASS_CUTOFF_HZ: f32 = 2500.0;
 /// Cutoff frequency for the lowpass filter used on the regenerative braking current (to detect excess regen current from SW)

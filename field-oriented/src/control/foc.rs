@@ -13,7 +13,8 @@ pub use crate::utils::test_plotting::*;
 struct PrevIterValues {
     u_max: f32,
     u_q: f32,
-    u_mag_sq: f32,
+    /// Voltage magnitude limited to the linear region, i.e. min(|u|, u_max)
+    u_mag: f32,
     u_dq_saturation: ClarkParkValue,
 }
 
@@ -22,7 +23,7 @@ impl Default for PrevIterValues {
         Self {
             u_max: 0.0,
             u_q: 0.0,
-            u_mag_sq: 0.0,
+            u_mag: 0.0,
             u_dq_saturation: ClarkParkValue { d: 0.0, q: 0.0 },
         }
     }
@@ -114,7 +115,7 @@ impl FOC {
                 let pm_flux_linkage = motor_params.pm_flux_linkage.ok_or(FocFault::MissingMotorParams)?;
                 let target_i_d = if field_weakening {
                     // Compute target d-axis current based on field weakening need:
-                    let u_mag = clamp(accelerator.sqrt(self.prev_values.u_mag_sq), 0.0, self.prev_values.u_max);
+                    let u_mag = self.prev_values.u_mag;
                     let overmodulation = self.config.overmodulation_threshold_ratio*self.prev_values.u_max - u_mag;
                     let d_inductance =  motor_params.d_inductance.ok_or(FocFault::MissingMotorParams)?;
                     let field_weakening_input = FieldWeakeningInput {
@@ -170,9 +171,13 @@ impl FOC {
             (u_dq.d, u_dq.q)
         };
 
+        // Voltage magnitude limited to the linear region, min(|u|, u_max):
+        // the HFI headroom now, and the field weakening input on the next iteration
+        let u_mag_linear = accelerator.sqrt(min2(u_mag_sq, u_max_sq));
+
         // Update saturation error for next PI iteration anti-windup:
         self.prev_values.u_max = u_max;
-        self.prev_values.u_mag_sq = u_mag_sq;
+        self.prev_values.u_mag = u_mag_linear;
         self.prev_values.u_q = u_dq.q;
         self.prev_values.u_dq_saturation = ClarkParkValue {
             d: u_d_sat - u_dq.d,
@@ -185,7 +190,7 @@ impl FOC {
         // so that anti-windup and field weakening never see it
         let u_applied = match input.command {
             FocInputType::TargetTorque(_) | FocInputType::TargetCurrents(_) => {
-                let headroom = u_max - accelerator.sqrt(min2(u_mag_sq, u_max_sq));
+                let headroom = u_max - u_mag_linear;
                 let injection = self.hfi.compute(input.hfi, headroom);
                 ClarkParkValue { d: u_dq.d + injection.d, q: u_dq.q + injection.q }
             }

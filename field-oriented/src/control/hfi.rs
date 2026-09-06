@@ -1,5 +1,5 @@
-use num_traits::Float;
 use crate::ClarkParkValue;
+use crate::utils::math::{min2, max2};
 
 #[derive(Clone, Copy)]
 pub struct HfiParams {
@@ -43,9 +43,9 @@ impl Hfi {
             self.reset();
             return ClarkParkValue { d: 0.0, q: 0.0 };
         }
-        let half_period_cycles = (0.5 / (params.injection_frequency_hz * self.sampling_time_s)).round().max(1.0) as u32;
+        let half_period_cycles = ((0.5 / (params.injection_frequency_hz * self.sampling_time_s) + 0.5) as u32).max(1);
         if self.cycle == 0 && !self.negative {
-            self.amplitude = params.amplitude_v.min(headroom_v.max(0.0));
+            self.amplitude = min2(params.amplitude_v, max2(headroom_v, 0.0));
         }
         let voltage = if self.negative { -self.amplitude } else { self.amplitude };
         let on_d = params.q_pairs_per_d_pair > 0 && self.pair == params.q_pairs_per_d_pair;

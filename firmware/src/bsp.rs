@@ -82,7 +82,7 @@ impl AdcFeedback {
                 (v_channel.get_hw_channel(), phase_sample_time),
             ])
             .start(
-                EocInterruptEnabled::ENABLED,
+                EocInterruptEnabled::DISABLED,
                 JeosInterruptEnabled::ENABLED,
                 StartMode::EMPTY,
             );
@@ -437,18 +437,9 @@ impl PwmOutput {
 
     pub fn set_duty_cycles(&self, duty_cycles: PhaseValues) {
         let arv = self.pwm.get_autoreload_value() as f32;
-        self.pwm.set_compare_value(
-            Channel::Ch1,
-            (duty_cycles.u * arv).clamp(0.0, u16::MAX as f32) as u16,
-        );
-        self.pwm.set_compare_value(
-            Channel::Ch2,
-            (duty_cycles.v * arv).clamp(0.0, u16::MAX as f32) as u16,
-        );
-        self.pwm.set_compare_value(
-            Channel::Ch3,
-            (duty_cycles.w * arv).clamp(0.0, u16::MAX as f32) as u16,
-        );
+        self.pwm.set_compare_value(Channel::Ch1, (duty_cycles.u * arv) as u32 as u16);
+        self.pwm.set_compare_value(Channel::Ch2, (duty_cycles.v * arv) as u32 as u16);
+        self.pwm.set_compare_value(Channel::Ch3, (duty_cycles.w * arv) as u32 as u16);
     }
 
     #[cfg(not(feature = "overcurrent-comparators"))]
@@ -494,13 +485,9 @@ impl DoesFocMath for Acceleration {
         }
     }
 
-    fn sqrt(&mut self, val: f32) -> f32 {
-        if !val.is_normal() || val < 0.0 {
-            return 0.0
-        }
-
+    fn sqrt(&mut self, val: f32) -> f32 {        
         // Faster than CORDIC sqrt when accounting for input/output scaling
-        core::intrinsics::sqrtf32(val)
+        if val > 0.0 { core::intrinsics::sqrtf32(val) } else { 0.0 }
     }
     
     fn atan2(&mut self, y: f32, x: f32) -> f32 {

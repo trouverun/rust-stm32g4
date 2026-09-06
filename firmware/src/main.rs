@@ -92,6 +92,8 @@ mod app {
         phase_current_filter: PhaseCurrentFilter,
         braking_current_filter: CurrentFilter,
         current_loop_snapshot: CurrentLoopSnapshot,
+        // Only touched by the priority 6 ISRs, so no lock is needed:
+        #[lock_free]
         software_watchdog: SoftwareWatchdog,
         can: CanBus,
     }
@@ -124,7 +126,7 @@ mod app {
 
         #[cfg(feature = "hall-feedback")]
         let mut hall_feedback = bsp::HallFeedback::new(
-            peripheral_mappings.hall_feedback, PWM_FREQUENCY_HZ.0, HALL_VELOCITY_LOW_PASS_CUTOFF_HZ
+            peripheral_mappings.hall_feedback, PWM_FREQUENCY_HZ.0, HALL_VELOCITY_LOWPASS_CUTOFF_HZ
         );
 
         let acceleration = bsp::Acceleration::new(peripheral_mappings.acceleration);
@@ -249,25 +251,6 @@ mod app {
     }
 
     extern "Rust" {
-        #[task(
-            priority = 6, binds = $foc_irq,
-            local = [
-                adc_feedback, acceleration, hardware_watchdog, debug_mappings,
-                prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
-                prev_u_dq: ClarkParkValue = ClarkParkValue { d: 0.0, q: 0.0 },
-                board_overtemp: Debounced = Debounced::new(false),
-                dc_undervolt: Debounced = Debounced::new(false),
-                dc_overvolt: Debounced = Debounced::new(false),
-            ],
-            shared = [
-                pwm_output, foc, motor_parameters, feedback_arbitrator, sensorless_estimator,
-                mode, board_status, config, runtime_values,
-                current_loop_snapshot, phase_current_filter, software_watchdog,
-                braking_current_filter, hall_feedback
-            ]
-        )]
-        fn shared_adc_isr(_: shared_adc_isr::Context);
-
         #[task(priority = 1, shared = [mode, foc, memory])]
         async fn tune_pi(_: tune_pi::Context, estimate: MotorParamsEstimate);
 
@@ -300,9 +283,35 @@ mod app {
         async fn persist_config(_: persist_config::Context);
     }
 
+    #[task(
+        priority = 6, binds = $foc_irq,
+        local = [
+            adc_feedback, acceleration, hardware_watchdog, debug_mappings,
+            prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
+            prev_u_dq: ClarkParkValue = ClarkParkValue { d: 0.0, q: 0.0 },
+            board_overtemp: Debounced = Debounced::new(false),
+            dc_undervolt: Debounced = Debounced::new(false),
+            dc_overvolt: Debounced = Debounced::new(false),
+            // Deferred check results, evaluated after the PWM update and consumed next tick:
+            overcurrent: bool = false,
+            braking_limit_exceeded: bool = false,
+            dc_bus_v: Option<f32> = None,
+        ],
+        shared = [
+            pwm_output, foc, motor_parameters, feedback_arbitrator, sensorless_estimator,
+            mode, board_status, config, runtime_values,
+            current_loop_snapshot, phase_current_filter, software_watchdog,
+            braking_current_filter, hall_feedback
+        ]
+    )]    
+    #[link_section = ".ccmram"]
+    fn shared_adc_isr(cx: shared_adc_isr::Context) {
+        crate::tasks::shared_adc_isr(cx) // Less ISR entry delay this way
+    }
+
     #[task(priority = 6, binds = $watchdog_irq, shared = [software_watchdog])]
     fn watchdog_isr(mut cx: watchdog_isr::Context) {
-        cx.shared.software_watchdog.lock(|wd| wd.register_fault());
+        cx.shared.software_watchdog.register_fault();
     }
 
     #[task(priority = 6, binds = $pwm_break_irq, shared = [mode, pwm_output])]
