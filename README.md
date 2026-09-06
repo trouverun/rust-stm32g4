@@ -37,24 +37,24 @@ The firmware configuration used was as follows:
 - 40 kHz FOC rate (matching the PWM switching rate, i.e. single update PWM)
 - Motor parameters were identified using the (fully sensorless) self-commissioning routine built to the firmware
 - Current loop PI controllers were autotuned with a closed-loop bandwidth tuning goal of 1 kHz
-- Rotor angle from sensorless feedback (rotor angle from a digital Hall sensor was recorded for comparison only)
+- Rotor angle from sensorless feedback (rotor angle from a digital Hall sensor was recorded for comparisons only)
 
 ### Execution rate and jitter
 First, during operation in torque control mode, GPIO pins were toggled at various points of the FOC ISR to measure the execution time and jitter using a logic analyser:
 
-<img width="1451" height="500" alt="image" src="https://github.com/user-attachments/assets/d60e2209-ba86-4de9-96d2-509b2a2e16d1" />
+<img width="1454" height="496" alt="Screenshot from 2026-09-06 02-32-18" src="https://github.com/user-attachments/assets/0faecb90-cb89-4336-b793-d50ac3353efe" />
 
 The measured execution timings are summarized in the below table:
 
 | Metric (N=80000 ISRs) | Budget (40 kHz FOC) | Avg | Min | Max |
 |---|---|---|---|---|
-| Latency from ISR firing to duty cycles written to timer preload register | 12.5 µs | 9.94 µs | 9.90 µs | 10.06 µs |
+| Latency from ISR entry to duty cycles written to timer register | 12.5 µs | 9.94 µs | 9.90 µs | 10.06 µs |
 | Full ISR (FOC + sensorless estimation) execution time | 25 µs | 15.74 µs | 15.70 µs | 15.99 µs |
-| Delay of ISR entry from nominal schedule (derived from ISR period jitter) | 12.5 µs | - | -| 0.85 µs |
+| Delay of ISR entry from nominal schedule | - | - | -| 0.85 µs |
 
 At 40 kHz FOC rate around 64 % of the available CPU cycles are used, leaving plenty of CPU cycles for CAN interfacing. 
 
-The main constraint for the FOC rate is the latency from current measurement at the PWM midpoint to the start of the next PWM period, which is quite tight at 40 kHz:
+The main constraint for the FOC rate is the short timing window to compute new duty cycles before they are needed at the start of the next PWM period, which is quite tight at 40 kHz:
 
 |  | Value |
 |---|---|
@@ -63,30 +63,35 @@ The main constraint for the FOC rate is the latency from current measurement at 
 | Max delay of ISR entry | -0.85 µs |
 | **Worst-case margin** | **1.59 µs** |
 
-Part of the remaining margin is consumed by the ADC conversion which starts at the exact midpoint of the PWM period and triggers the FOC ISR after complete.
+Part of the remaining margin is consumed by the current measurement ADC sequence, which starts at the exact midpoint of the PWM period and triggers the FOC ISR to run after it has completed.
 
 ### Current control loop bandwidth
 Next, the current control loop performance was evaluated using firwmare built with the cargo feature `bandwidth-test`, which includes a routine for injecting high frequency sine wave torque setpoints to the FOC loop. The firmware also records the d,q-axis current setpoints and the measured currents into RAM at the full 40 kHz FOC rate.
 
-To estimate the current control bandwidth, a sum of sine waves (multisine) with 14 odd harmonics of 100 Hz (spanning from 100 Hz to 2.7 kHz) was fed as the torque setpoint. The multisine was applied for a total of 7 periods (7*10 ms). The multisine has DC bias, so during the test the rotor was mechanically locked to prevent the torque from rotating the rotor:
+The response to a 300 Hz sine wave torque setpoint is shown below, with satisfactory q-axis current tracking and d-axis current regulation performance:
 
+<img width="1000" height="900" alt="image" src="https://github.com/user-attachments/assets/07c7bc02-41fa-4ff7-a404-5f972120dc87" />
 
+To properly evaluate the current control bandwidth, a sum of sine waves (multisine) with 14 odd harmonics of 100 Hz (spanning from 100 Hz to 2.7 kHz) was fed as the torque setpoint instead. The multisine was applied for a total of 7 periods (7*10 ms). The multisine has DC bias, so during the test the rotor was mechanically locked to prevent the torque from rotating it.
 
 To mitigate current measurement noise, the recorded data was post processed with `scripts/analysis.py` to coherently average the 7 periods of setpoint->output data. Afterwards a discrete fourier transform was applied to the averaged result. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each excitation frequency, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
 
-
+<img width="1800" height="1650" alt="bandwidth" src="https://github.com/user-attachments/assets/080d16fc-7de7-4555-a71d-76e5c0f35a3a" />
 
 The estimated current control loop bandwidth of 921 Hz deviates from the targeted bandwidth of 1 kHz by around 8 %. The target bandwidth is specified for an ideal first order system so some real-world deviation was expected.
 
-### Sensorless angle tracking performance
+### Sensorless rotor angle estimation
 The performance of the sensorless rotor angle estimation was evaluated using the following test sequence:
 
-1. The rotor shaft was rotated by hand at very low angular velocity for ~2 mechanical revolutions with a pause inbetween, without any torque commanded from the motor
-2. Torque was commanded to spin up the motor from standstill all the way to the field weakening region
+1. The rotor shaft was rotated by hand at very low angular velocity with no torque commanded from the motor
+2. Torque was commanded from the motor to spin up from standstill all the way to the field weakening region
 3. External torque was applied to the rotor shaft to bring it to a stop, after which it was allowed to accelerate again
 
 The angle derived from a digital Hall sensor was not used during control, but is shown as a rough ground truth reference. The below plot visualizes the experiment using data collected via CAN:
 
+<img width="1800" height="1350" alt="plot_1788662820" src="https://github.com/user-attachments/assets/7fcd1c68-becc-43c7-8455-f870f06dd716" />
+
+The sensorless estimator tracks the rotor angle with acceptable performance, degrading during standstill and in the deep field weakening region, where the high modulation index shrinks the low side sampling window and causes quite heavy current noise. Minor current ripple can be seen all around, which is caused by the 2.5 kHz square wave voltage superimposed to the FOC voltage commands to make the rotor angle observable at low velocities.
 
 </details>
 
