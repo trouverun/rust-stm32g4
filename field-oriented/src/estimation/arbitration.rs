@@ -48,25 +48,26 @@ impl FeedbackArbitrator {
     pub fn read_sensorless(&self) -> Option<Result<RotorFeedback, RotorFeedbackFault>> {
         self.sensorless_feedback
     }
+
+    fn fault(&self) -> RotorFeedbackFault {
+        match (self.hall_feedback, self.sensorless_feedback) {
+            (Some(Err(fault)), _) | (_, Some(Err(fault))) => fault,
+            _ => RotorFeedbackFault::NoFeedback,
+        }
+    }
 }
 
 impl HasRotorFeedback for FeedbackArbitrator {
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
-        if let Some(hall_feedback) = self.hall_feedback {
-            if let Ok(values) = hall_feedback {
-                if values.omega.abs() > self.min_sensorless_omega {
-                    if let Some(sensorless_feedback) = self.sensorless_feedback {
-                        if sensorless_feedback.is_ok() {
-                            return sensorless_feedback
-                        }
-                    }
-                }
+        let hall = self.hall_feedback.and_then(Result::ok);
+        let sensorless = self.sensorless_feedback.and_then(Result::ok);
+        match (hall, sensorless) {
+            (Some(hall), Some(sensorless)) => {
+                Ok(if hall.omega.abs() > self.min_sensorless_omega { sensorless } else { hall })
             }
-            hall_feedback
-        } else if let Some(sensorless_feedback) = self.sensorless_feedback {
-            sensorless_feedback
-        } else {
-            Err(RotorFeedbackFault::NoResponse)
+            (Some(hall), None) => Ok(hall),
+            (None, Some(sensorless)) => Ok(sensorless),
+            (None, None) => Err(self.fault()),
         }
     }
 }
