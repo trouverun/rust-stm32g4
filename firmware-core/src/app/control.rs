@@ -594,7 +594,7 @@ mod tests {
         for (label, mut mode) in modes {
             let expect_fault = !mode.foc_gate().feedback_optional;
             let mut lost = nominal_inputs();
-            lost.rotor_feedback = Err(RotorFeedbackFault::NoResponse);
+            lost.rotor_feedback = Err(RotorFeedbackFault::NoFeedback);
             TestHarness::new().step(&mut mode, lost);
             assert_eq!(raised_fault(&mode, FaultCause::InvalidRotorFeedback), expect_fault, "{label}");
         }

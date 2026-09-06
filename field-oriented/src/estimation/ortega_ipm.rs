@@ -60,7 +60,9 @@ pub struct OrtegaIPMEstimatorInput {
 
 pub struct OrtegaIPMEstimator {
     gamma: f32,
+    alpha: f32,
     inv_alpha: f32,
+    pll_bandwidth_hz: f32,
     pll_kp: f32,
     pll_ki: f32,
     /// alpha/(p+alpha)[v - R i]
@@ -87,7 +89,9 @@ impl OrtegaIPMEstimator {
         let bandwidth_rad_s = TAU * pll_bandwidth_hz;
         Self {
             gamma,
+            alpha,
             inv_alpha: 1.0 / alpha,
+            pll_bandwidth_hz,
             pll_kp: 2.0 * bandwidth_rad_s,
             pll_ki: bandwidth_rad_s * bandwidth_rad_s,
             emf_filter: [Filt::new(alpha); 2],
@@ -104,12 +108,18 @@ impl OrtegaIPMEstimator {
         }
     }
 
+    /// Back to the freshly constructed state, keeping the tuning. Clears any fault.
+    pub fn reset(&mut self) {
+        *self = Self::new(self.gamma, self.alpha, self.pll_bandwidth_hz);
+    }
+
     pub fn set_stator_flux(&mut self, flux: AlphaBeta) {
         self.flux = flux;
     }
 
     pub fn set_tuning(&mut self, gamma: f32, alpha: f32) {
         self.gamma = gamma;
+        self.alpha = alpha;
         self.inv_alpha = 1.0 / alpha;
         for filter in self.emf_filter.iter_mut().chain(self.current_filter.iter_mut()) {
             filter.set_alpha(alpha);
@@ -174,6 +184,12 @@ impl OrtegaIPMEstimator {
         let innovation = y - dot(phi, x) + disturbance;
         self.flux.alpha += dt * (flux_rate.alpha + self.gamma * phi.alpha * innovation);
         self.flux.beta += dt * (flux_rate.beta + self.gamma * phi.beta * innovation);
+
+        if !self.flux.alpha.is_finite() || !self.flux.beta.is_finite() {
+            self.reset();
+            self.fault = Some(RotorFeedbackFault::ErroneousValue);
+            return
+        }
 
         let x_alpha = self.flux.alpha - Lq * i.alpha;
         let x_beta = self.flux.beta - Lq * i.beta;

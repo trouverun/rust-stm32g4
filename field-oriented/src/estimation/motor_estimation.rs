@@ -370,6 +370,13 @@ impl OfflineMotorEstimator {
         }
     }
 
+    pub fn using_calibration_pi(&self) -> bool {
+        match self.state {
+            OfflineEstimatorState::EstF { .. } | OfflineEstimatorState::RampDown { .. } => false,
+            _ => true
+        }
+    }
+
     pub fn estimation_done(&self) -> bool {
         matches!(self.state, OfflineEstimatorState::Done)
     }
@@ -417,6 +424,10 @@ impl OfflineMotorEstimator {
 }
 
 impl MotorParamEstimator for OfflineMotorEstimator {
+    fn using_calibration_pi(&self) -> bool {
+        self.using_calibration_pi()
+    }
+
     fn after_foc_iteration(&mut self, data: FocResult) {
         if self.params.num_pole_pairs.is_none() {
             self.state = OfflineEstimatorState::Failure { fault: EstimationStepFault::MissingParameter }

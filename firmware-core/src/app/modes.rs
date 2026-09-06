@@ -74,8 +74,12 @@ impl<C: Calibrator> OperatingMode<C> {
             (OperatingMode::Calibration { .. }, Command::FinishCalibration) => {
                 OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }
             },
-            (OperatingMode::Calibration { .. }, Command::CancelCalibration) => {
-                OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }
+            (OperatingMode::Calibration { calibrator }, Command::CancelCalibration) => {
+                if calibrator.using_calibration_pi() {
+                    OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: true } }
+                } else {
+                    OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false } }
+                }
             },
             (OperatingMode::TorqueControl, Command::Idle { safe_strategy } ) => OperatingMode::Idle { safe_strategy },
             (_, _) => return,
@@ -190,7 +194,7 @@ mod tests {
     /// An idle request is honoured from torque control only.
     #[test]
     fn idle_command_only_accepted_from_torque_control() {
-        let request = || Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } };
+        let request = || Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false } };
 
         let mut mode: OperatingMode = OperatingMode::TorqueControl;
         mode.on_command(request());
@@ -242,7 +246,7 @@ mod tests {
         let requests = [
             Command::EnableTorqueControl,
             start_calibration(),
-            Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } },
+            Command::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false } },
             Command::FinishCalibration,
             Command::CancelCalibration,
             Command::ResumeCalibration,
@@ -260,7 +264,7 @@ mod tests {
     /// A fault clear is honoured once the reaction has been applied, not while it is still running.
     #[test]
     fn clear_fault_blocked_until_reaction_applied() {
-        let still_reacting = [SafeControlStrategy::RampDown { waited_ms: 0.0 }];
+        let still_reacting = [SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false }];
         for safe_strategy in still_reacting {
             let mut mode = faulted_with(safe_strategy);
             mode.on_command(Command::ClearFault);
@@ -339,11 +343,11 @@ mod tests {
             (OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }, SAFETY_HOLD, "idle STO"),
             (OperatingMode::Idle { safe_strategy: SafeControlStrategy::asc() }, SAFETY_HOLD, "idle ASC"),
             (OperatingMode::Idle { safe_strategy: SafeControlStrategy::STOf }, SAFETY_HOLD, "idle terminal STO"),
-            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }, SAFETY_RAMPDOWN, "idle rampdown"),
+            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false } }, SAFETY_RAMPDOWN, "idle rampdown"),
             (faulted_with(SafeControlStrategy::sto()), SAFETY_HOLD, "fault STO"),
             (faulted_with(SafeControlStrategy::asc()), SAFETY_HOLD, "fault ASC"),
             (faulted_with(SafeControlStrategy::STOf), SAFETY_HOLD, "fault terminal STO"),
-            (faulted_with(SafeControlStrategy::RampDown { waited_ms: 0.0 }), SAFETY_HOLD, "fault rampdown"),
+            (faulted_with(SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false }), SAFETY_HOLD, "fault rampdown"),
         ];
 
         for (mode, expected, label) in cases {

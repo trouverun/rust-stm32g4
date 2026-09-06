@@ -128,7 +128,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 #[cfg(feature = "bandwidth-test")]
                 if capture_full && bandwidth_test::finish() {
                     cx.shared.mode.lock(|mode| mode.on_command(Command::Idle {
-                        safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false },
+                        safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 },
                     }));
                 }
 

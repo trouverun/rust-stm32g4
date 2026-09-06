@@ -1,4 +1,4 @@
-use field_oriented::FocInputType;
+use field_oriented::{ClarkParkValue, FocInputType};
 use crate::{FaultCause, Debounced};
 use crate::constants::{STO_ASC_DEBOUNCE_TICKS, STO_DC_BUS_RATIO, ASC_DC_BUS_RATIO, RAMPDOWN_DURATION_MS};
 
@@ -20,7 +20,7 @@ pub struct SafeControlStrategyInput {
 #[derive(Clone, defmt::Format)]
 pub enum SafeControlStrategy {
     /// Controlled rampdown to zero torque demand
-    RampDown { waited_ms: f32 },
+    RampDown { waited_ms: f32, calibration_pi: bool },
     /// terminal STO which does not allow switch to ASC
     STOf,
     /// STO which can switch to ASC
@@ -40,7 +40,7 @@ impl SafeControlStrategy {
     pub fn foc_tick(&mut self, input: SafeControlStrategyInput) -> SafeCommand {
         // Evolve strategy
         match self {
-            SafeControlStrategy::RampDown { waited_ms } => {
+            SafeControlStrategy::RampDown { waited_ms, .. } => {
                 *waited_ms += input.tick_dt_ms;
                 if *waited_ms >= RAMPDOWN_DURATION_MS {
                     if input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v {
@@ -73,8 +73,12 @@ impl SafeControlStrategy {
 
         // Compute output
         match self {
-            SafeControlStrategy::RampDown { .. } => {
-                SafeCommand::FOC(FocInputType::TargetTorque(0.0))
+            SafeControlStrategy::RampDown { calibration_pi, .. } => {
+                if *calibration_pi {
+                    SafeCommand::FOC(FocInputType::CalibrationCurrents(ClarkParkValue { d: 0.0, q: 0.0 } ))
+                } else {
+                    SafeCommand::FOC(FocInputType::TargetTorque(0.0))
+                }
             }
             SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf => SafeCommand::NonConducting,
             SafeControlStrategy::ASC { .. } => SafeCommand::ActiveShort,
@@ -106,7 +110,7 @@ impl From<FaultCause> for SafeControlStrategy {
             FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent => SafeControlStrategy::STOf,
             FaultCause::InvalidRotorFeedback => Self::sto(),
             FaultCause::DcOverVoltage => Self::asc(),
-            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0 },
+            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false },
             _ => Self::sto()
         }
     }
@@ -240,7 +244,7 @@ mod tests {
     /// until its exit conditions allow it and rampdown yields.
     #[test]
     fn reaction_priority_never_downgrades() {
-        let rampdown = || SafeControlStrategy::RampDown { waited_ms: 0.0 };
+        let rampdown = || SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false };
         let cases = [
             (rampdown(), SafeControlStrategy::sto(), "STO"),
             (rampdown(), SafeControlStrategy::asc(), "ASC"),
@@ -290,7 +294,7 @@ mod tests {
     #[test]
     fn rampdown_commands_zero_torque_then_hands_over() {
         for (bus_v, expected) in [(0.5 * DC_BUS_MAX_V, "STO"), (ABOVE_ASC_ENTRY_V, "ASC")] {
-            let mut strategy = SafeControlStrategy::RampDown { waited_ms: 0.0 };
+            let mut strategy = SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false };
             for _ in 0..((RAMPDOWN_DURATION_MS / DT_MS) as usize - 1) {
                 let SafeCommand::FOC(FocInputType::TargetTorque(demand)) = strategy.foc_tick(input(150.0, bus_v)) else {
                     panic!("rampdown stopped commanding zero torque");
