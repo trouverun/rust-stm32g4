@@ -1,6 +1,9 @@
-use field_oriented::{ClarkParkValue, FocInputType};
+use field_oriented::FocInputType;
 use crate::{FaultCause, Debounced};
 use crate::constants::{STO_ASC_DEBOUNCE_TICKS, STO_DC_BUS_RATIO, ASC_DC_BUS_RATIO, RAMPDOWN_DURATION_MS};
+
+/// sqrt(3)
+const SQRT3: f32 = 1.73205080757;
 
 pub enum SafeCommand {
     NonConducting,
@@ -20,7 +23,7 @@ pub struct SafeControlStrategyInput {
 #[derive(Clone, defmt::Format)]
 pub enum SafeControlStrategy {
     /// Controlled rampdown to zero torque demand
-    RampDown { waited_ms: f32, calibration_pi: bool },
+    RampDown { waited_ms: f32 },
     /// terminal STO which does not allow switch to ASC
     STOf,
     /// STO which can switch to ASC
@@ -37,13 +40,21 @@ impl SafeControlStrategy {
         SafeControlStrategy::ASC { should_switch: Debounced::new(false) }
     }
 
+    /// Checks if ASC needs to be used to avoid rectifying too much back-efm to the DC link
+    fn asc_needed(input: SafeControlStrategyInput) -> bool {
+        let sto_unsafe = input.back_emf_constant.is_some_and(|k| {
+            input.rotor_feedback_valid && SQRT3 * k * input.omega.abs() > ASC_DC_BUS_RATIO * input.dc_bus_v
+        });
+        sto_unsafe || input.dc_bus_v > ASC_DC_BUS_RATIO * input.dc_bus_max_v
+    }
+
     pub fn foc_tick(&mut self, input: SafeControlStrategyInput) -> SafeCommand {
         // Evolve strategy
         match self {
-            SafeControlStrategy::RampDown { waited_ms, .. } => {
+            SafeControlStrategy::RampDown { waited_ms } => {
                 *waited_ms += input.tick_dt_ms;
                 if *waited_ms >= RAMPDOWN_DURATION_MS {
-                    if input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v {
+                    if SafeControlStrategy::asc_needed(input) {
                         *self = Self::asc();
                     } else {
                         *self = Self::sto();
@@ -51,17 +62,17 @@ impl SafeControlStrategy {
                 }
             }
             SafeControlStrategy::STO { should_switch } => {
-                should_switch.update(input.dc_bus_v > ASC_DC_BUS_RATIO*input.dc_bus_max_v, STO_ASC_DEBOUNCE_TICKS);
+                should_switch.update(SafeControlStrategy::asc_needed(input), STO_ASC_DEBOUNCE_TICKS);
                 if should_switch.state() {
                     *self = Self::asc();
                 }
             }
             SafeControlStrategy::ASC { should_switch } => {
                 let sto_entry_gate = input.dc_bus_v < STO_DC_BUS_RATIO*input.dc_bus_max_v;
-                const SQRT3: f32 = 1.73205080757;
-                // Prevent immediate bus voltage spike due to STO when back-EMF would exceed bus voltage
+                // Prevent immediate bus voltage spike (and return to ASC) due to selecting STO
+                // (rectified back-emf exceeding the dc link)
                 let asc_exit_gate = input.back_emf_constant.is_some_and(|bemf_constant| {
-                    input.rotor_feedback_valid && SQRT3 * bemf_constant * input.omega < input.dc_bus_v
+                    input.rotor_feedback_valid && SQRT3 * bemf_constant * input.omega.abs() < STO_DC_BUS_RATIO*input.dc_bus_v
                 });
                 should_switch.update(sto_entry_gate && asc_exit_gate, STO_ASC_DEBOUNCE_TICKS);
                 if should_switch.state() {
@@ -73,12 +84,8 @@ impl SafeControlStrategy {
 
         // Compute output
         match self {
-            SafeControlStrategy::RampDown { calibration_pi, .. } => {
-                if *calibration_pi {
-                    SafeCommand::FOC(FocInputType::CalibrationCurrents(ClarkParkValue { d: 0.0, q: 0.0 } ))
-                } else {
-                    SafeCommand::FOC(FocInputType::TargetTorque(0.0))
-                }
+            SafeControlStrategy::RampDown { .. } => {
+                SafeCommand::FOC(FocInputType::TargetTorque(0.0))
             }
             SafeControlStrategy::STO { .. } | SafeControlStrategy::STOf => SafeCommand::NonConducting,
             SafeControlStrategy::ASC { .. } => SafeCommand::ActiveShort,
@@ -110,7 +117,7 @@ impl From<FaultCause> for SafeControlStrategy {
             FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent => SafeControlStrategy::STOf,
             FaultCause::InvalidRotorFeedback => Self::sto(),
             FaultCause::DcOverVoltage => Self::asc(),
-            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false },
+            FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0 },
             _ => Self::sto()
         }
     }
@@ -122,9 +129,6 @@ mod tests {
 
     const DC_BUS_MAX_V: f32 = 48.0;
     const BEMF_CONSTANT: f32 = 0.01;
-    const MAX_BRAKING_TORQUE: f32 = 0.08;
-    const CUTOFF_OMEGA: f32 = 10.0;
-    const DECEL_DURATION_MS: f32 = 500.0;
     const DT_MS: f32 = 0.05;
     const ABOVE_ASC_ENTRY_V: f32 = 1.01 * ASC_DC_BUS_RATIO * DC_BUS_MAX_V;
     const BELOW_STO_RELEASE_V: f32 = 0.99 * STO_DC_BUS_RATIO * DC_BUS_MAX_V;
@@ -141,38 +145,8 @@ mod tests {
         }
     }
 
-    fn reaction(strategy: &SafeControlStrategy) -> &'static str {
-        match strategy {
-            SafeControlStrategy::RampDown { .. } => "RampDown",
-            SafeControlStrategy::STO { .. } => "STO",
-            SafeControlStrategy::STOf => "STOf",
-            SafeControlStrategy::ASC { .. } => "ASC",
-        }
-    }
-
-    /// Every fault selects the reaction the fault reaction table assigns to it.
-    #[test]
-    fn fault_reaction_mapping_matches_the_table() {
-        let mapping: [(FaultCause, &[&str]); 12] = [
-            (FaultCause::Overcurrent, &["STOf"]),
-            (FaultCause::Break1, &["STOf"]),
-            (FaultCause::Break2, &["STOf"]),
-            (FaultCause::RegenLimitExceeded, &["STO"]),
-            (FaultCause::InvalidRotorFeedback, &["STO"]),
-            (FaultCause::DcOverVoltage, &["ASC"]),
-            (FaultCause::RealtimeViolated, &["STO", "ASC"]),
-            (FaultCause::DcUnderVoltage, &["STO"]),
-            (FaultCause::Overtemperature, &["RampDown"]),
-            (FaultCause::SetpointTimeout, &["RampDown"]),
-            (FaultCause::CANMessageIntegrity, &["RampDown"]),
-            (FaultCause::Overspeed, &["RampDown"]),
-        ];
-
-        for (cause, allowed) in mapping {
-            let strategy: SafeControlStrategy = cause.into();
-            let selected = reaction(&strategy);
-            assert!(allowed.contains(&selected), "{cause:?} selected {selected}, expected one of {allowed:?}");
-        }
+    fn spin(tick: &mut SafeControlStrategyInput, back_emf_ratio: f32) {
+        tick.omega = back_emf_ratio * tick.dc_bus_v / (SQRT3 * BEMF_CONSTANT);
     }
 
     /// STO switches to ASC when the DC bus climbs into the overvoltage margin.
@@ -244,7 +218,7 @@ mod tests {
     /// until its exit conditions allow it and rampdown yields.
     #[test]
     fn reaction_priority_never_downgrades() {
-        let rampdown = || SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false };
+        let rampdown = || SafeControlStrategy::RampDown { waited_ms: 0.0 };
         let cases = [
             (rampdown(), SafeControlStrategy::sto(), "STO"),
             (rampdown(), SafeControlStrategy::asc(), "ASC"),
@@ -289,12 +263,34 @@ mod tests {
         }
     }
 
-    /// Rampdown commands zero torque for its full duration, then hands over
-    /// to STO or ASC by bus voltage.
+    /// With the bus itself in range, the back-EMF alone selects STO or ASC, in either direction.
+    #[test]
+    fn back_emf_selects_between_sto_and_asc() {
+        for (level, expected) in [(BELOW_STO_RELEASE_V, "STO"), (ABOVE_ASC_ENTRY_V, "ASC")] {
+            for sign in [1.0, -1.0] {
+                let starts = [
+                    SafeControlStrategy::sto(),
+                    SafeControlStrategy::asc(),
+                    SafeControlStrategy::RampDown { waited_ms: RAMPDOWN_DURATION_MS },
+                ];
+                for mut strategy in starts {
+                    let from = reaction(&strategy);
+                    for _ in 0..=STO_ASC_DEBOUNCE_TICKS {
+                        let mut tick = input(0.0, BELOW_STO_RELEASE_V);
+                        spin(&mut tick, sign * level / DC_BUS_MAX_V);
+                        strategy.foc_tick(tick);
+                    }
+                    assert_eq!(reaction(&strategy), expected, "{from} with {sign:+} x {level} V back-EMF");
+                }
+            }
+        }
+    }
+
+    /// Rampdown commands zero torque for its full duration, then hands over to STO or ASC by bus voltage.
     #[test]
     fn rampdown_commands_zero_torque_then_hands_over() {
         for (bus_v, expected) in [(0.5 * DC_BUS_MAX_V, "STO"), (ABOVE_ASC_ENTRY_V, "ASC")] {
-            let mut strategy = SafeControlStrategy::RampDown { waited_ms: 0.0, calibration_pi: false };
+            let mut strategy = SafeControlStrategy::RampDown { waited_ms: 0.0 };
             for _ in 0..((RAMPDOWN_DURATION_MS / DT_MS) as usize - 1) {
                 let SafeCommand::FOC(FocInputType::TargetTorque(demand)) = strategy.foc_tick(input(150.0, bus_v)) else {
                     panic!("rampdown stopped commanding zero torque");

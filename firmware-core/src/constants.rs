@@ -25,8 +25,8 @@ pub const UPDATE_STAGE_BYTES: usize = 24;
 /// Number of consecutive ticks where the STO <-> ASC condition needs to hold before activating
 pub const STO_ASC_DEBOUNCE_TICKS: u32 = 10;
 /// Ratio of dc_bus_v/max_dc_bus_v which triggers ASC -> STO transition
-pub const STO_DC_BUS_RATIO: f32 = 0.9;
+pub const STO_DC_BUS_RATIO: f32 = 0.99;
 /// Ratio of dc_bus_v/max_dc_bus_v which triggers STO -> ASC transition
-pub const ASC_DC_BUS_RATIO: f32 = 0.95;
+pub const ASC_DC_BUS_RATIO: f32 = 1.01;
 /// How long the rampdown stage between torque control and idle/fault lasts
-pub const RAMPDOWN_DURATION_MS: f32 = 1000.0;
+pub const RAMPDOWN_DURATION_MS: f32 = 10.0;
