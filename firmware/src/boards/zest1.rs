@@ -115,7 +115,8 @@ impl super::Board for Zest1 {
 
     #[cfg(feature = "overcurrent-comparators")]
     fn limit_a_to_v(current_limit_a: f32) -> f32 {
-        OPAMP_GAIN * SHUNT_RESISTANCE_MOHM / 1000.0 * current_limit_a + OPAMP_BIAS_V
+        const SCALER: f32 = OPAMP_GAIN * SHUNT_RESISTANCE_MOHM / 1000.0;
+        SCALER * current_limit_a + OPAMP_BIAS_V
     }
 
     fn temperature_adc_to_c(counts: u16) -> f32 {
@@ -183,12 +184,15 @@ impl super::Board for Zest1 {
                 ),
             },
             pwm: PWM::new(p.TIM8, crate::constants::PWM_FREQUENCY_HZ, super::COUNTING_MODE)
+                // STDRIVE101 deadlocks when it goes on standby with break2 enabled on this board 
+                // (wakeup draws break2 high until ready, which forces MOE=0, which stops the wakeup)
+                // -> need to prevent standby with oisn=true (STO becomes same as ASC)
                 .with_ch1(p.PC6)
-                .with_ch1n(p.PC10)
+                .with_ch1n(p.PC10, true)
                 .with_ch2(p.PC7)
-                .with_ch2n(p.PC11)
+                .with_ch2n(p.PC11, true)
                 .with_ch3(p.PC8)
-                .with_ch3n(p.PC12)
+                .with_ch3n(p.PC12, true)
                 .with_break2_pin(
                     p.PD1,
                     Bkinp::INVERTED,
