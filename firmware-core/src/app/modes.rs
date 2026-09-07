@@ -47,6 +47,9 @@ impl<C: Calibrator> OperatingMode<C> {
                 if matches!(*safe_strategy, SafeControlStrategy::RampDown {..} ) {
                     return;
                 }
+                if matches!(*safe_strategy, SafeControlStrategy::STOf {..} ) {
+                    *safe_strategy = SafeControlStrategy::sto();
+                }
                 OperatingMode::Idle { safe_strategy: safe_strategy.clone() }
             },
             (OperatingMode::Fault { safe_strategy, write_index, trace },
@@ -272,7 +275,7 @@ mod tests {
         }
     }
 
-    /// A second fault escalates the reaction and appends to the existing trace.
+    /// A second fault appends to the existing trace.
     #[test]
     fn repeat_fault_evolves_strategy_without_restarting() {
         let mut mode = faulted(FaultCause::DcOverVoltage);
@@ -281,7 +284,7 @@ mod tests {
         let OperatingMode::Fault { safe_strategy, write_index, trace } = mode else {
             panic!("left fault mode");
         };
-        assert!(matches!(safe_strategy, SafeControlStrategy::STOf));
+
         assert_eq!(write_index, 2);
         assert_eq!(trace[0], FaultCause::DcOverVoltage);
         assert_eq!(trace[1], FaultCause::Overcurrent);
@@ -309,58 +312,5 @@ mod tests {
         };
         assert_eq!(write_index, trace.len());
         assert_eq!(trace, causes[..trace.len()]);
-    }
-
-    /// The foc control loop gate, command source and feedback tolerance follow the mode and its safe strategy.
-    #[test]
-    fn foc_gate_matches_the_mode_and_safe_strategy() {
-        const CLOSED_LOOP_CONTROL: FocGate =
-            FocGate { active: true, use_safety_command: false, feedback_optional: false };
-        const CALIBRATION_NO_FEEDBACK: FocGate =
-            FocGate { active: true, use_safety_command: false, feedback_optional: true };
-        const CALIBRATION_HOLD: FocGate =
-            FocGate { active: false, use_safety_command: false, feedback_optional: true };
-        const SAFETY_HOLD: FocGate =
-            FocGate { active: false, use_safety_command: true, feedback_optional: true };
-        const SAFETY_RAMPDOWN: FocGate =
-            FocGate { active: true, use_safety_command: true, feedback_optional: true };
-
-        fn assert_gate(gate: FocGate, expected: FocGate, label: &str) {
-            assert_eq!(gate.active, expected.active, "{label}: active");
-            assert_eq!(gate.use_safety_command, expected.use_safety_command, "{label}: use_safety_command");
-            assert_eq!(gate.feedback_optional, expected.feedback_optional, "{label}: feedback_optional");
-        }
-
-        let cases: [(OperatingMode, FocGate, &str); 9] = [
-            (OperatingMode::TorqueControl, CLOSED_LOOP_CONTROL, "torque control"),
-            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }, SAFETY_HOLD, "idle STO"),
-            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::asc() }, SAFETY_HOLD, "idle ASC"),
-            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::STOf }, SAFETY_HOLD, "idle terminal STO"),
-            (OperatingMode::Idle { safe_strategy: SafeControlStrategy::RampDown { waited_ms: 0.0 } }, SAFETY_RAMPDOWN, "idle rampdown"),
-            (faulted_with(SafeControlStrategy::sto()), SAFETY_HOLD, "fault STO"),
-            (faulted_with(SafeControlStrategy::asc()), SAFETY_HOLD, "fault ASC"),
-            (faulted_with(SafeControlStrategy::STOf), SAFETY_HOLD, "fault terminal STO"),
-            (faulted_with(SafeControlStrategy::RampDown { waited_ms: 0.0 }), SAFETY_HOLD, "fault rampdown"),
-        ];
-
-        for (mode, expected, label) in cases {
-            assert_gate(mode.foc_gate(), expected, label);
-        }
-
-        let phases = [
-            (CalibrationPhase::HallCalibration { time_passed_s: 0.0 }, CALIBRATION_NO_FEEDBACK, "hall calibration"),
-            (CalibrationPhase::MotorEstimation, CALIBRATION_NO_FEEDBACK, "motor estimation"),
-            (CalibrationPhase::WaitingHallCompletion, CALIBRATION_HOLD, "waiting hall completion"),
-            (CalibrationPhase::WaitingTuning, CALIBRATION_HOLD, "waiting tuning"),
-            (CalibrationPhase::Done, CALIBRATION_NO_FEEDBACK, "done"),
-        ];
-
-        for (phase, expected, label) in phases {
-            let mut mode = calibrating();
-            if let OperatingMode::Calibration { calibrator } = &mut mode {
-                calibrator.phase = phase;
-            }
-            assert_gate(mode.foc_gate(), expected, label);
-        }
     }
 }

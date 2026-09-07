@@ -42,10 +42,11 @@ impl SafeControlStrategy {
 
     /// Checks if ASC needs to be used to avoid rectifying too much back-efm to the DC link
     fn asc_needed(input: SafeControlStrategyInput) -> bool {
-        let sto_unsafe = input.back_emf_constant.is_some_and(|k| {
-            input.rotor_feedback_valid && SQRT3 * k * input.omega.abs() > ASC_DC_BUS_RATIO * input.dc_bus_v
+        let asc_entry_gate = input.dc_bus_v > ASC_DC_BUS_RATIO * input.dc_bus_max_v;
+        let sto_unsafe = input.back_emf_constant.is_none_or(|k| {
+            !input.rotor_feedback_valid || SQRT3 * k * input.omega.abs() > ASC_DC_BUS_RATIO * input.dc_bus_v
         });
-        sto_unsafe || input.dc_bus_v > ASC_DC_BUS_RATIO * input.dc_bus_max_v
+        asc_entry_gate || sto_unsafe
     }
 
     pub fn foc_tick(&mut self, input: SafeControlStrategyInput) -> SafeCommand {
@@ -114,8 +115,8 @@ impl SafeControlStrategy {
 impl From<FaultCause> for SafeControlStrategy {
     fn from(value: FaultCause) -> Self {
         match value {
-            FaultCause::Break1 | FaultCause::Break2 | FaultCause::Overcurrent => SafeControlStrategy::STOf,
-            FaultCause::InvalidRotorFeedback => Self::sto(),
+            FaultCause::Break2 => SafeControlStrategy::STOf,
+            FaultCause::Break1 | FaultCause::Overcurrent | FaultCause::InvalidRotorFeedback => Self::sto(),
             FaultCause::DcOverVoltage => Self::asc(),
             FaultCause::SetpointTimeout | FaultCause::CANMessageIntegrity | FaultCause::CalibrationTimeout | FaultCause::Overtemperature | FaultCause::Overspeed => SafeControlStrategy::RampDown { waited_ms: 0.0 },
             _ => Self::sto()
@@ -133,6 +134,15 @@ mod tests {
     const ABOVE_ASC_ENTRY_V: f32 = 1.01 * ASC_DC_BUS_RATIO * DC_BUS_MAX_V;
     const BELOW_STO_RELEASE_V: f32 = 0.99 * STO_DC_BUS_RATIO * DC_BUS_MAX_V;
     const HYSTERESIS_BAND_V: f32 = 0.5 * (STO_DC_BUS_RATIO + ASC_DC_BUS_RATIO) * DC_BUS_MAX_V;
+    
+    fn reaction(strategy: &SafeControlStrategy) -> &'static str {
+        match strategy {
+            SafeControlStrategy::RampDown { .. } => "RampDown",
+            SafeControlStrategy::STO { .. } => "STO",
+            SafeControlStrategy::STOf => "STOf",
+            SafeControlStrategy::ASC { .. } => "ASC",
+        }
+    }
 
     fn input(omega: f32, dc_bus_v: f32) -> SafeControlStrategyInput {
         SafeControlStrategyInput {
@@ -149,12 +159,28 @@ mod tests {
         tick.omega = back_emf_ratio * tick.dc_bus_v / (SQRT3 * BEMF_CONSTANT);
     }
 
-    /// STO switches to ASC when the DC bus climbs into the overvoltage margin.
+    /// STO switches to ASC when the DC bus climbs into the overvoltage margin, or when back-emf is unknown
     #[test]
     fn sto_switches_to_asc_above_the_entry_ratio() {
         let mut strategy = SafeControlStrategy::sto();
         for _ in 0..STO_ASC_DEBOUNCE_TICKS {
             strategy.foc_tick(input(0.0, ABOVE_ASC_ENTRY_V));
+        }
+        assert!(matches!(strategy, SafeControlStrategy::ASC { .. }));
+
+        let mut strategy: SafeControlStrategy = SafeControlStrategy::sto();
+        for _ in 0..(4 * STO_ASC_DEBOUNCE_TICKS) {
+            let mut tmp = input(0.0, BELOW_STO_RELEASE_V);
+            tmp.rotor_feedback_valid = false;
+            strategy.foc_tick(tmp);
+        }
+        assert!(matches!(strategy, SafeControlStrategy::ASC { .. }));
+
+        let mut strategy = SafeControlStrategy::sto();
+        for _ in 0..(4 * STO_ASC_DEBOUNCE_TICKS) {
+            let mut tmp = input(0.0, BELOW_STO_RELEASE_V);
+            tmp.back_emf_constant = None;
+            strategy.foc_tick(tmp);
         }
         assert!(matches!(strategy, SafeControlStrategy::ASC { .. }));
 
@@ -186,6 +212,51 @@ mod tests {
             strategy.foc_tick(input(0.0, band_v));
         }
         assert!(matches!(strategy, SafeControlStrategy::STO { .. }));
+    }
+
+    /// ASC is held while STO would cause an instant transition back to ASC due to high back-EMF
+    #[test]
+    fn asc_exit_held_while_sto_is_unsafe() {
+        let holds: [(&str, fn(&mut SafeControlStrategyInput)); 3] = [
+            ("invalid feedback", |tick| tick.rotor_feedback_valid = false),
+            ("unknown back-EMF constant", |tick| tick.back_emf_constant = None),
+            // Line-to-line back-EMF above the bus voltage:
+            ("spinning too fast", |tick| tick.omega = 2.0 * tick.dc_bus_v / (1.7320508 * BEMF_CONSTANT)),
+        ];
+        for (label, hold) in holds {
+            let mut strategy = SafeControlStrategy::asc();
+            for _ in 0..(4 * STO_ASC_DEBOUNCE_TICKS) {
+                let mut tick = input(0.0, 0.5 * DC_BUS_MAX_V);
+                hold(&mut tick);
+                strategy.foc_tick(tick);
+            }
+            assert!(matches!(strategy, SafeControlStrategy::ASC { .. }), "{label}: left ASC");
+            strategy.fault_evolve(&SafeControlStrategy::sto());
+            assert!(matches!(strategy, SafeControlStrategy::ASC { .. }), "{label}: downgraded to STO");
+        }
+    }
+
+    /// With the bus itself in range, the back-EMF alone selects STO or ASC, in either direction.
+    #[test]
+    fn back_emf_selects_between_sto_and_asc() {
+        for (level, expected) in [(BELOW_STO_RELEASE_V, "STO"), (ABOVE_ASC_ENTRY_V, "ASC")] {
+            for sign in [1.0, -1.0] {
+                let starts = [
+                    SafeControlStrategy::sto(),
+                    SafeControlStrategy::asc(),
+                    SafeControlStrategy::RampDown { waited_ms: RAMPDOWN_DURATION_MS },
+                ];
+                for mut strategy in starts {
+                    let from = reaction(&strategy);
+                    for _ in 0..=STO_ASC_DEBOUNCE_TICKS {
+                        let mut tick = input(0.0, BELOW_STO_RELEASE_V);
+                        spin(&mut tick, sign * level / DC_BUS_MAX_V);
+                        strategy.foc_tick(tick);
+                    }
+                    assert_eq!(reaction(&strategy), expected, "{from} with {sign:+} x {level} V back-EMF");
+                }
+            }
+        }
     }
 
     /// Fault reaction between STO / ASC is debounced so that individual 
@@ -238,51 +309,6 @@ mod tests {
             let before = reaction(&active);
             active.fault_evolve(&requested);
             assert_eq!(reaction(&active), expected, "{before} with {} requested", reaction(&requested));
-        }
-    }
-
-    /// ASC is held while STO would cause an instant transition back to ASC due to high back-EMF
-    #[test]
-    fn asc_exit_held_while_sto_is_unsafe() {
-        let holds: [(&str, fn(&mut SafeControlStrategyInput)); 3] = [
-            ("invalid feedback", |tick| tick.rotor_feedback_valid = false),
-            ("unknown back-EMF constant", |tick| tick.back_emf_constant = None),
-            // Line-to-line back-EMF above the bus voltage:
-            ("spinning too fast", |tick| tick.omega = 2.0 * tick.dc_bus_v / (1.7320508 * BEMF_CONSTANT)),
-        ];
-        for (label, hold) in holds {
-            let mut strategy = SafeControlStrategy::asc();
-            for _ in 0..(4 * STO_ASC_DEBOUNCE_TICKS) {
-                let mut tick = input(0.0, 0.5 * DC_BUS_MAX_V);
-                hold(&mut tick);
-                strategy.foc_tick(tick);
-            }
-            assert!(matches!(strategy, SafeControlStrategy::ASC { .. }), "{label}: left ASC");
-            strategy.fault_evolve(&SafeControlStrategy::sto());
-            assert!(matches!(strategy, SafeControlStrategy::ASC { .. }), "{label}: downgraded to STO");
-        }
-    }
-
-    /// With the bus itself in range, the back-EMF alone selects STO or ASC, in either direction.
-    #[test]
-    fn back_emf_selects_between_sto_and_asc() {
-        for (level, expected) in [(BELOW_STO_RELEASE_V, "STO"), (ABOVE_ASC_ENTRY_V, "ASC")] {
-            for sign in [1.0, -1.0] {
-                let starts = [
-                    SafeControlStrategy::sto(),
-                    SafeControlStrategy::asc(),
-                    SafeControlStrategy::RampDown { waited_ms: RAMPDOWN_DURATION_MS },
-                ];
-                for mut strategy in starts {
-                    let from = reaction(&strategy);
-                    for _ in 0..=STO_ASC_DEBOUNCE_TICKS {
-                        let mut tick = input(0.0, BELOW_STO_RELEASE_V);
-                        spin(&mut tick, sign * level / DC_BUS_MAX_V);
-                        strategy.foc_tick(tick);
-                    }
-                    assert_eq!(reaction(&strategy), expected, "{from} with {sign:+} x {level} V back-EMF");
-                }
-            }
         }
     }
 
