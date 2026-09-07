@@ -49,16 +49,17 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             calibration_voltage_v, calibration_current_a,
             calibration_sweep_omega, max_rotor_speed_mech_rpm,
             setpoint_timeout_ms, active_current_limit_a, 
-            dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a, hfi,
+            dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a, 
+            hfi, overcurrent_limit_a
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_sweep_omega(), cfg.rotor_speed_limit_mech_rpm(),
                 cfg.setpoint_timeout_ms(), cfg.rated_current_limit_a(),
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
-                cfg.braking_current_limit_a(), cfg.hfi())
+                cfg.braking_current_limit_a(), cfg.hfi(), cfg.overcurrent_limit_a())
             });
         const TICKS_PER_MS: u64 = PWM_FREQUENCY_HZ.0 as u64 / 1000;
-        let target_torque = cx.shared.runtime_values.lock(|rtv| {
+        let mut target_torque = cx.shared.runtime_values.lock(|rtv| {
             rtv.tick += 1;
             rtv.target_torque.fresh(rtv.tick, setpoint_timeout_ms as u64 * TICKS_PER_MS)
         });
@@ -74,7 +75,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         }
 
         #[cfg(feature = "bandwidth-test")]
-        let (target_torque, rotor_feedback) = bandwidth_test::multisine_torque(target_torque, rotor_feedback, active_current_limit_a, params.torque_constant());
+        let (mut target_torque, rotor_feedback) = bandwidth_test::multisine_torque(target_torque, rotor_feedback, active_current_limit_a, params.torque_constant());
 
         // FOC compute:
         let inputs = FocStepInputs {
@@ -107,10 +108,8 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let sensorless_u_ab = *cx.local.prev_u_ab;
         let (sector, braking_current) = match outcome {
             FocStepOutcome::Normal { u_ab, u_dq, duty_cycles, snapshot, sector } => {
-                cx.shared.pwm_output.lock(|pwm| {
-                    pwm.enable();
-                    pwm.set_duty_cycles(duty_cycles);
-                });
+                cx.shared.pwm_output.enable();
+                cx.shared.pwm_output.set_duty_cycles(duty_cycles);
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
                 
                 #[cfg(feature = "debug-capture")]
@@ -146,17 +145,14 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                 (sector, braking_current)
             }
             FocStepOutcome::ActiveShort => {
-                cx.shared.pwm_output.lock(|pwm| {
-                    pwm.enable();
-                    pwm.set_duty_cycles(PhaseValues::zero());
-                });
+                cx.shared.pwm_output.active_short();
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
                 *cx.local.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
                 *cx.local.prev_u_dq = ClarkParkValue { d: 0.0, q: 0.0 };
                 (0, 0.0)
             }
             FocStepOutcome::NonConducting => {
-                cx.shared.pwm_output.lock(|pwm| pwm.disable());
+                cx.shared.pwm_output.freewheel();
                 cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
                 *cx.local.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
                 *cx.local.prev_u_dq = ClarkParkValue { d: 0.0, q: 0.0 };
@@ -166,6 +162,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         cx.local.debug_mappings.la_b.set_low();
 
         // Deferred checks, results feed the next tick's FOC step:
+        cx.shared.pwm_output.set_comparator_current_limit(overcurrent_limit_a);
         *cx.local.braking_limit_exceeded = cx.shared.braking_current_filter.lock(|cf| {
             cf.update(braking_current);
             cf.exceeds_limit()

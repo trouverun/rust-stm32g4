@@ -83,6 +83,7 @@ mod app {
         runtime_values: RuntimeValues,
         motor_parameters: ConstantMotorParameters,
         memory: Memory,
+        #[lock_free]
         pwm_output: PwmOutput,
         foc: FOC,
         #[cfg(feature = "hall-feedback")]
@@ -119,8 +120,9 @@ mod app {
         let peripheral_mappings = Active::map_peripherals();
 
         // Initialize HW:
-        let pwm_output: PwmOutput = bsp::PwmOutput::new(peripheral_mappings.pwm_output, 0.0);
-        pwm_output.wait_break2_ready();
+        let pwm_output: PwmOutput = bsp::PwmOutput::new(
+            peripheral_mappings.pwm_output, 0.0
+        );
         let mut adc_feedback = bsp::AdcFeedback::new(peripheral_mappings.adc_feedback);
         adc_feedback.sample_sector(0); // Kick off the ADC ISR loop
 
@@ -189,11 +191,14 @@ mod app {
                 ConstantMotorParameters { params: MotorParamsEstimate::new_empty() } 
             }
         };
+
+        #[cfg(feature = "hall-feedback")]
         match memory.load::<HallCalibration>() {
             Ok(Some(cal)) => hall_feedback.set_calibration(cal),
             Ok(None) => {}
             Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
         }
+
         match memory.load::<ControllerParameters>() {
             Ok(Some(p)) => {
                 match foc.set_pi_gains(Some(p)) {
@@ -264,7 +269,7 @@ mod app {
             priority = 1,
             shared = [
                 can, mode, runtime_values, config, phase_current_filter,
-                braking_current_filter, foc, motor_parameters, pwm_output, memory,
+                braking_current_filter, foc, motor_parameters, memory,
                 sensorless_estimator
             ],
             local = [
@@ -292,7 +297,6 @@ mod app {
             board_overtemp: Debounced = Debounced::new(false),
             dc_undervolt: Debounced = Debounced::new(false),
             dc_overvolt: Debounced = Debounced::new(false),
-            // Deferred check results, evaluated after the PWM update and consumed next tick:
             overcurrent: bool = false,
             braking_limit_exceeded: bool = false,
             dc_bus_v: Option<f32> = None,
@@ -316,8 +320,8 @@ mod app {
 
     #[task(priority = 6, binds = $pwm_break_irq, shared = [mode, pwm_output])]
     fn pwm_break_isr(mut cx: pwm_break_isr::Context) {
-        let bk1_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break1());
-        let bk2_cleared = cx.shared.pwm_output.lock(|pwm| pwm.check_break2());
+        let bk1_cleared = cx.shared.pwm_output.check_break1();
+        let bk2_cleared = cx.shared.pwm_output.check_break2();
 
         if bk1_cleared || bk2_cleared {
             cx.shared.mode.lock(|mode| {

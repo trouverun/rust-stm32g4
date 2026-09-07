@@ -121,7 +121,6 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 match applied {
                     Ok(overcurrent) => {
                         cx.shared.phase_current_filter.lock(|cf| cf.set_limits(overcurrent));
-                        cx.shared.pwm_output.lock(|pwm| pwm.set_comparator_current_limit(overcurrent));
                         cx.shared.motor_parameters.lock(|mp| {
                             mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
                         });
