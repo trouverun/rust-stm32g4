@@ -89,9 +89,9 @@ The performance of the sensorless rotor angle estimation was evaluated using the
 
 The angle derived from a digital Hall sensor was not used during control, but is shown as a rough ground truth reference. The below plot visualizes the experiment using data collected via CAN:
 
-<img width="1800" height="1350" alt="plot_1788662820" src="https://github.com/user-attachments/assets/7fcd1c68-becc-43c7-8455-f870f06dd716" />
+<img width="1800" height="1350" alt="image" src="https://github.com/user-attachments/assets/8906e31a-f238-45e3-9894-aaf19c873ceb" />
 
-The sensorless estimator tracks the rotor angle with acceptable performance, degrading during standstill and in the deep field weakening region, where the high modulation index shrinks the low side sampling window and causes quite heavy current noise. Minor current ripple can be seen all around, which is caused by the 2.5 kHz square wave voltage superimposed to the FOC voltage commands to make the rotor angle observable at low velocities.
+The sensorless estimator matches the Hall interpolated rotor angle even at low velocities. Note that the Hall interpolated angle itself can be off by up to 1 rad on the 4 pole motor used in testing. The sensorless performance does degrade during extended standstill and in the deep field weakening region, where the high modulation index shrinks the low side sampling window and causes quite heavy current noise. Minor current ripple can be seen all around, which is caused by the 2.5 kHz square wave voltage superimposed to the FOC voltage commands to make the rotor angle observable at low velocities.
 
 </details>
 
