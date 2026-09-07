@@ -1,5 +1,5 @@
 use crate::{HallCalibration, RotorFeedbackFault};
-use crate::utils::math::clamp;
+use crate::utils::math::{wrap_to_2pi, clamp};
 
 enum HallInterpolationState {
     Stationary,
@@ -115,22 +115,25 @@ impl HallEstimator {
     }
 
     /// Determine rotation direction from a pattern transition.
-    /// Returns 1 for forward, -1 for reverse, 0 if patterns are equal.
-    fn direction(forward_next: &[u8; 6], prev_pattern: u8, pattern: u8) -> i8 {
-        if prev_pattern == pattern {
-            return 0;
+    /// Returns 1 for forward, -1 for reverse, 0 if patterns are equal,
+    /// None if the patterns are not adjacent (skipped edge or corrupt pattern)
+    fn direction(forward_next: &[u8; 6], prev_pattern: u8, pattern: u8) -> Option<i8> {
+        if !(1..=6).contains(&prev_pattern) || !(1..=6).contains(&pattern) {
+            return None;
         }
-        let prev_idx = prev_pattern.wrapping_sub(1) as usize;
-        if prev_idx < 6 && forward_next[prev_idx] == pattern {
-            1
+        if prev_pattern == pattern {
+            Some(0)
+        } else if forward_next[(prev_pattern - 1) as usize] == pattern {
+            Some(1)
+        } else if forward_next[(pattern - 1) as usize] == prev_pattern {
+            Some(-1)
         } else {
-            -1
+            None
         }
     }
 
     pub fn get_estimate(&mut self, input: HallEstimatorInput) -> Result<HallEstimatorOutput, RotorFeedbackFault> {
-        // Return fault if this has not been calibrated yet.
-        // Borrowed, not copied: this runs every FOC tick.
+        // Return fault if this has not been calibrated yet
         let tables = self.tables.as_ref().ok_or(RotorFeedbackFault::NotCalibrated)?;
         let hall_pattern_to_theta = &tables.hall_pattern_to_theta;
         let sector_span = &tables.sector_span;
@@ -143,7 +146,15 @@ impl HallEstimator {
         if self.prev_pattern == 0 {
             self.prev_pattern = input.hall_pattern;
         }
-        let dir = Self::direction(&tables.forward_next, input.prev_hall_pattern, input.hall_pattern);
+        let dir = match Self::direction(&tables.forward_next, input.prev_hall_pattern, input.hall_pattern) {
+            Some(dir) => dir,
+            None => {
+                // Neither the period nor the direction is usable, restart from standstill
+                self.state = HallInterpolationState::Stationary;
+                self.prev_pattern = input.hall_pattern;
+                0
+            }
+        };
         let prev_idx = (input.prev_hall_pattern.wrapping_sub(1) as usize).min(5);
         let idx = (input.hall_pattern.wrapping_sub(1) as usize).min(5);
 
@@ -200,7 +211,7 @@ impl HallEstimator {
         self.prev_dir = dir;
 
         Ok(HallEstimatorOutput {
-            theta, omega
+            theta: wrap_to_2pi(theta), omega
         })
     }
 }
@@ -288,6 +299,61 @@ mod test {
             t += dt;
         }
         assert!(prev_omega < 0.1 * omega_e, "omega should taper towards zero, still at {prev_omega}");
+    }
+
+    /// A dropped hall edge shows up as a two-sector jump. It must not be mistaken for a
+    /// direction reversal: theta stays within one sector and omega keeps its sign, and
+    /// tracking recovers within two edges.
+    #[test]
+    fn skipped_edge_is_not_a_reversal() {
+        let dt = 1.0 / PWM_FREQUENCY_HZ;
+        let encoder = HallEncoder::ideal();
+        let sector_span = encoder.edges[1] - encoder.edges[0];
+        let mut estimator = HallEstimator::new();
+        estimator.set_calibration(ideal_hall_table());
+
+        let pattern_at = |theta_e: f32| encoder.read(theta_e, 1.0);
+        let omega_e: f32 = 60.0;
+        let mut theta_e = 0.1;
+        let mut timer = SimulatedHallTimer::new(PWM_FREQUENCY_HZ, 50, pattern_at(theta_e));
+
+        // The entry edge of `skipped` is dropped on every revolution: the driver keeps
+        // reporting `before_skipped` until the following edge
+        let before_skipped = pattern_at(theta_e + sector_span);
+        let skipped = pattern_at(theta_e + 2.0 * sector_span);
+        let mut reported = pattern_at(theta_e);
+        let mut edges_since_skip = 0;
+        let mut skips = 0;
+        let mut t = 0.0;
+        while t < 0.6 {
+            theta_e = (theta_e + omega_e * dt).rem_euclid(TAU);
+            let actual = pattern_at(theta_e);
+            if actual != skipped && actual != reported {
+                if reported == before_skipped {
+                    edges_since_skip = 0;
+                    skips += 1;
+                } else {
+                    edges_since_skip += 1;
+                }
+                reported = actual;
+            }
+            let estimate = estimator.get_estimate(timer.sample(reported)).unwrap();
+            t += dt;
+            if skips == 0 {
+                continue;
+            }
+            assert!(estimate.omega >= 0.0, "omega {} reversed sign at t={t:.4}", estimate.omega);
+            assert!(
+                angle_error(estimate.theta, theta_e).abs() < sector_span,
+                "theta {:.3} more than a sector from rotor at {theta_e:.3}, t={t:.4}", estimate.theta
+            );
+            // Exact tracking is only possible while the reported pattern is the real one
+            if edges_since_skip >= 2 && actual == reported {
+                assert!(angle_error(estimate.theta, theta_e).abs() < 0.01, "tracking not recovered at t={t:.4}");
+                assert!((estimate.omega - omega_e).abs() / omega_e < 0.01, "omega {} not recovered at t={t:.4}", estimate.omega);
+            }
+        }
+        assert!(skips >= 2, "expected the skipped edge to recur, got {skips}");
     }
 
     /// Dithering back and forth across a single hall edge must not produce a
