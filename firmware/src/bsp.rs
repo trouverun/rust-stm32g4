@@ -13,7 +13,7 @@ use embassy_stm32::cordic::utils::{f32_to_q1_15, q1_15_to_f32};
 use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin};
 
 use crate::boards::*;
-use crate::constants::{ADC_CALIBRATION_SAMPLE_COUNT};
+use crate::constants::{ADC_CALIBRATION_SAMPLE_COUNT, PWM_FREQUENCY_HZ};
 use crate::memory::{DFU_OFFSET, FIRMWARE_SIZE, BOOTLOADER_STATUS_OFFSET, PAGE_SIZE, Stored, page_offset};
 use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES, BootloaderStatus, BootloaderState, DecodeResult};
 use embassy_stm32::adc::{
@@ -133,7 +133,7 @@ impl AdcFeedback {
             Exten::RISING_EDGE,
         );
         self.adc_b.insert_injected_context(
-            &[self.w_channel.get_hw_channel()],
+            &[self.v_channel.get_hw_channel()],
             FEEDBACK_TRIGGER_B,
             Exten::RISING_EDGE,
         );
@@ -141,13 +141,20 @@ impl AdcFeedback {
             if i < ADC_CALIBRATION_SAMPLE_COUNT {
                 val_u += self.adc_a.read_injected_blocking::<1>()[0] as i32;
                 val_vb += self.adc_b.read_injected_blocking::<1>()[0] as i32;
+
+                let (ch_a, ch_b) = if i == ADC_CALIBRATION_SAMPLE_COUNT - 1 {
+                    (self.u_channel.get_hw_channel(), self.v_channel.get_hw_channel())
+                } else {
+                    (self.v_channel.get_hw_channel(), self.w_channel.get_hw_channel())
+                };
+
                 self.adc_a.insert_injected_context(
-                    &[self.u_channel.get_hw_channel()],
+                    &[ch_a],
                     FEEDBACK_TRIGGER_A,
                     Exten::RISING_EDGE,
                 );
                 self.adc_b.insert_injected_context(
-                    &[self.v_channel.get_hw_channel()],
+                    &[ch_b],
                     FEEDBACK_TRIGGER_B,
                     Exten::RISING_EDGE,
                 );
@@ -378,8 +385,7 @@ impl HasRotorFeedback for HallFeedback {
 pub struct PwmOutput {
     #[cfg(feature = "overcurrent-comparators")]
     comparators: CurrentComparators,
-    pwm: PWM<'static, PwmTimer, PwmRunning>,
-
+    pwm: PWM<'static, PwmTimer, PwmRunning>
 }
 
 impl PwmOutput {
@@ -413,29 +419,19 @@ impl PwmOutput {
         Self {
             #[cfg(feature = "overcurrent-comparators")]
             comparators: mappings.comparators,
-            pwm: tmp.start(),
+            pwm: tmp.start()
         }
     }
 
-    pub fn wait_break2_ready(&self) {
-        for _ in 0..10000 {
-            let brake_set = self.pwm.acknowledge_break2();
-            if !brake_set {
-                break;
-            }
-        }
-        self.pwm.clear_fault();
-    }
-
-    pub fn enable(&self) {
-        self.pwm.enable();
-    }
-
-    pub fn disable(&self) {
+    pub fn disable(&mut self) {
         self.pwm.disable();
     }
 
-    pub fn set_duty_cycles(&self, duty_cycles: PhaseValues) {
+    pub fn enable(&mut self) {
+        self.pwm.enable();
+    }
+
+    fn write_preload_values(&self, duty_cycles: PhaseValues) {
         let arv = self.pwm.get_autoreload_value() as f32;
         self.pwm.set_compare_value(Channel::Ch1, (duty_cycles.u * arv) as u32 as u16);
         self.pwm.set_compare_value(Channel::Ch2, (duty_cycles.v * arv) as u32 as u16);
@@ -457,6 +453,20 @@ impl PwmOutput {
 
     pub fn check_break2(&self) -> bool {
         self.pwm.acknowledge_break2()
+    }
+
+    pub fn set_duty_cycles(&mut self, duty_cycles: PhaseValues) {
+        self.enable();
+        self.write_preload_values(duty_cycles);
+    }
+
+    pub fn active_short(&mut self) {
+        self.enable();
+        self.write_preload_values(PhaseValues::zero());
+    }
+
+    pub fn freewheel(&mut self) {
+        self.disable();
     }
 }
 
