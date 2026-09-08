@@ -8,11 +8,12 @@ pub struct HfiParams {
     pub injection_frequency_hz: f32,
     /// q-axis pairs between d-axis pairs, 0 for q-axis only
     pub q_pairs_per_d_pair: u16,
+    pub disable_threshold_omega_rads: f32
 }
 
 impl HfiParams {
     pub fn none() -> Self {
-        Self { amplitude_v: 0.0, injection_frequency_hz: 0.0, q_pairs_per_d_pair: 0 }
+        Self { amplitude_v: 0.0, injection_frequency_hz: 0.0, q_pairs_per_d_pair: 0, disable_threshold_omega_rads: 0.0 }
     }
 }
 
@@ -75,7 +76,7 @@ mod test {
     #[test]
     fn pairs_are_balanced_and_fit_headroom() {
         let dt = 1.0/PWM_FREQUENCY_HZ;
-        let params = HfiParams { amplitude_v: 2.0, injection_frequency_hz: 4_000.0, q_pairs_per_d_pair: 4 };
+        let params = HfiParams { amplitude_v: 2.0, injection_frequency_hz: 4_000.0, q_pairs_per_d_pair: 4, disable_threshold_omega_rads: f32::MAX };
         let mut hfi = Hfi::new(dt);
         let period = (1.0/(params.injection_frequency_hz*dt)).round() as usize;
         for pair in 0..40 {

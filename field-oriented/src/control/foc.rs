@@ -186,13 +186,18 @@ impl FOC {
 
         let u_dq = ClarkParkValue {d: u_d_sat, q: u_q_sat};
 
-        // Injection rides on top of the clamped voltage within the remaining headroom, 
-        // so that anti-windup and field weakening never see it
+        // Apply high frequency injection:
         let u_applied = match input.command {
-            FocInputType::TargetTorque(_) => {
-                let headroom = u_max - u_mag_linear;
-                let injection = self.hfi.compute(input.hfi, headroom);
-                ClarkParkValue { d: u_dq.d + injection.d, q: u_dq.q + injection.q }
+            FocInputType::TargetTorque(_) => {        
+                if omega_e < input.hfi_params.disable_threshold_omega_rads {
+                    // Injection rides on top of the clamped voltage within the remaining headroom, 
+                    // so that anti-windup and field weakening never see it
+                    let headroom = u_max - u_mag_linear;
+                    let injection = self.hfi.compute(input.hfi_params, headroom);
+                    ClarkParkValue { d: u_dq.d + injection.d, q: u_dq.q + injection.q }
+                } else { ClarkParkValue { 
+                    d: u_dq.d, q:u_dq.q } 
+                }
             }
             _ => {
                 self.hfi.reset();

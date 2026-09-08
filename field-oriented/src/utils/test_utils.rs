@@ -230,7 +230,7 @@ impl TestBench {
             omega,
             phase_currents: self.out.measurement.currents,
             current_limit_a: self.current_limit_a,
-            hfi: self.hfi,
+            hfi_params: self.hfi,
         };
         let result = self.foc.compute(input, self.params, &mut self.accelerator, self.field_weakening).unwrap();
         self.out = self.sim.step(result);

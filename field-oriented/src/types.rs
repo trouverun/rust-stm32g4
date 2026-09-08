@@ -110,7 +110,7 @@ pub struct FocInput {
     pub omega: f32,
     pub phase_currents: PhaseValues,
     pub current_limit_a: f32,
-    pub hfi: HfiParams,
+    pub hfi_params: HfiParams,
 }
 
 #[derive(Clone, Copy, defmt::Format, Debug)]

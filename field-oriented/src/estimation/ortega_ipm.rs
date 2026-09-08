@@ -244,6 +244,7 @@ mod test {
             amplitude_v: 4.0*INJECTION_HZ*c.d_inductance*0.2*motor.current_limit_a,
             injection_frequency_hz: INJECTION_HZ,
             q_pairs_per_d_pair: 4,
+            disable_threshold_omega_rads: f32::MAX
         };
         let mut bench = TestBench::new(sim, motor.current_limit_a);
         bench.hfi = hfi;

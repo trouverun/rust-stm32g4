@@ -1,4 +1,4 @@
-use crate::estimation::EstimationStepFault;
+use super::EstimationStepFault;
 
 /// Accumulator for solving y = a*x via least-squares: a = sum(x*y) / sum(x^2)
 pub struct Lse {
