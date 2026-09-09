@@ -1,4 +1,4 @@
-use crate::ClarkParkValue;
+use crate::{ClarkParkValue, SinCosResult};
 use core::f32::consts::TAU;
 use libm::{cosf, sinf};
 
@@ -29,24 +29,22 @@ impl HfiSource for NoHfi {
     }
 }
 
-impl HfiSource for Hfi {
+impl HfiSource for SinusoidalPulsingHfi {
     #[inline]
     fn compute(&mut self, params: HfiParams) -> ClarkParkValue {
-        Hfi::compute(self, params)
+        SinusoidalPulsingHfi::compute(self, params)
     }
 }
 
-/// Sinusoidal d-axis voltage injection
-pub struct Hfi {
+pub struct SinusoidalPulsingHfi {
     period_ticks: u32,
     tick_counter: u32,
-    cos_step: f32,
-    sin_step: f32,
-    cos_phase: f32,
-    sin_phase: f32,
+    step: SinCosResult,
+    phasor: SinCosResult,
+    history: [SinCosResult; 2],
 }
 
-impl Hfi {
+impl SinusoidalPulsingHfi {
     pub fn new(sampling_time_s: f32, frequency_hz: f32) -> Self {
         let period = frequency_hz * sampling_time_s;
         let period_ticks = if period > 0.0 {
@@ -58,32 +56,42 @@ impl Hfi {
         Self {
             period_ticks,
             tick_counter: 0,
-            cos_step: cosf(step_rad),
-            sin_step: sinf(step_rad),
-            cos_phase: 1.0,
-            sin_phase: 0.0,
+            step: SinCosResult { sin: sinf(step_rad), cos: cosf(step_rad) },
+            phasor: Self::ZERO_PHASE,
+            history: [Self::ZERO_PHASE; 2],
         }
     }
 
+    const ZERO_PHASE: SinCosResult = SinCosResult { sin: 0.0, cos: 1.0 };
+
     pub fn reset(&mut self) {
         self.tick_counter = 0;
-        self.cos_phase = 1.0;
-        self.sin_phase = 0.0;
+        self.phasor = Self::ZERO_PHASE;
+        self.history = [Self::ZERO_PHASE; 2];
     }
 
     #[inline]
     pub fn compute(&mut self, params: HfiParams) -> ClarkParkValue {
-        let injection = ClarkParkValue { d: params.amplitude_v * self.sin_phase, q: 0.0 };
+        let injection = ClarkParkValue { d: params.amplitude_v * self.phasor.sin, q: 0.0 };
+
+        self.history.rotate_right(1);
+        self.history[0] = self.phasor;
 
         self.tick_counter += 1;
         if self.tick_counter >= self.period_ticks {
-            self.reset();
+            self.tick_counter = 0;
+            self.phasor = Self::ZERO_PHASE;
         } else {
-            let cos_next = self.cos_phase * self.cos_step - self.sin_phase * self.sin_step;
-            let sin_next = self.sin_phase * self.cos_step + self.cos_phase * self.sin_step;
-            self.cos_phase = cos_next;
-            self.sin_phase = sin_next;
+            self.phasor = SinCosResult {
+                sin: self.phasor.sin * self.step.cos + self.phasor.cos * self.step.sin,
+                cos: self.phasor.cos * self.step.cos - self.phasor.sin * self.step.sin,
+            };
         }
         injection
+    }
+
+    #[inline]
+    pub fn previous_phasor(&self) -> SinCosResult {
+        self.history[1]
     }
 }

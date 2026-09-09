@@ -282,6 +282,8 @@ mod test {
                     i_dq: step.result.measured_i_dq,
                     u_ab: prev.u_ab,
                     u_dq: prev.u_dq,
+                    is_injecting: prev.is_injecting,
+                    hfi_i_dq: step.result.hfi_i_dq,
                     motor_params: motor.params(),
                     hfi_params: HfiParams::none(),
                     dt_s: dt,

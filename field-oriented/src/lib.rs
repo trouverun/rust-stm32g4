@@ -21,5 +21,5 @@ pub use crate::estimation::{
     SensorlessEstimator, SensorlessEstimatorInput, OrtegaIPMEstimator, SinusoidalPulsingEstimator
 };
 pub use crate::utils::filtering::{BiquadNotchFilter, LowPassFilter, CurrentFilter, PhaseCurrentFilter};
-pub use crate::control::hfi::{Hfi, HfiParams, HfiSource, NoHfi};
+pub use crate::control::hfi::{SinusoidalPulsingHfi, HfiParams, HfiSource, NoHfi};
 pub use crate::control::foc::*;

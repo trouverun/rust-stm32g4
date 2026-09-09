@@ -1,6 +1,6 @@
 extern crate std;
 use std::vec::Vec;
-use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, Hfi, HfiParams, compute_current_pi_controller_gains};
+use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, HfiSource, NoHfi, compute_current_pi_controller_gains};
 use crate::utils::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
 use crate::types::*;
 use crate::estimation::{MotorParams, MotorParamsEstimate};
@@ -14,7 +14,7 @@ pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 200.0;
 pub const PWM_FREQUENCY_HZ: f32 = 40_000.0;
 /// Current loop bandwidth goal of the bench FOC config
 pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
-pub const HFI_FREQUENCY_HZ: f32 = PWM_FREQUENCY_HZ / 5.0;
+pub const HFI_FREQUENCY_HZ: f32 = PWM_FREQUENCY_HZ / 10.0;
 
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: MotorConfig) -> MotorParamsEstimate {
@@ -173,7 +173,6 @@ pub struct TestBench {
     /// Field weakening allowance handed to the FOC each step, on by default
     pub field_weakening: bool,
     pub hfi: HfiParams,
-    pub hfi_source: Hfi,
     /// Latest sim output, also the feedback source for the next step
     pub out: SimOutput,
     dc_bus_voltage: f32,
@@ -210,7 +209,6 @@ impl TestBench {
             current_limit_a,
             field_weakening: true,
             hfi: HfiParams::none(),
-            hfi_source: Hfi::new(dt, HFI_FREQUENCY_HZ),
             out,
             dc_bus_voltage: config.dc_bus_voltage,
             dt,
@@ -226,6 +224,13 @@ impl TestBench {
 
     /// One FOC + sim iteration with the given command and rotor feedback
     pub fn step(&mut self, command: FocInputType, theta: f32, angle_type: AngleType, omega: f32) -> BenchStep {
+        self.step_injected(command, theta, angle_type, omega, &mut NoHfi)
+    }
+
+    /// One FOC + sim iteration with the given command, HFI injection from the estimator, and rotor feedback
+    pub fn step_injected<H: HfiSource>(&mut self,
+        command: FocInputType, theta: f32, angle_type: AngleType, omega: f32, hfi: &mut H
+    ) -> BenchStep {
         let input = FocInput {
             command,
             dc_bus_voltage_v: self.dc_bus_voltage,
@@ -236,7 +241,7 @@ impl TestBench {
             current_limit_a: self.current_limit_a,
             hfi_params: self.hfi,
         };
-        let result = self.foc.compute(input, self.params, &mut self.accelerator, &mut self.hfi_source, self.field_weakening).unwrap();
+        let result = self.foc.compute(input, self.params, &mut self.accelerator, hfi, self.field_weakening).unwrap();
         self.out = self.sim.step(result);
         BenchStep { input, result, out: self.out }
     }

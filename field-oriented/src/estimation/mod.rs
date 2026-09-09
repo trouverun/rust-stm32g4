@@ -111,6 +111,8 @@ pub struct SensorlessEstimatorInput {
     pub i_dq: ClarkParkValue,
     pub u_ab: AlphaBeta,
     pub u_dq: ClarkParkValue,
+    pub is_injecting: bool,
+    pub hfi_i_dq: ClarkParkValue,
     pub motor_params: MotorParamsEstimate,
     pub hfi_params: HfiParams,
     pub dt_s: f32,

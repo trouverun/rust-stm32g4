@@ -1,5 +1,5 @@
 use core::f32::consts::{PI, TAU};
-use crate::{PhaseValues, wrap_to_pi};
+use crate::{PhaseValues, wrap_to_pi, utils::math::clamp};
 
 #[derive(Clone, Copy)]
 pub struct PLLState {
@@ -23,10 +23,17 @@ impl PLL {
     }
 
     #[inline]
-    pub fn update(&mut self, theta_error: f32, dt: f32) {
-        self.state.omega += dt * self.ki * theta_error;
-        self.state.theta = wrap_to_pi(self.state.theta + dt * (self.kp * theta_error + self.state.omega));
+    pub fn update(&mut self, theta_error: f32, dt_s: f32) {
+        self.state.omega += dt_s * self.ki * theta_error;
+        self.state.theta = wrap_to_pi(self.state.theta + dt_s * (self.kp * theta_error + self.state.omega));
     } 
+
+    /// Bound the speed integrator to the range the observer driving it is valid over, so that
+    /// an error signal which has lost the rotor cannot wind it up without limit
+    #[inline]
+    pub fn clamp_omega(&mut self, limit: f32) {
+        self.state.omega = clamp(self.state.omega, -limit, limit);
+    }
 
     #[inline]
     pub fn read(&self) -> PLLState {

@@ -135,7 +135,9 @@ pub struct FocResult {
     pub u_dq: ClarkParkValue,
     /// Applied voltage, HFI included
     pub u_ab: AlphaBeta,
-    pub u_injected: ClarkParkValue
+    /// Whether the HFI voltage was added to the applied voltage this iteration
+    pub is_injecting: bool,
+    pub hfi_i_dq: ClarkParkValue
 }
 
 impl FocResult {
@@ -150,7 +152,8 @@ impl FocResult {
             target_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
             u_dq: ClarkParkValue { d: 0.0, q: 0.0 },
             u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
-            u_injected: ClarkParkValue { d: 0.0, q: 0.0 },
+            is_injecting: false,
+            hfi_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
         }
     }
 }

@@ -106,6 +106,11 @@ impl FOC {
             q: self.notch_iq.update(measured_i_dq.q)
         };
 
+        let hfi_i_dq = ClarkParkValue {
+            d: measured_i_dq.d - filtered_i_dq.d,
+            q: measured_i_dq.q - filtered_i_dq.q
+        };
+
         let (u_dq, target_i_dq) = match input.command {
             FocInputType::CalibrationVoltage(voltage) => {
                 (voltage, ClarkParkValue { d: 0.0, q: 0.0 })
@@ -244,7 +249,8 @@ impl FOC {
             target_i_dq,
             u_dq,
             u_ab,
-            u_injected
+            is_injecting: hfi_injecting,
+            hfi_i_dq
         })
     }
 

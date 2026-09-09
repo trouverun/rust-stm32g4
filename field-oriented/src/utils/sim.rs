@@ -171,6 +171,12 @@ impl MotorSim {
         }
     }
 
+    /// Start the rotor at the given mechanical angle instead of zero
+    pub fn with_rotor_angle(mut self, theta: f32) -> Self {
+        self.state.theta = theta.rem_euclid(TAU);
+        self
+    }
+
     pub fn with_hall_encoder(mut self, encoder: HallEncoder) -> Self {
         self.hall_encoder = Some(encoder);
         self
