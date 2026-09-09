@@ -1,98 +1,89 @@
 use crate::ClarkParkValue;
-use crate::utils::math::{min2, max2};
+use core::f32::consts::TAU;
+use libm::{cosf, sinf};
 
 #[derive(Clone, Copy)]
 pub struct HfiParams {
     /// 0 for no injection
     pub amplitude_v: f32,
     pub injection_frequency_hz: f32,
-    /// q-axis pairs between d-axis pairs, 0 for q-axis only
-    pub q_pairs_per_d_pair: u16,
     pub disable_threshold_omega_rads: f32
 }
 
 impl HfiParams {
     pub fn none() -> Self {
-        Self { amplitude_v: 0.0, injection_frequency_hz: 0.0, q_pairs_per_d_pair: 0, disable_threshold_omega_rads: 0.0 }
+        Self { amplitude_v: 0.0, injection_frequency_hz: 0.0, disable_threshold_omega_rads: 0.0 }
     }
 }
 
-/// Square wave voltage injection in the estimated rotor frame, as balanced +/- pairs
+pub trait HfiSource {
+    fn compute(&mut self, params: HfiParams) -> ClarkParkValue;
+}
+
+pub struct NoHfi;
+
+impl HfiSource for NoHfi {
+    #[inline]
+    fn compute(&mut self, _params: HfiParams) -> ClarkParkValue {
+        ClarkParkValue { d: 0.0, q: 0.0 }
+    }
+}
+
+impl HfiSource for Hfi {
+    #[inline]
+    fn compute(&mut self, params: HfiParams) -> ClarkParkValue {
+        Hfi::compute(self, params)
+    }
+}
+
+/// Sinusoidal d-axis voltage injection
 pub struct Hfi {
-    sampling_time_s: f32,
-    cycle: u32,
-    negative: bool,
-    pair: u16,
-    amplitude: f32,
+    period_ticks: u32,
+    tick_counter: u32,
+    cos_step: f32,
+    sin_step: f32,
+    cos_phase: f32,
+    sin_phase: f32,
 }
 
 impl Hfi {
-    pub fn new(sampling_time_s: f32) -> Self {
-        Self { sampling_time_s, cycle: 0, negative: false, pair: 0, amplitude: 0.0 }
+    pub fn new(sampling_time_s: f32, frequency_hz: f32) -> Self {
+        let period = frequency_hz * sampling_time_s;
+        let period_ticks = if period > 0.0 {
+            ((1.0 / period) + 0.5) as u32
+        } else {
+            0
+        }.max(1);
+        let step_rad = TAU / period_ticks as f32;
+        Self {
+            period_ticks,
+            tick_counter: 0,
+            cos_step: cosf(step_rad),
+            sin_step: sinf(step_rad),
+            cos_phase: 1.0,
+            sin_phase: 0.0,
+        }
     }
 
     pub fn reset(&mut self) {
-        self.cycle = 0;
-        self.negative = false;
-        self.pair = 0;
+        self.tick_counter = 0;
+        self.cos_phase = 1.0;
+        self.sin_phase = 0.0;
     }
-    
-    /// Voltage to add on the estimated d and q axes this cycle, each pair sized to the headroom at its start
-    #[inline]
-    pub fn compute(&mut self, params: HfiParams, headroom_v: f32) -> ClarkParkValue {
-        if params.amplitude_v <= 0.0 || params.injection_frequency_hz <= 0.0 {
-            self.reset();
-            return ClarkParkValue { d: 0.0, q: 0.0 };
-        }
-        let half_period_cycles = ((0.5 / (params.injection_frequency_hz * self.sampling_time_s) + 0.5) as u32).max(1);
-        if self.cycle == 0 && !self.negative {
-            self.amplitude = min2(params.amplitude_v, max2(headroom_v, 0.0));
-        }
-        let voltage = if self.negative { -self.amplitude } else { self.amplitude };
-        let on_d = params.q_pairs_per_d_pair > 0 && self.pair == params.q_pairs_per_d_pair;
-        let injection = if on_d {
-            ClarkParkValue { d: voltage, q: 0.0 }
-        } else {
-            ClarkParkValue { d: 0.0, q: voltage }
-        };
 
-        self.cycle += 1;
-        if self.cycle >= half_period_cycles {
-            self.cycle = 0;
-            if self.negative {
-                self.pair = if on_d { 0 } else { self.pair + 1 };
-            }
-            self.negative = !self.negative;
+    #[inline]
+    pub fn compute(&mut self, params: HfiParams) -> ClarkParkValue {
+        let injection = ClarkParkValue { d: params.amplitude_v * self.sin_phase, q: 0.0 };
+
+        self.tick_counter += 1;
+        if self.tick_counter >= self.period_ticks {
+            self.reset();
+        } else {
+            let cos_next = self.cos_phase * self.cos_step - self.sin_phase * self.sin_step;
+            let sin_next = self.sin_phase * self.cos_step + self.cos_phase * self.sin_step;
+            self.cos_phase = cos_next;
+            self.sin_phase = sin_next;
         }
         injection
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::PWM_FREQUENCY_HZ;
-
-    #[test]
-    fn pairs_are_balanced_and_fit_headroom() {
-        let dt = 1.0/PWM_FREQUENCY_HZ;
-        let params = HfiParams { amplitude_v: 2.0, injection_frequency_hz: 4_000.0, q_pairs_per_d_pair: 4, disable_threshold_omega_rads: f32::MAX };
-        let mut hfi = Hfi::new(dt);
-        let period = (1.0/(params.injection_frequency_hz*dt)).round() as usize;
-        for pair in 0..40 {
-            let headroom = if pair % 2 == 0 { 5.0 } else { 0.5 };
-            let on_d = pair % (params.q_pairs_per_d_pair as usize + 1) == params.q_pairs_per_d_pair as usize;
-            let (mut sum_d, mut sum_q, mut peak) = (0.0, 0.0, 0.0f32);
-            for _ in 0..period {
-                let u = hfi.compute(params, headroom);
-                sum_d += u.d;
-                sum_q += u.q;
-                peak = peak.max(u.d.abs()).max(u.q.abs());
-                assert_eq!(u.d != 0.0, on_d, "pair {pair}");
-                assert_eq!(u.q != 0.0, !on_d, "pair {pair}");
-            }
-            assert_eq!((sum_d, sum_q), (0.0, 0.0));
-            assert_eq!(peak, params.amplitude_v.min(headroom));
-        }
     }
 }

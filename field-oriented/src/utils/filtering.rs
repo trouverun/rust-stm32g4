@@ -1,5 +1,42 @@
-use core::{f32::consts::TAU};
-use crate::PhaseValues;
+use core::f32::consts::{PI, TAU};
+use crate::{PhaseValues, wrap_to_pi};
+
+#[derive(Clone, Copy)]
+pub struct PLLState {
+    pub theta: f32,
+    pub omega: f32
+}
+
+pub struct PLL {
+    kp: f32,
+    ki: f32,
+    state: PLLState
+}
+
+impl PLL {
+    pub fn new(fequency_hz: f32) -> Self {
+        let omega_n = TAU*fequency_hz;
+        Self {
+            kp: 2.0*omega_n, ki: omega_n*omega_n,
+            state: PLLState { theta: 0.0, omega: 0.0 }
+        }
+    }
+
+    #[inline]
+    pub fn update(&mut self, theta_error: f32, dt: f32) {
+        self.state.omega += dt * self.ki * theta_error;
+        self.state.theta = wrap_to_pi(self.state.theta + dt * (self.kp * theta_error + self.state.omega));
+    } 
+
+    #[inline]
+    pub fn read(&self) -> PLLState {
+        self.state
+    }
+
+    pub fn reset(&mut self) {
+        self.state = PLLState { theta: 0.0, omega: 0.0 };
+    }
+}
 
 pub fn iir_cutoff_to_alpha(sample_rate_hz: f32, cutoff_hz: f32) -> f32 {
     libm::expf(-TAU * cutoff_hz / sample_rate_hz)
@@ -8,7 +45,6 @@ pub fn iir_cutoff_to_alpha(sample_rate_hz: f32, cutoff_hz: f32) -> f32 {
 pub struct LowPassFilter {
     alpha: f32,
     prev_filtered_value: f32,
-    prev_measurement: f32,
 }
 
 impl LowPassFilter {
@@ -16,13 +52,12 @@ impl LowPassFilter {
         Self {
             alpha: iir_cutoff_to_alpha(sample_rate_hz, cutoff_hz),
             prev_filtered_value: 0.0,
-            prev_measurement: 0.0,
         }
     }
 
+    #[inline]
     pub fn update(&mut self, measurement: f32) -> f32 {
-        self.prev_filtered_value = self.alpha * self.prev_filtered_value + (1.0 - self.alpha) * self.prev_measurement;
-        self.prev_measurement = measurement;
+        self.prev_filtered_value = self.alpha * self.prev_filtered_value + (1.0 - self.alpha) * measurement;
         self.prev_filtered_value
     }
 
@@ -32,7 +67,47 @@ impl LowPassFilter {
 
     pub fn reset(&mut self) {
         self.prev_filtered_value = 0.0;
-        self.prev_measurement = 0.0;
+    }
+}
+
+pub struct BiquadNotchFilter {
+    b0: f32,
+    b1: f32,
+    a1: f32,
+    a2: f32,
+    s1: f32,
+    s2: f32,
+}
+
+impl BiquadNotchFilter {
+    pub fn new(sample_rate_hz: f32, notch_hz: f32, bandwidth_hz: f32) -> Self {
+        let theta = TAU * notch_hz / sample_rate_hz;
+        let r = (1.0 - PI * bandwidth_hz / sample_rate_hz).clamp(0.0, 0.9999);
+        let cos_theta = libm::cosf(theta);
+        let a1 = -2.0 * r * cos_theta;
+        let a2 = r * r;
+        let dc_gain = (1.0 + a1 + a2) / (2.0 - 2.0 * cos_theta);
+        Self {
+            b0: dc_gain,
+            b1: -2.0 * dc_gain * cos_theta,
+            a1,
+            a2,
+            s1: 0.0,
+            s2: 0.0,
+        }
+    }
+
+    #[inline]
+    pub fn update(&mut self, measurement: f32) -> f32 {
+        let y = self.b0 * measurement + self.s1;
+        self.s1 = self.b1 * measurement - self.a1 * y + self.s2;
+        self.s2 = self.b0 * measurement - self.a2 * y;
+        y
+    }
+
+    pub fn reset(&mut self) {
+        self.s1 = 0.0;
+        self.s2 = 0.0;
     }
 }
 

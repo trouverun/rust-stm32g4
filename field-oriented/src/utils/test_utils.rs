@@ -1,6 +1,6 @@
 extern crate std;
 use std::vec::Vec;
-use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, compute_current_pi_controller_gains};
+use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, Hfi, HfiParams, compute_current_pi_controller_gains};
 use crate::utils::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
 use crate::types::*;
 use crate::estimation::{MotorParams, MotorParamsEstimate};
@@ -14,6 +14,7 @@ pub const FIELD_WEAKENING_BANDWIDTH_HZ: f32 = 200.0;
 pub const PWM_FREQUENCY_HZ: f32 = 40_000.0;
 /// Current loop bandwidth goal of the bench FOC config
 pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
+pub const HFI_FREQUENCY_HZ: f32 = PWM_FREQUENCY_HZ / 5.0;
 
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: MotorConfig) -> MotorParamsEstimate {
@@ -172,6 +173,7 @@ pub struct TestBench {
     /// Field weakening allowance handed to the FOC each step, on by default
     pub field_weakening: bool,
     pub hfi: HfiParams,
+    pub hfi_source: Hfi,
     /// Latest sim output, also the feedback source for the next step
     pub out: SimOutput,
     dc_bus_voltage: f32,
@@ -197,6 +199,7 @@ impl TestBench {
             deadtime_compensation_band_a: 1.0,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
             field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,
+            hfi_frequency: HFI_FREQUENCY_HZ,
         });
         let out = sim.state();
         Self {
@@ -207,6 +210,7 @@ impl TestBench {
             current_limit_a,
             field_weakening: true,
             hfi: HfiParams::none(),
+            hfi_source: Hfi::new(dt, HFI_FREQUENCY_HZ),
             out,
             dc_bus_voltage: config.dc_bus_voltage,
             dt,
@@ -232,7 +236,7 @@ impl TestBench {
             current_limit_a: self.current_limit_a,
             hfi_params: self.hfi,
         };
-        let result = self.foc.compute(input, self.params, &mut self.accelerator, self.field_weakening).unwrap();
+        let result = self.foc.compute(input, self.params, &mut self.accelerator, &mut self.hfi_source, self.field_weakening).unwrap();
         self.out = self.sim.step(result);
         BenchStep { input, result, out: self.out }
     }

@@ -85,7 +85,8 @@ pub struct FocConfig {
     /// The ratio of the maximum linear modulation voltage which can be reached before field weakening starts 
     pub overmodulation_threshold_ratio: f32,
     /// Design bandwidth of the field weakening controller
-    pub field_weakening_bandwidth_hz: f32
+    pub field_weakening_bandwidth_hz: f32,
+    pub hfi_frequency: f32
 }
 
 type TorqueNm = f32;
@@ -123,13 +124,33 @@ pub enum FocFault {
 
 #[derive(Clone, Copy)]
 pub struct FocResult {
+    pub theta_e: f32,
     pub omega_e: f32,
     pub duty_cycles: PhaseValues,
     pub voltage_hexagon_sector: u8,
+    pub measured_i_ab: AlphaBeta,
     pub measured_i_dq: ClarkParkValue,
     pub target_i_dq: ClarkParkValue,
-    /// Clamped control voltage, before injection
+    /// Applied voltage, HFI included
     pub u_dq: ClarkParkValue,
-    /// Applied voltage, injection included
+    /// Applied voltage, HFI included
     pub u_ab: AlphaBeta,
+    pub u_injected: ClarkParkValue
+}
+
+impl FocResult {
+    pub fn none() -> Self {
+        Self {
+            theta_e: 0.0,
+            omega_e: 0.0,
+            duty_cycles: PhaseValues::zero(),
+            voltage_hexagon_sector: 0,
+            measured_i_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
+            measured_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            target_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            u_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
+            u_injected: ClarkParkValue { d: 0.0, q: 0.0 },
+        }
+    }
 }

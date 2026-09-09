@@ -18,8 +18,8 @@ pub use crate::control::pi_control::{PIController, PIGains, PITuningFault, Contr
 pub use crate::estimation::{
     ConstantMotorParameters, MotorParams, MotorParamsEstimate, MotorParamEstimator,
     HallEstimator, HallEstimatorInput, HallEstimatorOutput, FeedbackArbitrator,
-    SensorlessEstimator, SensorlessEstimatorInput, OrtegaIPMEstimator
+    SensorlessEstimator, SensorlessEstimatorInput, OrtegaIPMEstimator, SinusoidalPulsingEstimator
 };
-pub use crate::utils::filtering::{LowPassFilter, CurrentFilter, PhaseCurrentFilter};
-pub use crate::control::hfi::{Hfi, HfiParams};
+pub use crate::utils::filtering::{BiquadNotchFilter, LowPassFilter, CurrentFilter, PhaseCurrentFilter};
+pub use crate::control::hfi::{Hfi, HfiParams, HfiSource, NoHfi};
 pub use crate::control::foc::*;

@@ -47,7 +47,7 @@ impl Lse {
 #[cfg(test)]
 mod test {
     use super::Lse;
-    use crate::estimation::EstimationStepFault;
+    use super::EstimationStepFault;
     use rand::{SeedableRng, rngs::StdRng};
     use rand_distr::{Distribution, Normal};
 

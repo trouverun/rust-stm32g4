@@ -1,7 +1,7 @@
 pub use crate::types::*;
 use crate::utils::math::*;
 use crate::control::field_weakening::{FieldWeakening, FieldWeakeningInput};
-use crate::{PIController, PIGains, MotorParamsEstimate, ControllerParameters, Hfi};
+use crate::{BiquadNotchFilter, ControllerParameters, HfiSource, MotorParamsEstimate, PIController, PIGains};
 
 #[cfg(test)]
 pub use crate::utils::sim::*;
@@ -35,12 +35,13 @@ pub struct FOC {
     calibration_q_pi: PIController,
     d_pi: PIController,
     pub(crate) q_pi: PIController,
+    notch_id: BiquadNotchFilter,
+    notch_iq: BiquadNotchFilter,
     field_weakening: FieldWeakening,
     deadtime_ratio: f32,
     deadtime_band_reciprocal: f32,
     prev_values: PrevIterValues,
     current_control_bandwidth_hz: Option<f32>,
-    hfi: Hfi,
 }
 
 impl FOC {
@@ -56,7 +57,11 @@ impl FOC {
         let d_pi = PIController::new(None, sampling_time_s);
         let q_pi = PIController::new(None, sampling_time_s);
         let field_weakening = FieldWeakening::new(config.field_weakening_bandwidth_hz, sampling_time_s);
-        let hfi = Hfi::new(sampling_time_s);
+
+        // Notch to reject HFI response in current control loop:
+        let notch_bandwidth_hz = 0.1 * config.hfi_frequency;
+        let notch_id = BiquadNotchFilter::new(config.pwm_frequency_hz, config.hfi_frequency, notch_bandwidth_hz);
+        let notch_iq = BiquadNotchFilter::new(config.pwm_frequency_hz, config.hfi_frequency, notch_bandwidth_hz);
 
         let deadtime_ratio = if config.pwm_frequency_hz != 0.0 {
             let pwm_period_ns = 1e9 / config.pwm_frequency_hz;
@@ -71,21 +76,22 @@ impl FOC {
             calibration_d_pi, calibration_q_pi,
             d_pi, q_pi,
             field_weakening,
+            notch_id, notch_iq,
             deadtime_ratio,
             deadtime_band_reciprocal,
             prev_values: PrevIterValues::default(),
             current_control_bandwidth_hz: None,
-            hfi,
         }
     }
 
     #[inline]
-    pub fn compute<A>(&mut self, 
-        input: FocInput, 
+    pub fn compute<A, H>(&mut self,
+        input: FocInput,
         motor_params: MotorParamsEstimate,
         accelerator: &mut A,
+        hfi: &mut H,
         field_weakening: bool
-    ) -> Result<FocResult, FocFault> where A: DoesFocMath {
+    ) -> Result<FocResult, FocFault> where A: DoesFocMath, H: HfiSource {
         let pole_pairs = motor_params.num_pole_pairs.ok_or(FocFault::MissingMotorParams)?;
         let angle_scaler = match input.angle_type {
             AngleType::Electrical => 1.0,
@@ -94,7 +100,11 @@ impl FOC {
         let theta_e = angle_scaler * input.theta;
         let omega_e = angle_scaler * input.omega;
         let sc_e = accelerator.sin_cos(theta_e);
-        let measured_i_dq = forward_clark_park(input.phase_currents, sc_e);
+        let (measured_i_ab, measured_i_dq) = forward_clark_park(input.phase_currents, sc_e);
+        let filtered_i_dq = ClarkParkValue {
+            d: self.notch_id.update(measured_i_dq.d),
+            q: self.notch_iq.update(measured_i_dq.q)
+        };
 
         let (u_dq, target_i_dq) = match input.command {
             FocInputType::CalibrationVoltage(voltage) => {
@@ -148,21 +158,31 @@ impl FOC {
                  }
 
                 let target_i_dq = ClarkParkValue { d: target_i_d, q:  target_i_q};              
-                self.compute_voltages(target_i_dq, measured_i_dq, omega_e, pm_flux_linkage, motor_params)?
+                self.compute_voltages(target_i_dq, filtered_i_dq, omega_e, pm_flux_linkage, motor_params)?                
             }
         };
 
+        let hfi_injecting = match input.command {
+            FocInputType::TargetTorque(_) => omega_e.abs() < input.hfi_params.disable_threshold_omega_rads,
+            _ => false
+        };
+        
         // When outside of the linear modulation region clamp in a way
         // which prioritizes direct axis for field weakening
         const SQRT3_RECIPROCAL: f32 = 1.0/1.73205080757;
         let u_max = input.dc_bus_voltage_v * SQRT3_RECIPROCAL;
+        let u_clamp = if hfi_injecting {
+            max2(u_max - input.hfi_params.amplitude_v, 0.0)
+        } else {
+            u_max
+        };
         let u_mag_sq = u_dq.d*u_dq.d + u_dq.q*u_dq.q;
-        let u_max_sq = u_max*u_max;
-        let (u_d_sat, u_q_sat) = if u_mag_sq > u_max_sq {
-            let u_d_clamped = clamp(u_dq.d, -u_max, u_max);
+        let u_clamp_sq = u_clamp*u_clamp;
+        let (u_d_sat, u_q_sat) = if u_mag_sq > u_clamp_sq {
+            let u_d_clamped = clamp(u_dq.d, -u_clamp, u_clamp);
             let u_d_clampled_sq  = u_d_clamped*u_d_clamped;
-            let u_q_limit = if u_max_sq > u_d_clampled_sq {
-                accelerator.sqrt(u_max_sq - u_d_clampled_sq)
+            let u_q_limit = if u_clamp_sq > u_d_clampled_sq {
+                accelerator.sqrt(u_clamp_sq - u_d_clampled_sq)
             } else {
                 0.0
             };
@@ -170,10 +190,7 @@ impl FOC {
         } else {
             (u_dq.d, u_dq.q)
         };
-
-        // Voltage magnitude limited to the linear region, min(|u|, u_max):
-        // the HFI headroom now, and the field weakening input on the next iteration
-        let u_mag_linear = accelerator.sqrt(min2(u_mag_sq, u_max_sq));
+        let u_mag_linear = accelerator.sqrt(min2(u_mag_sq, u_max*u_max));
 
         // Update saturation error for next PI iteration anti-windup:
         self.prev_values.u_max = u_max;
@@ -183,28 +200,15 @@ impl FOC {
             d: u_d_sat - u_dq.d,
             q: u_q_sat - u_dq.q
         };
-
-        let u_dq = ClarkParkValue {d: u_d_sat, q: u_q_sat};
-
-        // Apply high frequency injection:
-        let u_applied = match input.command {
-            FocInputType::TargetTorque(_) => {        
-                if omega_e < input.hfi_params.disable_threshold_omega_rads {
-                    // Injection rides on top of the clamped voltage within the remaining headroom, 
-                    // so that anti-windup and field weakening never see it
-                    let headroom = u_max - u_mag_linear;
-                    let injection = self.hfi.compute(input.hfi_params, headroom);
-                    ClarkParkValue { d: u_dq.d + injection.d, q: u_dq.q + injection.q }
-                } else { ClarkParkValue { 
-                    d: u_dq.d, q:u_dq.q } 
-                }
-            }
-            _ => {
-                self.hfi.reset();
-                u_dq
-            }
+        
+        // High frequency injection:
+        let u_injected = hfi.compute(input.hfi_params);
+        let u_dq = if hfi_injecting {
+            ClarkParkValue { d: u_d_sat + u_injected.d, q: u_q_sat + u_injected.q } 
+        } else { 
+            ClarkParkValue {d: u_d_sat, q: u_q_sat}
         };
-        let u_ab = inverse_park(u_applied, sc_e);
+        let u_ab = inverse_park(u_dq, sc_e);
         let voltage_hexagon_sector = voltage_sector(&u_ab);
 
         // Space vector modulation:
@@ -221,7 +225,7 @@ impl FOC {
             w: 0.5 + bus_reciprocal*(v_tgt.w + v0_tgt)
         };
         
-        // Dead time compensation (scaled by current magnitude to guard against noise):
+        // Dead time compensation:
         duty_cycles.u += self.deadtime_ratio * clamp(input.phase_currents.u * self.deadtime_band_reciprocal, -1.0, 1.0);
         duty_cycles.v += self.deadtime_ratio * clamp(input.phase_currents.v * self.deadtime_band_reciprocal, -1.0, 1.0);
         duty_cycles.w += self.deadtime_ratio * clamp(input.phase_currents.w * self.deadtime_band_reciprocal, -1.0, 1.0);
@@ -231,29 +235,32 @@ impl FOC {
         duty_cycles.w = clamp(duty_cycles.w, 0.0, 1.0);
 
         Ok(FocResult {
+            theta_e,
             omega_e,
             duty_cycles,
             voltage_hexagon_sector,
+            measured_i_ab,
             measured_i_dq,
             target_i_dq,
             u_dq,
             u_ab,
+            u_injected
         })
     }
 
     #[inline]
     fn compute_voltages(&mut self,
-        target_i_dq: ClarkParkValue, measured_i_dq: ClarkParkValue, 
+        target_i_dq: ClarkParkValue, i_dq: ClarkParkValue, 
         omega_e: f32, pm_flux_linkage: f32, motor_params: MotorParamsEstimate
     ) -> Result<(ClarkParkValue, ClarkParkValue), FocFault> {
-        let mut u_d = self.d_pi.compute(target_i_dq.d, measured_i_dq.d, self.prev_values.u_dq_saturation.d)?;
-        let mut u_q = self.q_pi.compute(target_i_dq.q, measured_i_dq.q, self.prev_values.u_dq_saturation.q)?;
+        let mut u_d = self.d_pi.compute(target_i_dq.d, i_dq.d, self.prev_values.u_dq_saturation.d)?;
+        let mut u_q = self.q_pi.compute(target_i_dq.q, i_dq.q, self.prev_values.u_dq_saturation.q)?;
         
         // Cross-coupling compensation feedforward:
         let q_inductance = motor_params.q_inductance.ok_or(FocFault::MissingMotorParams)?;
-        u_d += -q_inductance*measured_i_dq.q*omega_e;
+        u_d += -q_inductance*i_dq.q*omega_e;
         let d_inductance =  motor_params.d_inductance.ok_or(FocFault::MissingMotorParams)?;
-        u_q += omega_e*(pm_flux_linkage + d_inductance*measured_i_dq.d);
+        u_q += omega_e*(pm_flux_linkage + d_inductance*i_dq.d);
 
         Ok((ClarkParkValue { d: u_d, q: u_q }, target_i_dq))
     }
@@ -290,11 +297,13 @@ impl FOC {
     }
 
     pub fn clear_windup(&mut self) {
+        self.notch_id.reset();
+        self.notch_iq.reset();
         self.calibration_d_pi.clear_windup();
         self.calibration_q_pi.clear_windup();
+        self.field_weakening.clear_windup();
         self.d_pi.clear_windup();
         self.q_pi.clear_windup();
-        self.field_weakening.clear_windup();
         self.prev_values = PrevIterValues::default();
     }
 }

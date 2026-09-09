@@ -34,7 +34,6 @@ pub struct ControllerParameters {
 pub struct PIController {
     gains: Option<PIGains>,
     pub(crate) integral_term: f32,
-    prev_reference: f32,
     prev_rf: f32,
     sampling_time_s: f32,
 }
@@ -44,7 +43,6 @@ impl PIController {
         Self {
             gains,
             integral_term: 0.0,
-            prev_reference: 0.0,
             prev_rf: 0.0,
             sampling_time_s
         }
@@ -55,9 +53,8 @@ impl PIController {
         let gains = self.gains.ok_or(FocFault::MissingControllerGains)?;
 
         // Setpoint filter:
-        let r_f = gains.kr*self.prev_rf + (1.0-gains.kr)*self.prev_reference;
+        let r_f = gains.kr*self.prev_rf + (1.0-gains.kr)*reference;
         let e = r_f - measurement;
-        self.prev_reference = reference;
         self.prev_rf = r_f;
         let proportional = gains.kp * e;
         let anti_windup_term = gains.kt * saturation_error;
@@ -80,7 +77,6 @@ impl PIController {
 
     pub fn clear_windup(&mut self) {
         self.integral_term = 0.0;
-        self.prev_reference = 0.0;
         self.prev_rf = 0.0;
     }
 }

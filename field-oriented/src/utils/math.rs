@@ -26,16 +26,23 @@ pub(crate) fn wrap_to_2pi(angle_rad: f32) -> f32 {
 }
 
 pub(crate) fn forward_clarke(vals: PhaseValues) -> AlphaBeta {
+    const SQRT3_RECIPROCAL: f32 = 0.57735026919;
     AlphaBeta {
-        alpha: 0.666667 * (vals.u - 0.5 * vals.v - 0.5 * vals.w),
-        beta: 0.666667 * (SQRT3_2 * vals.v - SQRT3_2 * vals.w),
+        alpha: 0.666667 * (vals.u - 0.5 * (vals.v + vals.w)),
+        beta: SQRT3_RECIPROCAL * (vals.v - vals.w),
     }
 }
 
-pub(crate) fn forward_clark_park(vals: PhaseValues, sc: SinCosResult) -> ClarkParkValue {
-    let d = 0.666667 * (sc.cos * vals.u + (-0.5*sc.cos + SQRT3_2*sc.sin) * vals.v + (-0.5*sc.cos - SQRT3_2*sc.sin) * vals.w);
-    let q = 0.666667 * (-sc.sin * vals.u + (0.5*sc.sin + SQRT3_2*sc.cos) * vals.v + (0.5*sc.sin - SQRT3_2*sc.cos) * vals.w);
-    ClarkParkValue { d, q }
+pub(crate) fn forward_park(vals: AlphaBeta, sc: SinCosResult) -> ClarkParkValue {
+    ClarkParkValue {
+        d: sc.cos * vals.alpha + sc.sin * vals.beta,
+        q: sc.cos * vals.beta - sc.sin * vals.alpha,
+    }
+}
+
+pub(crate) fn forward_clark_park(vals: PhaseValues, sc: SinCosResult) -> (AlphaBeta, ClarkParkValue) {
+    let ab = forward_clarke(vals);
+    (ab, forward_park(ab, sc))
 }
 
 pub(crate) fn inverse_clark_park(vals: ClarkParkValue, sc: SinCosResult) -> PhaseValues {
