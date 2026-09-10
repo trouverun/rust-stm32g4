@@ -55,7 +55,7 @@ impl FeedbackArbitrator {
         self.encoder_feedback
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn read_sensorless(&mut self) -> Option<Result<RotorFeedback, RotorFeedbackFault>> {
         let low_speed = self.saliency_estimate.and_then(Result::ok);
         let high_speed = self.flux_estimate.and_then(Result::ok);
@@ -171,7 +171,7 @@ mod test {
             feedback.theta, AngleType::Electrical, feedback.omega,
             saliency.hfi_source()
         );
-        let input = || SensorlessEstimatorInput {
+        let input = SensorlessEstimatorInput {
             theta: bench_step.result.theta_e,
             i_ab: bench_step.result.measured_i_ab,
             i_dq: bench_step.result.measured_i_dq,
@@ -181,8 +181,8 @@ mod test {
             hfi_params,
             dt_s: dt,
         };
-        saliency.update(input(), &mut bench.accelerator);
-        flux.update(input(), &mut bench.accelerator);
+        saliency.update(&input, &mut bench.accelerator);
+        flux.update(&input, &mut bench.accelerator);
         arbitrator.update_hfi_sensorless(saliency.read());
         arbitrator.update_flux_sensorless(flux.read());
         *prev = bench_step.result;
@@ -235,7 +235,7 @@ mod test {
                 disable_threshold_omega_rads: high_threshold,
             };
 
-            let mut saliency = SinusoidalPulsingEstimator::new(dt, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
+            let mut saliency = SinusoidalPulsingEstimator::new(PWM_FREQUENCY_HZ, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
             let mut flux = OrtegaIPMEstimator::new(ORTEGA_GAMMA, TAU*ORTEGA_LOWPASS_HZ, FLUX_PLL_HZ);
             // The rotor starts at zero, so the active flux points along alpha
             flux.set_stator_flux(AlphaBeta { alpha: c.pm_flux_linkage, beta: 0.0 });

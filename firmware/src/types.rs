@@ -40,9 +40,12 @@ pub struct FirmwareConfig {
     braking_current_limit_a: f32,
     braking_current_fault_a: f32,
     hfi_amplitude_v: f32,
-    hfi_frequency_hz: f32,
     ortega_gamma: f32,
     ortega_alpha: f32,
+    sensorless_low_speed_threshold: f32,
+    sensorless_high_speed_threshold: f32,
+    sensorless_low_speed_pll_frequency_hz: f32,
+    sensorless_high_speed_pll_frequency_hz: f32,
 }
 
 impl Default for FirmwareConfig {
@@ -63,9 +66,12 @@ impl Default for FirmwareConfig {
             braking_current_limit_a: DEFAULT_BRAKING_CURRENT_LIMIT_A,
             braking_current_fault_a: DEFAULT_BRAKING_CURRENT_FAULT_A,
             hfi_amplitude_v: DEFAULT_HFI_AMPLITUDE_V,
-            hfi_frequency_hz: DEFAULT_HFI_FREQUENCY_HZ,
             ortega_gamma: DEFAULT_ORTEGA_GAMMA,
             ortega_alpha: DEFAULT_ORTEGA_ALPHA,
+            sensorless_low_speed_threshold: DEFAULT_SENSORLESS_LOW_SPEED_THRESHOLD,
+            sensorless_high_speed_threshold: DEFAULT_SENSORLESS_HIGH_SPEED_THRESHOLD,
+            sensorless_low_speed_pll_frequency_hz: DEFAULT_SENSORLESS_LOW_SPEED_PLL_FREQUENCY_HZ,
+            sensorless_high_speed_pll_frequency_hz: DEFAULT_SENSORLESS_HIGH_SPEED_PLL_FREQUENCY_HZ,
         }
     }
 }
@@ -95,6 +101,10 @@ impl FirmwareConfig {
         braking_current_fault_a,
         ortega_gamma,
         ortega_alpha,
+        sensorless_low_speed_threshold,
+        sensorless_high_speed_threshold,
+        sensorless_low_speed_pll_frequency_hz,
+        sensorless_high_speed_pll_frequency_hz,
     }
 
     #[inline]
@@ -107,8 +117,8 @@ impl FirmwareConfig {
     pub fn hfi(&self) -> HfiParams {
         HfiParams {
             amplitude_v: self.hfi_amplitude_v,
-            injection_frequency_hz: self.hfi_frequency_hz,
-            q_pairs_per_d_pair: HFI_Q_PAIRS_PER_D_PAIR,
+            injection_frequency_hz: HFI_FREQUENCY_HZ,
+            disable_threshold_omega_rads: self.sensorless_high_speed_threshold,
         }
     }
 
@@ -186,14 +196,38 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    pub fn set_sensorless(&mut self, hfi_amplitude_v: f32, hfi_frequency_hz: f32, gamma: f32, alpha: f32) -> Result<(), ConfigError> {
+    pub fn set_sensorless_1(
+        &mut self,
+        hfi_amplitude_v: f32,
+        low_speed_threshold: f32,
+        high_speed_threshold: f32,
+        low_speed_pll_frequency_hz: f32,
+        high_speed_pll_frequency_hz: f32,
+    ) -> Result<(), ConfigError> {
         let hfi_amplitude_v = in_range(hfi_amplitude_v, HFI_AMPLITUDE_RANGE)?;
-        let hfi_frequency_hz = in_range(hfi_frequency_hz, HFI_FREQUENCY_RANGE)?;
-        if gamma <= 0.0 || alpha <= 0.0 || alpha >= ORTEGA_ALPHA_MAX {
+        let low_speed_threshold = in_range(low_speed_threshold, SENSORLESS_SPEED_THRESHOLD_RANGE)?;
+        let high_speed_threshold = in_range(high_speed_threshold, SENSORLESS_SPEED_THRESHOLD_RANGE)?;
+        if high_speed_threshold < low_speed_threshold {
+            return Err(ConfigError::RangeInverted);
+        }
+        if low_speed_pll_frequency_hz <= 0.0 || low_speed_pll_frequency_hz > SENSORLESS_PLL_FREQUENCY_HZ_MAX {
+            return Err(ConfigError::OutOfRange);
+        }
+        if high_speed_pll_frequency_hz <= 0.0 || high_speed_pll_frequency_hz > SENSORLESS_PLL_FREQUENCY_HZ_MAX {
             return Err(ConfigError::OutOfRange);
         }
         self.hfi_amplitude_v = hfi_amplitude_v;
-        self.hfi_frequency_hz = hfi_frequency_hz;
+        self.sensorless_low_speed_threshold = low_speed_threshold;
+        self.sensorless_high_speed_threshold = high_speed_threshold;
+        self.sensorless_low_speed_pll_frequency_hz = low_speed_pll_frequency_hz;
+        self.sensorless_high_speed_pll_frequency_hz = high_speed_pll_frequency_hz;
+        Ok(())
+    }
+
+    pub fn set_sensorless_2(&mut self, gamma: f32, alpha: f32) -> Result<(), ConfigError> {
+        if gamma <= 0.0 || alpha <= 0.0 || alpha > ORTEGA_ALPHA_MAX {
+            return Err(ConfigError::OutOfRange);
+        }
         self.ortega_gamma = gamma;
         self.ortega_alpha = alpha;
         Ok(())

@@ -10,7 +10,7 @@ use crate::capture;
 use crate::bandwidth_test;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
-use crate::types::ConfigError;
+use crate::types::{ConfigError, FirmwareConfig};
 use firmware_core::{Command, DataOutcome, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
@@ -144,18 +144,49 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     Err(_) => {},
                 }
             }
-            Ok(Messages::SensorlessConfig(msg)) => {
+            Ok(Messages::SensorlessConfig1(msg)) => {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
-                    candidate.set_sensorless(
-                        msg.hfi_amplitude(), msg.hfi_frequency() as f32, msg.ortega_gamma(), msg.ortega_alpha() as f32
+                    candidate.set_sensorless_1(
+                        msg.hfi_amplitude(), msg.sensorless_low_speed_threshold(),
+                        msg.sensorless_high_speed_threshold(),
+                        msg.sensorless_low_speed_pll_frequency() as f32,
+                        msg.sensorless_high_speed_pll_frequency() as f32,
                     )?;
                     *cfg = candidate;
-                    Ok::<(f32, f32), ConfigError>((candidate.ortega_gamma(), candidate.ortega_alpha()))
+                    Ok::<FirmwareConfig, ConfigError>(candidate)
                 });
                 match applied {
-                    Ok((gamma, alpha)) => {
-                        cx.shared.sensorless_estimator.lock(|est| est.set_tuning(gamma, alpha));
+                    Ok(cfg) => {
+                        cx.shared.saliency_estimator.lock(|est| {
+                            est.set_tuning(cfg.sensorless_low_speed_pll_frequency_hz())
+                        });
+                        cx.shared.flux_estimator.lock(|est| {
+                            est.set_tuning(
+                                cfg.ortega_gamma(), cfg.ortega_alpha(),
+                                cfg.sensorless_high_speed_pll_frequency_hz()
+                            )
+                        });
+                        let _ = app::persist_config::spawn();
+                    }
+                    Err(_) => {},
+                }
+            }
+            Ok(Messages::SensorlessConfig2(msg)) => {
+                let applied = cx.shared.config.lock(|cfg| {
+                    let mut candidate = *cfg;
+                    candidate.set_sensorless_2(msg.ortega_gamma(), msg.ortega_alpha())?;
+                    *cfg = candidate;
+                    Ok::<FirmwareConfig, ConfigError>(candidate)
+                });
+                match applied {
+                    Ok(cfg) => {
+                        cx.shared.flux_estimator.lock(|est| {
+                            est.set_tuning(
+                                cfg.ortega_gamma(), cfg.ortega_alpha(),
+                                cfg.sensorless_high_speed_pll_frequency_hz()
+                            )
+                        });
                         let _ = app::persist_config::spawn();
                     }
                     Err(_) => {},
@@ -254,13 +285,24 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         }
                     }
                 }
-                if all || matches!(block, ConfigQueryBlockId::SensorlessConfig) {
+                if all || matches!(block, ConfigQueryBlockId::SensorlessConfig1) {
                     let cfg = cx.shared.config.lock(|c| *c);
-                    let f = SensorlessConfigReport::try_from(SensorlessConfigReportInit {
+                    let f = SensorlessConfig1Report::try_from(SensorlessConfig1ReportInit {
                         hfi_amplitude: cfg.hfi().amplitude_v,
-                        hfi_frequency: cfg.hfi().injection_frequency_hz as u16,
+                        sensorless_low_speed_threshold: cfg.sensorless_low_speed_threshold(),
+                        sensorless_high_speed_threshold: cfg.sensorless_high_speed_threshold(),
+                        sensorless_low_speed_pll_frequency: cfg.sensorless_low_speed_pll_frequency_hz() as u8,
+                        sensorless_high_speed_pll_frequency: cfg.sensorless_high_speed_pll_frequency_hz() as u8,
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
+                    }
+                }
+                if all || matches!(block, ConfigQueryBlockId::SensorlessConfig2) {
+                    let cfg = cx.shared.config.lock(|c| *c);
+                    let f = SensorlessConfig2Report::try_from(SensorlessConfig2ReportInit {
                         ortega_gamma: cfg.ortega_gamma(),
-                        ortega_alpha: cfg.ortega_alpha() as u16,
+                        ortega_alpha: cfg.ortega_alpha(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));
@@ -301,7 +343,6 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                         Ok(DataOutcome::Accepted(None)) => None,
                         Ok(DataOutcome::OutOfSequence { expected }) => Some(expected),
                         Err(e) => {
-                            defmt::warn!("firmware update: {} at counter {}", e, msg.counter());
                             cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
                             None
                         }

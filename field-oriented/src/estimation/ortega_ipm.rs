@@ -116,7 +116,7 @@ impl OrtegaIPMEstimator {
         self.flux = flux;
     }
 
-    pub fn set_tuning(&mut self, gamma: f32, alpha: f32) {
+    pub fn set_tuning(&mut self, gamma: f32, alpha: f32, pll_frequency_hz: f32) {
         self.gamma = gamma;
         self.alpha = alpha;
         self.inv_alpha = 1.0 / alpha;
@@ -125,6 +125,7 @@ impl OrtegaIPMEstimator {
         }
         self.cross_filter.set_alpha(alpha);
         self.disturbance_filter.set_alpha(alpha);
+        self.pll.set_frequency(pll_frequency_hz);
     }
 }
 
@@ -137,7 +138,7 @@ impl SensorlessEstimator for OrtegaIPMEstimator {
 
     #[inline]
     fn update<A>(&mut self,
-        input: SensorlessEstimatorInput,
+        input: &SensorlessEstimatorInput,
         accelerator: &mut A
     ) where A: DoesFocMath {
         let motor_params = (
@@ -274,7 +275,7 @@ mod test {
                 let omega_ref = profile[segment] + rate*(t - segment as f32 * SEGMENT_S);
                 let torque = c.rotor_inertia*(rate + speed_gain*(omega_ref - bench.out.measurement.omega));
                 let step = bench.step_torque(torque);
-                estimator.update(SensorlessEstimatorInput {
+                estimator.update(&SensorlessEstimatorInput {
                     theta: prev.theta_e,
                     i_ab: step.result.measured_i_ab,
                     i_dq: step.result.measured_i_dq,

@@ -12,7 +12,7 @@ mod boot;
 pub use app::{
     OperatingMode, Command, FaultCause, MemoryFault,
     CalibrationPhase, CalibrationFailureCause, StageResult,
-    foc_step, FocStepInputs, FocStepOutcome, CurrentLoopSnapshot,
+    foc_step, FocStepInputs, FocStepOutcome,
     SafeControlStrategy,
     FirmwareUpdateState, FirmwareUpdateFault, DataOutcome
 };

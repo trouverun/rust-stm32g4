@@ -8,17 +8,9 @@ use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
 use field_oriented::{
     AlphaBeta, AngleType, ClarkParkValue, ConstantMotorParameters, DoesFocMath, FOC,
-    FocInput, FocFault, FocResult, HfiParams, MotorParamEstimator, MotorParamsEstimate, PhaseValues,
+    FocInput, FocFault, FocResult, HfiParams, HfiSource, MotorParamEstimator, MotorParamsEstimate, PhaseValues,
     RotorFeedback, RotorFeedbackFault, FocInputType
 };
-
-#[derive(Clone, Copy, Default)]
-pub struct CurrentLoopSnapshot {
-    pub iq_meas_a: f32,
-    pub id_meas_a: f32,
-    pub iq_target_a: f32,
-    pub id_target_a: f32,
-}
 
 pub struct FocStepInputs {
     pub phase_currents: PhaseValues,
@@ -42,16 +34,12 @@ pub struct FocStepInputs {
     pub dc_bus_min_v: f32,
     pub dc_bus_max_v: f32,
     pub tick_dt_ms: f32,
-    pub hfi: HfiParams,
+    pub hfi_params: HfiParams,
 }
 
 pub enum FocStepOutcome {
     Normal {
-        u_ab: AlphaBeta,
-        u_dq: ClarkParkValue,
-        duty_cycles: PhaseValues,
-        snapshot: CurrentLoopSnapshot,
-        sector: u8,
+        result: FocResult
     },
     /// All low side MOSFETs on, high side off
     ActiveShort,
@@ -60,24 +48,26 @@ pub enum FocStepOutcome {
 
 /// Trait to enable test mocking
 pub trait CurrentController {
-    fn compute<A>(&mut self,
+    fn compute<A, H>(&mut self,
         input: FocInput,
         motor_params: MotorParamsEstimate,
         accelerator: &mut A,
+        hfi: &mut H,
         field_weakening: bool
-    ) -> Result<FocResult, FocFault> where A: DoesFocMath;
+    ) -> Result<FocResult, FocFault> where A: DoesFocMath, H: HfiSource;
 
     fn clear_windup(&mut self);
 }
 
 impl CurrentController for FOC {
-    fn compute<A>(&mut self,
+    fn compute<A, H>(&mut self,
         input: FocInput,
         motor_params: MotorParamsEstimate,
         accelerator: &mut A,
+        hfi: &mut H,
         field_weakening: bool
-    ) -> Result<FocResult, FocFault> where A: DoesFocMath {
-        FOC::compute(self, input, motor_params, accelerator, field_weakening)
+    ) -> Result<FocResult, FocFault> where A: DoesFocMath, H: HfiSource {
+        FOC::compute(self, input, motor_params, accelerator, hfi, field_weakening)
     }
 
     fn clear_windup(&mut self) {
@@ -89,14 +79,15 @@ impl CurrentController for FOC {
 /// Failure stage results assert the fault here, other stage results propagate through the output.
 /// Any outcome other than normal modulation clears controller windup.
 #[inline]
-pub fn foc_step<A, C, M>(
+pub fn foc_step<A, C, M, H>(
     mode: &mut OperatingMode<M>,
     params: &mut ConstantMotorParameters,
     foc: &mut C,
     acceleration: &mut A,
+    hfi: &mut H,
     inputs: FocStepInputs,
-) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator {
-    let (outcome, stage_result) = foc_step_inner(mode, params, foc, acceleration, inputs);
+) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator, H: HfiSource {
+    let (outcome, stage_result) = foc_step_inner(mode, params, foc, acceleration, hfi, inputs);
     if !matches!(outcome, FocStepOutcome::Normal { .. }) {
         foc.clear_windup();
     }
@@ -104,13 +95,14 @@ pub fn foc_step<A, C, M>(
 }
 
 #[inline]
-fn foc_step_inner<A, C, M>(
+fn foc_step_inner<A, C, M, H>(
     mode: &mut OperatingMode<M>,
     params: &mut ConstantMotorParameters,
     foc: &mut C,
     acceleration: &mut A,
+    hfi: &mut H,
     inputs: FocStepInputs,
-) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator {
+) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator, H: HfiSource {
 
     // Fault diagnostics:
     if inputs.watchdog_fault {
@@ -250,11 +242,11 @@ fn foc_step_inner<A, C, M>(
         omega,
         phase_currents: inputs.phase_currents,
         current_limit_a: inputs.active_current_limit_a,
-        hfi: inputs.hfi,
+        hfi_params: inputs.hfi_params,
     };
 
     // Do FOC computations and process the results:
-    let outcome = match foc.compute(foc_input, estimator.get_estimate(), acceleration, true) {
+    let outcome = match foc.compute(foc_input, estimator.get_estimate(), acceleration, hfi, true) {
         Ok(foc_result) => {
             if let Some(result) = &stage_result {
                 if result.clears_windup() {
@@ -264,16 +256,7 @@ fn foc_step_inner<A, C, M>(
                 estimator.after_foc_iteration(foc_result);
             }
             FocStepOutcome::Normal {
-                u_ab: foc_result.u_ab,
-                u_dq: foc_result.u_dq,
-                duty_cycles: foc_result.duty_cycles,
-                snapshot: CurrentLoopSnapshot {
-                    id_meas_a: foc_result.measured_i_dq.d,
-                    iq_meas_a: foc_result.measured_i_dq.q,
-                    id_target_a: foc_result.target_i_dq.d,
-                    iq_target_a: foc_result.target_i_dq.q,
-                },
-                sector: foc_result.voltage_hexagon_sector
+                result: foc_result
             }
         }
         Err(fault) => {
@@ -298,7 +281,7 @@ mod tests {
     use super::super::calibration::{CalibrationOutput, CalibrationPhase, CalibrationRunner};
     use crate::HALL_CALIBRATION_TIMEOUT_S;
     use field_oriented::{
-        ControllerParameters, FocConfig, MotorParams, MotorParamsEstimate,
+        ControllerParameters, FocConfig, MotorParams, MotorParamsEstimate, NoHfi,
         RotorFeedbackFault, SinCosResult, compute_current_pi_controller_gains
     };
 
@@ -341,14 +324,15 @@ mod tests {
     }
 
     impl CurrentController for SpyFoc {
-        fn compute<A>(&mut self,
+        fn compute<A, H>(&mut self,
             input: FocInput,
             motor_params: MotorParamsEstimate,
             accelerator: &mut A,
+            hfi: &mut H,
             field_weakening: bool
-        ) -> Result<FocResult, FocFault> where A: DoesFocMath {
+        ) -> Result<FocResult, FocFault> where A: DoesFocMath, H: HfiSource {
             self.last_estimate = Some(motor_params);
-            self.inner.compute(input, motor_params, accelerator, field_weakening)
+            self.inner.compute(input, motor_params, accelerator, hfi, field_weakening)
         }
 
         fn clear_windup(&mut self) {
@@ -361,6 +345,7 @@ mod tests {
         params: ConstantMotorParameters,
         foc: SpyFoc,
         acceleration: DummyAccelerator,
+        hfi: NoHfi,
     }
 
     impl TestHarness {
@@ -372,7 +357,8 @@ mod tests {
                 mosfet_off_delay_ns: 0.0,
                 deadtime_compensation_band_a: 1.0,
                 overmodulation_threshold_ratio: 0.95,
-                field_weakening_bandwidth_hz: 150.0
+                field_weakening_bandwidth_hz: 150.0,
+                hfi_frequency: PWM_FREQ_HZ / 5.0,
             });
             let _ = foc.set_pi_gains(Some(
                 compute_current_pi_controller_gains(motor_params(), PWM_FREQ_HZ, 0.05*PWM_FREQ_HZ).unwrap(),
@@ -381,15 +367,16 @@ mod tests {
                 params: ConstantMotorParameters::from_other(motor_params()),
                 foc: SpyFoc { inner: foc, clear_windup_calls: 0, last_estimate: None },
                 acceleration: DummyAccelerator,
+                hfi: NoHfi,
             }
         }
 
         fn step(&mut self, mode: &mut OperatingMode, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
-            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, inputs)
+            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
         }
 
         fn step_mock(&mut self, mode: &mut OperatingMode<MockCalibrator>, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
-            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, inputs)
+            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
         }
     }
 
@@ -472,7 +459,7 @@ mod tests {
             dc_bus_min_v: 20.0,
             dc_bus_max_v: 60.0,
             tick_dt_ms: 1000.0 / PWM_FREQ_HZ,
-            hfi: HfiParams::none(),
+            hfi_params: HfiParams::none(),
         }
     }
 
@@ -496,7 +483,7 @@ mod tests {
 
     fn iq_target(outcome: FocStepOutcome) -> Option<f32> {
         match outcome {
-            FocStepOutcome::Normal { snapshot, .. } => Some(snapshot.iq_target_a),
+            FocStepOutcome::Normal { result } => Some(result.target_i_dq.q),
             _ => None,
         }
     }
@@ -652,9 +639,9 @@ mod tests {
         // A stage failure hands the same tick over to the fault reaction, not the stage command:
         let mut mode = calibrating_at(CalibrationPhase::HallCalibration { time_passed_s: HALL_CALIBRATION_TIMEOUT_S });
         let (outcome, _) = TestHarness::new().step(&mut mode, nominal_inputs());
-        if let FocStepOutcome::Normal { snapshot, .. } = outcome {
-            assert!(snapshot.id_target_a.abs() < 1e-3, "followed the stage command, id {}", snapshot.id_target_a);
-            assert!(snapshot.iq_target_a.abs() < 1e-3, "followed the stage command, iq {}", snapshot.iq_target_a);
+        if let FocStepOutcome::Normal { result } = outcome {
+            assert!(result.target_i_dq.d.abs() < 1e-3, "followed the stage command, id {}", result.target_i_dq.d);
+            assert!(result.target_i_dq.q.abs() < 1e-3, "followed the stage command, iq {}", result.target_i_dq.q);
         }
     }
 

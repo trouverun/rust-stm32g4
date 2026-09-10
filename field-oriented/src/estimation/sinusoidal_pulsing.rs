@@ -12,18 +12,22 @@ pub struct SinusoidalPulsingEstimator {
 }
 
 impl SinusoidalPulsingEstimator {
-    pub fn new(sampling_time_s: f32, injection_frequency_hz: f32, pll_frequency_hz: f32) -> Self {
-        let sampling_rate_hz = 1.0/sampling_time_s;
+    pub fn new(sampling_frequency_hz: f32, injection_frequency_hz: f32, pll_frequency_hz: f32) -> Self {
+        let sampling_time_s = 1.0/sampling_frequency_hz;
         Self {
             hfi: SinusoidalPulsingHfi::new(sampling_time_s, injection_frequency_hz),
             notch: BiquadNotchFilter::new(
-                sampling_rate_hz, 
+                sampling_frequency_hz, 
                 2.0*injection_frequency_hz, 
                 0.2*injection_frequency_hz
             ),
             pll: PLL::new(pll_frequency_hz),
             fault: None
         }
+    }
+
+    pub fn set_tuning(&mut self, pll_frequency_hz: f32) {
+        self.pll.set_frequency(pll_frequency_hz);
     }
 }
 
@@ -36,7 +40,7 @@ impl SensorlessEstimator for SinusoidalPulsingEstimator {
 
     #[inline]
     fn update<A>(&mut self,
-        input: SensorlessEstimatorInput,
+        input: &SensorlessEstimatorInput,
         accelerator: &mut A
     ) where A: DoesFocMath {
         if let (Some(Ld), Some(Lq)) = (input.motor_params.d_inductance, input.motor_params.q_inductance) {
@@ -48,7 +52,7 @@ impl SensorlessEstimator for SinusoidalPulsingEstimator {
             let omega_h = TAU*input.hfi_params.injection_frequency_hz;
             let denom = omega_h*(L_sum*L_sum - delta_L*delta_L);
             let k = nom/denom;
-            if input.is_injecting {
+            if input.is_injecting && k.is_normal() {
                 let theta_error = wrapped_diff(input.theta + eps/k, self.pll.read().theta);
                 self.pll.update(theta_error, input.dt_s);
                 self.pll.clamp_omega(input.hfi_params.disable_threshold_omega_rads);
@@ -128,7 +132,7 @@ mod test {
             feedback.theta, AngleType::Electrical, feedback.omega,
             estimator.hfi_source()
         );
-        estimator.update(SensorlessEstimatorInput {
+        estimator.update(&SensorlessEstimatorInput {
             theta: bench_step.result.theta_e,
             i_ab: bench_step.result.measured_i_ab,
             i_dq: bench_step.result.measured_i_dq,
@@ -158,7 +162,7 @@ mod test {
                 .with_current_noise(motor.current_noise_a, 987)
                 .with_load_torque(0.5*motor.torque_at_current_limit());
             let mut bench = bench_for(&motor, sim);
-            let mut estimator = SinusoidalPulsingEstimator::new(dt, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
+            let mut estimator = SinusoidalPulsingEstimator::new(PWM_FREQUENCY_HZ, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
             let mut recorder = Recorder::new(&format!("sinusoidal_pulsing_standstill_{}.html", motor.name), dt, record_interval(RECORD_HZ, dt));
 
             let mut prev = FocResult::none();
@@ -205,7 +209,7 @@ mod test {
                 .with_current_noise(motor.current_noise_a, 987)
                 .with_load_torque(0.25*motor.torque_at_current_limit());
             let mut bench = bench_for(&motor, sim);
-            let mut estimator = SinusoidalPulsingEstimator::new(dt, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
+            let mut estimator = SinusoidalPulsingEstimator::new(PWM_FREQUENCY_HZ, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
             let mut recorder = Recorder::new(&format!("sinusoidal_pulsing_tracking_{}.html", motor.name), dt, record_interval(RECORD_HZ, dt));
 
             let top = 0.05*motor.base_omega();

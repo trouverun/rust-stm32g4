@@ -9,15 +9,14 @@ use crate::capture;
 #[cfg(feature = "bandwidth-test")]
 use crate::bandwidth_test;
 use firmware_core::{
-    OperatingMode, Command, CurrentLoopSnapshot, 
+    OperatingMode, Command,
     FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step
 };
 #[cfg(feature = "bandwidth-test")]
 use firmware_core::SafeControlStrategy;
 use field_oriented::{
-    AlphaBeta, ClarkParkValue, HallCalibration, HasRotorFeedback,
-    MotorParamEstimator, MotorParamsEstimate, SensorlessEstimatorInput,
-    PhaseValues, compute_current_pi_controller_gains, SensorlessEstimator
+    FocResult, HallCalibration, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate,
+    SensorlessEstimator, SensorlessEstimatorInput, compute_current_pi_controller_gains, wrap_to_pi
 };
 
 #[link_section = ".ccmram"]
@@ -50,7 +49,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             calibration_sweep_omega, max_rotor_speed_mech_rpm,
             setpoint_timeout_ms, active_current_limit_a, 
             dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a, 
-            hfi, overcurrent_limit_a
+            hfi_params, overcurrent_limit_a
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_sweep_omega(), cfg.rotor_speed_limit_mech_rpm(),
@@ -75,7 +74,9 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         }
 
         #[cfg(feature = "bandwidth-test")]
-        let (mut target_torque, rotor_feedback) = bandwidth_test::multisine_torque(target_torque, rotor_feedback, active_current_limit_a, params.torque_constant());
+        let (mut target_torque, rotor_feedback) = bandwidth_test::multisine_torque(
+            target_torque, rotor_feedback, active_current_limit_a, params.torque_constant()
+        );
 
         // FOC compute:
         let inputs = FocStepInputs {
@@ -97,32 +98,36 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             dc_bus_min_v,
             dc_bus_max_v,
             tick_dt_ms: DT_MS,
-            hfi,
+            hfi_params,
         };
         cx.local.debug_mappings.la_b.set_high();
-        let (outcome, stage_result) = (&mut cx.shared.mode, &mut cx.shared.motor_parameters, cx.shared.foc).lock(
-            |mode, params, foc| foc_step(mode, params, foc, cx.local.acceleration, inputs),
+        let (outcome, stage_result) = (
+            &mut cx.shared.mode, &mut cx.shared.motor_parameters, cx.shared.foc, 
+            &mut cx.shared.saliency_estimator
+        ).lock(
+            |mode, params, foc, saliency_est| {
+                foc_step(mode, params, foc, cx.local.acceleration, saliency_est.hfi_source(), inputs)
+            }
         );
 
         // Apply outputs:
-        let sensorless_u_ab = *cx.local.prev_u_ab;
-        let (sector, braking_current) = match outcome {
-            FocStepOutcome::Normal { u_ab, u_dq, duty_cycles, snapshot, sector } => {
+        let foc_result = match outcome {
+            FocStepOutcome::Normal { result } => {
                 cx.shared.pwm_output.enable();
-                cx.shared.pwm_output.set_duty_cycles(duty_cycles);
-                cx.shared.current_loop_snapshot.lock(|cs| *cs = snapshot);
-                
+                cx.shared.pwm_output.set_duty_cycles(result.duty_cycles);
+                cx.local.debug_mappings.la_b.set_low();
+
                 #[cfg(feature = "debug-capture")]
                 #[cfg_attr(not(feature = "bandwidth-test"), allow(unused_variables))]
                 let capture_full = capture::record(capture::Record {
-                    id_meas_ma: (snapshot.id_meas_a * 1000.0) as i16,
-                    iq_meas_ma: (snapshot.iq_meas_a * 1000.0) as i16,
-                    id_target_ma: (snapshot.id_target_a * 1000.0) as i16,
-                    iq_target_ma: (snapshot.iq_target_a * 1000.0) as i16,
-                    theta_mrad: (rotor_feedback.map_or(0.0, |fb| fb.theta) * 1000.0) as i16,
-                    omega_100mrad: (rotor_feedback.map_or(0.0, |fb| fb.omega) * 10.0) as i16,
-                    ud_10mv: (u_dq.d * 100.0) as i16,
-                    uq_10mv: (u_dq.q * 100.0) as i16,
+                    id_meas_ma: (result.measured_i_dq.d * 1000.0) as i16,
+                    iq_meas_ma: (result.measured_i_dq.q * 1000.0) as i16,
+                    id_target_ma: (result.target_i_dq.d * 1000.0) as i16,
+                    iq_target_ma: (result.target_i_dq.q * 1000.0) as i16,
+                    theta_mrad: (wrap_to_pi(result.theta_e) * 1000.0) as i16,
+                    omega_100mrad: (result.omega_e * 10.0) as i16,
+                    ud_10mv: (result.u_dq.d * 100.0) as i16,
+                    uq_10mv: (result.u_dq.q * 100.0) as i16,
                 });
                 #[cfg(feature = "bandwidth-test")]
                 if capture_full && bandwidth_test::finish() {
@@ -131,35 +136,46 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                     }));
                 }
 
-                *cx.local.prev_u_ab = u_ab;
-                let braking_current = if let Some(dc_v) = dc_bus_reading_v {
-                    if dc_v > dc_bus_min_v {
-                        -1.5 * (cx.local.prev_u_dq.d * snapshot.id_meas_a + cx.local.prev_u_dq.q * snapshot.iq_meas_a) / dc_v
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                *cx.local.prev_u_dq = u_dq;
-                (sector, braking_current)
+                result
             }
             FocStepOutcome::ActiveShort => {
                 cx.shared.pwm_output.active_short();
-                cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
-                *cx.local.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
-                *cx.local.prev_u_dq = ClarkParkValue { d: 0.0, q: 0.0 };
-                (0, 0.0)
+                cx.local.debug_mappings.la_b.set_low();
+                FocResult::none()
             }
             FocStepOutcome::NonConducting => {
                 cx.shared.pwm_output.freewheel();
-                cx.shared.current_loop_snapshot.lock(|cs| *cs = CurrentLoopSnapshot::default());
-                *cx.local.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
-                *cx.local.prev_u_dq = ClarkParkValue { d: 0.0, q: 0.0 };
-                (0, 0.0)
+                cx.local.debug_mappings.la_b.set_low();
+                FocResult::none()
             }
-        };        
-        cx.local.debug_mappings.la_b.set_low();
+        };
+
+        let params_estimate = cx.shared.mode.lock(|mode| match mode {
+            OperatingMode::Calibration { calibrator } => calibrator.get_estimator().get_estimate(),
+            _ => params,
+        });
+        let (sensorless_input, braking_current) = cx.shared.foc_result.lock(|prev| {
+            let braking_current = match dc_bus_reading_v {
+                Some(dc_v) if dc_v > dc_bus_min_v => {
+                    -1.5 * (prev.u_dq.d * foc_result.measured_i_dq.d + prev.u_dq.q * foc_result.measured_i_dq.q) / dc_v
+                }
+                _ => 0.0,
+            };
+            let sensorless_input = SensorlessEstimatorInput {
+                theta: foc_result.theta_e,
+                i_ab: foc_result.measured_i_ab,
+                i_dq: foc_result.measured_i_dq,
+                u_ab: prev.u_ab,
+                u_dq: prev.u_dq,
+                is_injecting: prev.is_injecting,
+                hfi_i_dq: foc_result.hfi_i_dq,
+                motor_params: params_estimate,
+                hfi_params,
+                dt_s: DT_S,
+            };
+            *prev = foc_result;
+            (sensorless_input, braking_current)
+        });
 
         // Deferred checks, results feed the next tick's FOC step:
         cx.shared.pwm_output.set_comparator_current_limit(overcurrent_limit_a);
@@ -179,27 +195,22 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let (hall_feedback, hall_pattern) = cx.shared.hall_feedback.lock(|hall_feedback| {
             (hall_feedback.read(), hall_feedback.get_pattern())
         });
-
-        let params_estimate = cx.shared.mode.lock(|mode| match mode {
-            OperatingMode::Calibration { calibrator } => calibrator.get_estimator().get_estimate(),
-            _ => params,
-        });
-        let sensorless_input = SensorlessEstimatorInput {
-            currents: phase_currents,
-            voltages: sensorless_u_ab,
-            params: params_estimate,
-            dt_s: DT_S,
-        };
-        let sensorless_feedback = cx.shared.sensorless_estimator.lock(|est| {
-            est.update(sensorless_input, cx.local.acceleration);
+  
+        let saliency_feedback = cx.shared.saliency_estimator.lock(|est| {
+            est.update(&sensorless_input, cx.local.acceleration);
             est.read()
-        });        
+        });
+        let flux_feedback = cx.shared.flux_estimator.lock(|est| {
+            est.update(&sensorless_input, cx.local.acceleration);
+            est.read()
+        });      
 
         cx.shared.feedback_arbitrator.lock(|fa| {            
             #[cfg(feature = "hall-feedback")]
             fa.update_hall(hall_feedback, hall_pattern);
 
-            fa.update_sensorless(sensorless_feedback);
+            fa.update_hfi_sensorless(saliency_feedback);
+            fa.update_flux_sensorless(flux_feedback);
         });
         cx.local.debug_mappings.la_c.set_low();
 
@@ -221,7 +232,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         }
 
         // Always sample something to keep the ADC EOC ISRs running:
-        cx.local.adc_feedback.sample_sector(sector);
+        cx.local.adc_feedback.sample_sector(foc_result.voltage_hexagon_sector);
         cx.local.debug_mappings.la_a.set_low();
     }
 

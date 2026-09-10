@@ -65,13 +65,13 @@ mod app {
         PwmOutput, SoftwareWatchdog, HardwareWatchdog
     };
     use firmware_core::{
-        BootloaderState, Command, CurrentLoopSnapshot, Debounced, FaultCause, FirmwareUpdateState, 
+        BootloaderState, Command, Debounced, FaultCause, FirmwareUpdateState,
         FrameIntegrity, LeakyBucket, OperatingMode, SafeControlStrategy, DecodeResult
     };
     use crate::types::*;
     use field_oriented::{
-        AlphaBeta, ClarkParkValue, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator, 
-        FocConfig, HallCalibration, MotorParamsEstimate, OrtegaIPMEstimator, PhaseCurrentFilter
+        FocResult, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator, 
+        FocConfig, HallCalibration, MotorParamsEstimate, OrtegaIPMEstimator, PhaseCurrentFilter, SinusoidalPulsingEstimator
     };
     use crate::tasks::*;
 
@@ -89,10 +89,11 @@ mod app {
         #[cfg(feature = "hall-feedback")]
         hall_feedback: HallFeedback,
         feedback_arbitrator: FeedbackArbitrator,
-        sensorless_estimator: OrtegaIPMEstimator,
+        saliency_estimator: SinusoidalPulsingEstimator,
+        flux_estimator: OrtegaIPMEstimator,
         phase_current_filter: PhaseCurrentFilter,
         braking_current_filter: CurrentFilter,
-        current_loop_snapshot: CurrentLoopSnapshot,
+        foc_result: FocResult,
         // Only touched by the priority 6 ISRs, so no lock is needed:
         #[lock_free]
         software_watchdog: SoftwareWatchdog,
@@ -116,6 +117,8 @@ mod app {
             assert!(BOARD.mosfet_off_delay_ns > 0, "MOSFET off delay needs to be positive");
             assert!(BOARD.deadtime_compensation_band_a >= 0.0);
             assert!(OVERMODULATION_THRESHOLD_RATIO > 0.0 && OVERMODULATION_THRESHOLD_RATIO <= 1.0);
+            assert!(HFI_FREQUENCY_SUBMULTIPLE > 2);
+            assert!(CURRENT_LOOP_BANDWIDTH_HZ < HFI_FREQUENCY_HZ);
         };
         let peripheral_mappings = Active::map_peripherals();
 
@@ -179,6 +182,7 @@ mod app {
             deadtime_compensation_band_a: BOARD.deadtime_compensation_band_a,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
             field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,
+            hfi_frequency: HFI_FREQUENCY_HZ,
         };
         let mut foc = FOC::new(foc_cfg);
 
@@ -236,9 +240,21 @@ mod app {
             memory,
             foc,
             motor_parameters,
-            current_loop_snapshot: CurrentLoopSnapshot::default(),
-            feedback_arbitrator: FeedbackArbitrator::new(SENSORLESS_FEEDBACK_MIN_ELEC_OMEGA),
-            sensorless_estimator: OrtegaIPMEstimator::new(config.ortega_gamma(), config.ortega_alpha(), ORTEGA_PLL_BANDWIDTH_HZ),
+            foc_result: FocResult::none(),
+            feedback_arbitrator: FeedbackArbitrator::new(
+                config.sensorless_low_speed_threshold(), 
+                config.sensorless_high_speed_threshold()
+            ),
+            saliency_estimator: SinusoidalPulsingEstimator::new(
+                PWM_FREQUENCY_HZ.0 as f32,
+                HFI_FREQUENCY_HZ,
+                config.sensorless_low_speed_pll_frequency_hz()
+            ),
+            flux_estimator: OrtegaIPMEstimator::new(
+                config.ortega_gamma(),
+                config.ortega_alpha(),
+                config.sensorless_high_speed_pll_frequency_hz()
+            ),
             phase_current_filter,
             braking_current_filter,
             software_watchdog: SoftwareWatchdog::new(
@@ -262,7 +278,7 @@ mod app {
         #[task(priority = 1, shared = [motor_parameters, mode, memory])]
         async fn store_motor_params(_: store_motor_params::Context, parameters: MotorParamsEstimate);
 
-        #[task(priority = 1, shared = [can, current_loop_snapshot, feedback_arbitrator, mode, board_status])]
+        #[task(priority = 1, shared = [can, foc_result, feedback_arbitrator, mode, board_status])]
         async fn can_tx_task(_: can_tx_task::Context);
 
         #[task(
@@ -270,7 +286,7 @@ mod app {
             shared = [
                 can, mode, runtime_values, config, phase_current_filter,
                 braking_current_filter, foc, motor_parameters, memory,
-                sensorless_estimator
+                saliency_estimator, flux_estimator
             ],
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
@@ -292,8 +308,6 @@ mod app {
         priority = 6, binds = $foc_irq,
         local = [
             adc_feedback, acceleration, hardware_watchdog, debug_mappings,
-            prev_u_ab: AlphaBeta = AlphaBeta { alpha: 0.0, beta: 0.0 },
-            prev_u_dq: ClarkParkValue = ClarkParkValue { d: 0.0, q: 0.0 },
             board_overtemp: Debounced = Debounced::new(false),
             dc_undervolt: Debounced = Debounced::new(false),
             dc_overvolt: Debounced = Debounced::new(false),
@@ -302,10 +316,10 @@ mod app {
             dc_bus_v: Option<f32> = None,
         ],
         shared = [
-            pwm_output, foc, motor_parameters, feedback_arbitrator, sensorless_estimator,
-            mode, board_status, config, runtime_values,
-            current_loop_snapshot, phase_current_filter, software_watchdog,
-            braking_current_filter, hall_feedback
+            pwm_output, foc, motor_parameters, feedback_arbitrator, 
+            saliency_estimator, flux_estimator, mode, board_status, 
+            config, runtime_values, foc_result, phase_current_filter, 
+            software_watchdog, braking_current_filter, hall_feedback
         ]
     )]    
     #[link_section = ".ccmram"]

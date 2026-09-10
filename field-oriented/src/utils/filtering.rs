@@ -14,12 +14,18 @@ pub struct PLL {
 }
 
 impl PLL {
-    pub fn new(fequency_hz: f32) -> Self {
-        let omega_n = TAU*fequency_hz;
+    pub fn new(frequency_hz: f32) -> Self {
+        let omega_n = TAU*frequency_hz;
         Self {
             kp: 2.0*omega_n, ki: omega_n*omega_n,
             state: PLLState { theta: 0.0, omega: 0.0 }
         }
+    }
+
+    pub fn set_frequency(&mut self, frequency_hz: f32) {
+        let omega_n = TAU*frequency_hz;
+        self.kp = 2.0*omega_n;
+        self.ki = omega_n*omega_n;
     }
 
     #[inline]

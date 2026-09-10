@@ -28,7 +28,7 @@ pub trait SensorlessEstimator {
     fn hfi_source(&mut self) -> &mut Self::Hfi;
 
     fn update<A>(&mut self,
-        input: SensorlessEstimatorInput,
+        input: &SensorlessEstimatorInput,
         accelerator: &mut A
     ) where A: DoesFocMath;
 }
