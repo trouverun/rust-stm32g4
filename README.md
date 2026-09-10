@@ -6,7 +6,7 @@
 ## Features
 - Torque control with Field Oriented Control (FOC)
 - Field weakening control
-- Sensorless rotor angle/velocity estimation
+- Full speed range sensorless rotor angle estimation
 - Automatic motor parameter identification
 - Current control PI autotuning
 - Fault diagnostics and fault handling with per-fault reactions
@@ -83,15 +83,17 @@ The estimated current control loop bandwidth of 921 Hz deviates from the targete
 ### Sensorless rotor angle estimation
 The performance of the sensorless rotor angle estimation was evaluated using the following test sequence:
 
-1. The rotor shaft was rotated by hand at very low angular velocity with no torque commanded from the motor
-2. Torque was commanded from the motor to spin up from standstill all the way to the field weakening region
-3. External torque was applied to the rotor shaft to bring it to a stop, after which it was allowed to accelerate again
+1. Torque was commanded by a PID loop on the host PC to regulate the mechanical rotor speed to 5 rad/s
+2. Braking torque was commanded to bring the rotor to a stop
+3. Torque was commanded by a PID loop on the host PC to regulate the mechanical rotor speed to -5 rad/s
+4. Braking torque was commanded to bring the rotor to a stop
+5. Constant torque command was held for 3 seconds
 
 The angle derived from a digital Hall sensor was not used during control, but is shown as a rough ground truth reference. The below plot visualizes the experiment using data collected via CAN:
 
-<img width="1800" height="1350" alt="image" src="https://github.com/user-attachments/assets/8906e31a-f238-45e3-9894-aaf19c873ceb" />
+<img width="1800" height="1350" alt="image" src="https://github.com/user-attachments/assets/3b359282-3fe5-4276-96f5-49c8c00c3015" />
 
-The sensorless estimator matches the Hall interpolated rotor angle even at low velocities. Note that the Hall interpolated angle itself can be off by up to 1 rad on the 4 pole motor used in testing. The sensorless performance does degrade during extended standstill and in the deep field weakening region, where the high modulation index shrinks the low side sampling window and causes quite heavy current noise. Minor current ripple can be seen all around, which is caused by the 2.5 kHz square wave voltage superimposed to the FOC voltage commands to make the rotor angle observable at low velocities.
+The sensorless estimator matches the Hall interpolated rotor angle even at very low velocities. Note that the Hall interpolated angle itself can be off by up to 1 rad on the 4 pole motor used in testing, which shows up as additional error during standstill and acceleration. The D-axis current ripple at low angular velocities is caused by the high frequency injection used in the saliency observer.
 
 </details>
 
