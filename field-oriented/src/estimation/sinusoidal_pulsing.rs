@@ -34,6 +34,7 @@ impl SensorlessEstimator for SinusoidalPulsingEstimator {
         &mut self.hfi
     }
 
+    #[inline]
     fn update<A>(&mut self,
         input: SensorlessEstimatorInput,
         accelerator: &mut A
@@ -53,6 +54,9 @@ impl SensorlessEstimator for SinusoidalPulsingEstimator {
                 self.pll.clamp_omega(input.hfi_params.disable_threshold_omega_rads);
                 self.fault = None;
             } else {
+                let theta_error = wrapped_diff(input.theta, self.pll.read().theta);
+                // Keep the pll slaved so re-entry is smooth:
+                self.pll.update(theta_error, input.dt_s);
                 self.fault = Some(RotorFeedbackFault::Unobservable);
             }
         } else {
@@ -81,14 +85,13 @@ mod test {
     use super::*;
     use crate::{
         BenchStep, CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, FocInputType, FocResult,
-        HFI_FREQUENCY_HZ, HfiParams, Motor, MotorSim, PWM_FREQUENCY_HZ, Recorder,
-        TestBench, angle_error, record_interval, reference_motors
+        HFI_FREQUENCY_HZ, HfiParams, INJECTION_RATIO, Motor, MotorSim, PWM_FREQUENCY_HZ,
+        Recorder, SALIENCY_PLL_HZ, TestBench, angle_error, pll_settling_s, record_interval,
+        reference_motors
     };
     use std::format;
 
-    const PLL_BANDWIDTH_HZ: f32 = 20.0;
-    const PLL_SETTLING_S: f32 = 8.0/(TAU*PLL_BANDWIDTH_HZ);
-    const INJECTION_RATIO: f32 = 0.15;
+    const PLL_SETTLING_S: f32 = pll_settling_s(8.0, SALIENCY_PLL_HZ);
     const RECORD_HZ: f32 = 2_000.0;
     const SEGMENT_S: f32 = 0.5;
 
@@ -155,7 +158,7 @@ mod test {
                 .with_current_noise(motor.current_noise_a, 987)
                 .with_load_torque(0.5*motor.torque_at_current_limit());
             let mut bench = bench_for(&motor, sim);
-            let mut estimator = SinusoidalPulsingEstimator::new(dt, HFI_FREQUENCY_HZ, PLL_BANDWIDTH_HZ);
+            let mut estimator = SinusoidalPulsingEstimator::new(dt, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
             let mut recorder = Recorder::new(&format!("sinusoidal_pulsing_standstill_{}.html", motor.name), dt, record_interval(RECORD_HZ, dt));
 
             let mut prev = FocResult::none();
@@ -202,7 +205,7 @@ mod test {
                 .with_current_noise(motor.current_noise_a, 987)
                 .with_load_torque(0.25*motor.torque_at_current_limit());
             let mut bench = bench_for(&motor, sim);
-            let mut estimator = SinusoidalPulsingEstimator::new(dt, HFI_FREQUENCY_HZ, PLL_BANDWIDTH_HZ);
+            let mut estimator = SinusoidalPulsingEstimator::new(dt, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
             let mut recorder = Recorder::new(&format!("sinusoidal_pulsing_tracking_{}.html", motor.name), dt, record_interval(RECORD_HZ, dt));
 
             let top = 0.05*motor.base_omega();

@@ -230,13 +230,11 @@ mod test {
     use core::f32::consts::TAU;
     use super::*;
     use crate::{
-        CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, FocResult, HfiParams, MotorSim, PWM_FREQUENCY_HZ, Recorder, TestBench, angle_error, record_interval, reference_motors
+        CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, FLUX_PLL_HZ, FocResult, HfiParams, MotorSim, ORTEGA_GAMMA, ORTEGA_LOWPASS_HZ, PWM_FREQUENCY_HZ, Recorder, TestBench, angle_error, pll_settling_s, record_interval, reference_motors
     };
 
-    const GAMMA: f32 = 10.0;
-    const LOWPASS_HZ: f32 = 20.0;
-    const PLL_BANDWIDTH_HZ: f32 = 100.0;
-    const PLL_SETTLING_S: f32 = 3.0/(TAU*PLL_BANDWIDTH_HZ);
+    const PLL_SETTLING_S: f32 = pll_settling_s(3.0, FLUX_PLL_HZ);
+    const RECORD_HZ: f32 = 2_000.0;
     const SEGMENT_S: f32 = 0.5;
 
     /// Rest, a speed reversal at half base speed against load, rest again. On the constant speed
@@ -255,7 +253,7 @@ mod test {
             bench.tune_pi(bench.params);
             bench.field_weakening = false;
 
-            let mut estimator = OrtegaIPMEstimator::new(GAMMA, TAU*LOWPASS_HZ, PLL_BANDWIDTH_HZ);
+            let mut estimator = OrtegaIPMEstimator::new(ORTEGA_GAMMA, TAU*ORTEGA_LOWPASS_HZ, FLUX_PLL_HZ);
             // A quarter turn off, the polarity resolved:
             estimator.set_stator_flux(AlphaBeta { alpha: 0.0, beta: c.pm_flux_linkage });
             // Misalignment may not cost more torque than the current noise hides:
@@ -264,7 +262,7 @@ mod test {
             let top = 0.5*motor.base_omega();
             let speed_gain = TAU*CURRENT_LOOP_BANDWIDTH_HZ/10.0;
             let profile = [0.0, 0.0, top, top, -top, -top, 0.0, 0.0];
-            let mut recorder = Recorder::new(&std::format!("ortega_ipm_{}.html", motor.name), dt, record_interval(2_000.0, dt));
+            let mut recorder = Recorder::new(&std::format!("ortega_ipm_{}.html", motor.name), dt, record_interval(RECORD_HZ, dt));
             let mut prev = FocResult::none();
             let mut prev_segment = usize::MAX;
             let mut entry_error = 0.0;

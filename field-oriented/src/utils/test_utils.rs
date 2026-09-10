@@ -1,9 +1,10 @@
 extern crate std;
+use core::f32::consts::TAU;
 use std::vec::Vec;
 use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, HfiSource, NoHfi, compute_current_pi_controller_gains};
 use crate::utils::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
 use crate::types::*;
-use crate::estimation::{MotorParams, MotorParamsEstimate};
+use crate::commission::{MotorParams, MotorParamsEstimate};
 
 pub(crate) const SQRT3_RECIPROCAL: f32 = 1.0 / 1.73205080757;
 /// Overmodulation threshold shared by the bench FOC config and the tests asserting against it
@@ -15,6 +16,22 @@ pub const PWM_FREQUENCY_HZ: f32 = 40_000.0;
 /// Current loop bandwidth goal of the bench FOC config
 pub const CURRENT_LOOP_BANDWIDTH_HZ: f32 = 1000.0;
 pub const HFI_FREQUENCY_HZ: f32 = PWM_FREQUENCY_HZ / 10.0;
+
+/// Gradient gain of the flux observer under test
+pub const ORTEGA_GAMMA: f32 = 10.0;
+/// Regression filter cutoff of the flux observer under test
+pub const ORTEGA_LOWPASS_HZ: f32 = 20.0;
+/// Tracking PLL frequency of the flux observer under test
+pub const FLUX_PLL_HZ: f32 = 100.0;
+/// Tracking PLL frequency of the saliency observer under test
+pub const SALIENCY_PLL_HZ: f32 = 20.0;
+/// Injection amplitude as a fraction of the largest linear voltage vector
+pub const INJECTION_RATIO: f32 = 0.15;
+
+/// Time a tracking PLL of the given frequency needs to settle, in loop time constants
+pub const fn pll_settling_s(time_constants: f32, pll_frequency_hz: f32) -> f32 {
+    time_constants / (TAU * pll_frequency_hz)
+}
 
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: MotorConfig) -> MotorParamsEstimate {
