@@ -50,18 +50,19 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
         const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         let (
-            calibration_voltage_v, calibration_current_a,
-            calibration_sweep_omega, max_rotor_speed_mech_rpm,
-            setpoint_timeout_ms, active_current_limit_a, 
-            dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a,
-            hfi_params, overcurrent_limit_a, braking_current_fault_a
+            calibration_voltage_v, calibration_current_a, calibration_sweep_omega,
+            active_current_limit_a, overcurrent_limit_a,
+            rotor_speed_limit_mech_rpm, rotor_overspeed_fault_threshold_mech_rpm,
+            dc_bus_min_v, dc_bus_max_v,
+            braking_current_limit_a, braking_current_fault_a,
+            setpoint_timeout_ms, hfi_params
         ) = cx.shared.config.lock(|cfg| {
-                (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
-                cfg.calibration_sweep_omega(), cfg.rotor_overspeed_limit_mech_rpm(),
-                cfg.setpoint_timeout_ms(), cfg.rated_current_limit_a(),
+                (cfg.calibration_voltage_v(), cfg.calibration_current_a(), cfg.calibration_sweep_omega(),
+                cfg.rated_current_limit_a(), cfg.overcurrent_limit_a(),
+                cfg.rotor_speed_limit_mech_rpm(), cfg.rotor_overspeed_limit_mech_rpm(),
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
-                cfg.braking_current_limit_a(), cfg.hfi(), 
-                cfg.overcurrent_limit_a(), cfg.braking_current_fault_a())
+                cfg.braking_current_limit_a(), cfg.braking_current_fault_a(),
+                cfg.setpoint_timeout_ms(), cfg.hfi())
             });
         
         let (mut rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
@@ -98,7 +99,8 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             calibration_sweep_omega,
             target_torque,
             active_current_limit_a,
-            max_rotor_speed_mech_rpm,
+            rotor_speed_limit_mech_rpm,
+            rotor_overspeed_fault_threshold_mech_rpm,
             braking_current_limit_a,
             dc_bus_min_v,
             dc_bus_max_v,

@@ -28,7 +28,8 @@ pub struct FocStepInputs {
 
     pub target_torque: Option<f32>,
     pub active_current_limit_a: f32,
-    pub max_rotor_speed_mech_rpm: u16,
+    pub rotor_speed_limit_mech_rpm: u16,
+    pub rotor_overspeed_fault_threshold_mech_rpm: u16,
     pub braking_current_limit_a: f32,
 
     pub dc_bus_min_v: f32,
@@ -157,15 +158,15 @@ fn foc_step_inner<A, C, M, H>(
     }
 
     // Mechanical speed limits scaled to the feedback's angle domain:
+    const RPM_TO_RADS: f32 = PI / 30.0;
     let mech_to_feedback = match angle_type {
         AngleType::Mechanical => Some(1.0),
         AngleType::Electrical => active_estimate.num_pole_pairs.map(|pp| pp as f32),
     };
     // Rotor overspeed checked only with valid feedback:
     if !rotor_feedback_fault {
-        const RPM_TO_RADS: f32 = PI / 30.0;
         if let Some(scale) = mech_to_feedback {
-            let max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS * scale;
+            let max_omega = inputs.rotor_overspeed_fault_threshold_mech_rpm as f32 * RPM_TO_RADS * scale;
             if omega.abs() > max_omega {
                 mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
             }
@@ -221,6 +222,18 @@ fn foc_step_inner<A, C, M, H>(
     } else {
         // Normal torque control:
         let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
+        
+        // Do not accelerate rotor beyond speed limit:
+        if let Some(scale) = mech_to_feedback {
+            let rotor_speed_limit_f = RPM_TO_RADS * scale * inputs.rotor_speed_limit_mech_rpm as f32;
+            if omega > rotor_speed_limit_f && torque_demand > 0.0 {
+                torque_demand = 0.0
+            } else if omega < -rotor_speed_limit_f && torque_demand < 0.0 {
+                torque_demand = 0.0
+            }
+        };
+        
+        // Clamp braking torque:
         if omega > stationary_omega_threshold && torque_demand < -max_braking_torque {
             torque_demand = -max_braking_torque;
         } else if omega < -stationary_omega_threshold && torque_demand > max_braking_torque {
@@ -478,7 +491,8 @@ mod tests {
             calibration_sweep_omega: 0.5,
             target_torque: Some(0.0),
             active_current_limit_a: CURRENT_LIMIT_A,
-            max_rotor_speed_mech_rpm: MAX_RPM,
+            rotor_speed_limit_mech_rpm: (0.9 * MAX_RPM as f32) as u16,
+            rotor_overspeed_fault_threshold_mech_rpm: MAX_RPM,
             braking_current_limit_a: BRAKING_LIMIT_A,
             dc_bus_min_v: 20.0,
             dc_bus_max_v: 60.0,
@@ -557,6 +571,33 @@ mod tests {
         let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
         let expected_iq = -CURRENT_LIMIT_A;
         assert!((iq - expected_iq).abs() < 1e-3, "iq {iq}, expected {expected_iq}");
+    }
+
+    /// The speed limit only zeroes demand accelerating the rotor past it, braking always passes.
+    #[test]
+    fn speed_limit_blocks_only_accelerating_demand() {
+        const LIMIT_RPM: u16 = 100;
+        let limit_omega = LIMIT_RPM as f32 * PI / 30.0 * POLE_PAIRS as f32;
+        let cases = [
+            (1.2 * limit_omega, 1.0, 0.0),
+            (-1.2 * limit_omega, -1.0, 0.0),
+            (1.2 * limit_omega, -1.0, -1.0),
+            (-1.2 * limit_omega, 1.0, 1.0),
+            (0.5 * limit_omega, 1.0, 1.0),
+            (0.5 * limit_omega, -1.0, -1.0),
+            (-0.5 * limit_omega, -1.0, -1.0),
+        ];
+        for (omega, demand_iq, expected_iq) in cases {
+            let mut mode = OperatingMode::TorqueControl;
+            let mut demanding = nominal_inputs();
+            demanding.rotor_speed_limit_mech_rpm = LIMIT_RPM;
+            demanding.rotor_feedback = Ok(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega });
+            demanding.target_torque = Some(demand_iq * motor_params().torque_constant().unwrap());
+
+            let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
+            let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
+            assert!((iq - expected_iq).abs() < 1e-3, "iq {iq}, expected {expected_iq} at omega {omega}");
+        }
     }
 
     /// Each fault input raises its cause and leaves torque control on the same tick.
