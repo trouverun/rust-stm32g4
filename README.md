@@ -303,3 +303,7 @@ The current measurement ADC conversion starts at the PWM midpoint and triggers t
   ```
   At this stage further firmware flashing can be done through CAN.
 </details>
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
