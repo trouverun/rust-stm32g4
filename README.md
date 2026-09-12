@@ -44,7 +44,7 @@ The current control loop performance was evaluated using firwmare built with the
 
 The response to a 300 Hz sine wave torque setpoint shows satisfactory q-axis current tracking and d-axis current regulation performance:
 
-<img width="1000" height="900" alt="image" src="https://github.com/user-attachments/assets/07c7bc02-41fa-4ff7-a404-5f972120dc87" />
+<img width="1000" height="900" alt="tracking" src="https://github.com/user-attachments/assets/9b6bab83-7d53-41ca-ad75-944268335cd3" />
 
 To properly evaluate the current control bandwidth, a sum of sine waves (multisine) was fed as the torque setpoint instead. The multisine consisting of 14 odd harmonics of 100 Hz (spanning from 100 Hz to 2.7 kHz) was applied for a total of 7 periods (7*10 ms). The data was post-processed using `scripts/analysis.py` which first coherently averages the 7 periods of setpoint->output data before applying a discrete fourier transform. The closed loop gain was then computed as the ratio of output spectrum to the setpoint spectrum at each of the 14 excitation frequencies, and the data points were interpolated to find the -3 dB crossing point, which gives the closed-loop bandwidth:
 
