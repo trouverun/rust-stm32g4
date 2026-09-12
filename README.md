@@ -123,11 +123,10 @@ The current measurement ADC conversion starts at the PWM midpoint and triggers t
   and in [/firmware/Cargo.toml](/firmware/Cargo.toml): 
   ```rust
   board-zest1 = [
-    "mcu-opamps", "overcurrent-comparators",
-    "embassy-stm32/stm32g473qe", "rtic-monotonics/stm32g473qe",
+    "debug-capture", "mcu-opamps", "overcurrent-comparators", "hall-feedback", "embassy-stm32/stm32g473qe", "rtic-monotonics/stm32g473qe",
   ]
   ```
-  The entry needs to follow the naming convention of "board-{yourboard}", and specify the supported features (e.g. MCU side opamps, SPI encoders, etc.) along with the embassy/RTIC flags for the chip (stm32g473qe in this case).
+  The entry needs to follow the naming convention of "board-{yourboard}", and specify the supported features (e.g. MCU side opamps, Hall sensor feedback) along with the embassy/RTIC flags for the chip (stm32g473qe in this case).
 
   ### New board file
 
@@ -158,7 +157,7 @@ The current measurement ADC conversion starts at the PWM midpoint and triggers t
   
       const FEEDBACK_TRIGGER_A: <Self::FeedbackAdcA as HasInjectedTrigger>::Trigger;
       const FEEDBACK_TRIGGER_B: <Self::FeedbackAdcB as HasInjectedTrigger>::Trigger;
-      const BOARD_FEEDBACK_TRIGGER: <Self::FeedbackAdc as HasRegularTrigger>::Trigger;
+      const BOARD_FEEDBACK_TRIGGER: <Self::FeedbackAdcA as HasRegularTrigger>::Trigger;
       const INFO: BoardInfo;
   
       /// Phase current from the shunt opamp output counts
@@ -177,7 +176,7 @@ The current measurement ADC conversion starts at the PWM midpoint and triggers t
   Where the mappings structs returned by `map_peripherals()` carry the embassy peripheral selections:
   ```rust
   pub struct PeripheralMappings {
-    pub current_feedback: AdcFeedbackMappings,
+    pub adc_feedback: AdcFeedbackMappings,
     #[cfg(feature = "hall-feedback")]
     pub hall_feedback: HallFeedbackMappings,
     pub pwm_output: PwmOutputMappings,
