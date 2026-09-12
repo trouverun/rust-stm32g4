@@ -57,7 +57,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             hfi_params, overcurrent_limit_a, braking_current_fault_a
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
-                cfg.calibration_sweep_omega(), cfg.rotor_speed_limit_mech_rpm(),
+                cfg.calibration_sweep_omega(), cfg.rotor_overspeed_limit_mech_rpm(),
                 cfg.setpoint_timeout_ms(), cfg.rated_current_limit_a(),
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
                 cfg.braking_current_limit_a(), cfg.hfi(), 
@@ -300,7 +300,7 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
                 }
             });
             let command = cx.shared.memory.lock(|memory| {
-                match memory.store(&pi_gains) {
+                match memory.store(&Some(pi_gains)) {
                     Ok( .. ) => Command::ResumeCalibration,
                     Err(f) => Command::AssertFault { cause: f.into() }
                 }

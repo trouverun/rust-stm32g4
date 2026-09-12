@@ -24,6 +24,13 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
             Id::Standard(s) => s.as_raw(),
             Id::Extended(_) => continue,
         };
+        // Skip frames marked as idle only (e.g. prevent firmware update messages or changing motor pole pairs during torque control):
+        if is_idle_only(id as u32) {
+            let is_idle = cx.shared.mode.lock(|m| matches!(m, OperatingMode::Idle { .. }) && !m.foc_gate().active);
+            if !is_idle {
+                continue;
+            }
+        }
 
         match Messages::from_can_message(id as u32, frame.data()) {
             Ok(Messages::OperatingModeRequest(msg)) => {
@@ -60,9 +67,10 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     }
                     mode.on_command(command)
                 });
-                // Clear the previous calibrations, persist_config resumes the calibration once flash is cleared too:
+                // Treat calibration request as a sign that the motor might have changed, invalidate the motor params and hall calibrations:
                 if command_applied && calibration_start {
                     cx.shared.motor_parameters.lock(|mp| mp.invalidate());
+                    cx.shared.foc.lock(|foc| { let _ = foc.set_pi_gains(None); });
                     #[cfg(feature = "hall-feedback")]
                     cx.shared.hall_feedback.lock(|hf| hf.invalidate());
                     let _ = app::persist_config::spawn();
@@ -115,22 +123,42 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
             Ok(Messages::MotorConfig(msg)) => {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
-                    candidate.set_current_limits(
-                        msg.rated_current_limit(),
-                        msg.momentary_current_limit(),
-                        msg.overcurrent_limit(),
-                    )?;
-                    candidate.set_rotor_speed_limit_mech_rpm(msg.rotor_speed_limit_mech())?;
+                    candidate.set_overcurrent_limit_a(msg.overcurrent_limit())?;
+                    candidate.set_rotor_overspeed_limit_mech_rpm(msg.rotor_overspeed_limit_mech())?;
                     *cfg = candidate;
                     Ok::<(), ConfigError>(())
                 });
                 match applied {
                     Ok(()) => {
-                        cx.shared.motor_parameters.lock(|mp| {
-                            mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
+                        // Treat pole pairs changing as motor changing, invalidate the motor params and hall calibrations:
+                        let pole_pairs_changed = cx.shared.motor_parameters.lock(|mp| {
+                            let changed = mp.params.num_pole_pairs != Some(msg.num_pole_pairs());
+                            if changed {
+                                mp.invalidate();
+                                mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
+                            }
+                            changed
                         });
+                        if pole_pairs_changed {
+                            cx.shared.foc.lock(|foc| { let _ = foc.set_pi_gains(None); });
+                            #[cfg(feature = "hall-feedback")]
+                            cx.shared.hall_feedback.lock(|hf| hf.invalidate());
+                        }
                         let _ = app::persist_config::spawn();
                     }
+                    Err(_) => {},
+                }
+            }
+            Ok(Messages::MotorLimits(msg)) => {
+                let applied = cx.shared.config.lock(|cfg| {
+                    let mut candidate = *cfg;
+                    candidate.set_current_limits(msg.rated_current_limit(), msg.momentary_current_limit())?;
+                    candidate.set_rotor_speed_limit_mech_rpm(msg.rotor_speed_limit_mech())?;
+                    *cfg = candidate;
+                    Ok::<(), ConfigError>(())
+                });
+                match applied {
+                    Ok(()) => { let _ = app::persist_config::spawn(); }
                     Err(_) => {},
                 }
             }
@@ -231,10 +259,19 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     let num_pole_pairs = cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs);
                     let f = MotorConfigReport::try_from(MotorConfigReportInit {
                         num_pole_pairs: num_pole_pairs.unwrap_or(0),
+                        overcurrent_limit: cfg.overcurrent_limit_a(),
+                        rotor_overspeed_limit_mech: cfg.rotor_overspeed_limit_mech_rpm(),
+                    }).ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
+                    }
+                }
+                if all || matches!(block, ConfigQueryBlockId::MotorLimits) {
+                    let cfg = cx.shared.config.lock(|c| *c);
+                    let f = MotorLimitsReport::try_from(MotorLimitsReportInit {
                         rotor_speed_limit_mech: cfg.rotor_speed_limit_mech_rpm(),
                         momentary_current_limit: cfg.momentary_current_limit_a(),
                         rated_current_limit: cfg.rated_current_limit_a(),
-                        overcurrent_limit: cfg.overcurrent_limit_a(),
                     }).ok().map(|m| m.into_frame());
                     if let Some(f) = f {
                         cx.shared.can.lock(|c| c.send(f));
@@ -331,67 +368,59 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 }
             }
             Ok(Messages::FirmwareUpdateData(msg)) => {
-                if !cx.shared.mode.lock(|m| matches!(m, OperatingMode::Idle { .. })) {
-                    cx.local.firmware_update.reset();
-                } else {
-                    let chunk = [
-                        msg.data_0(), msg.data_1(), msg.data_2(),
-                        msg.data_3(), msg.data_4(), msg.data_5(),
-                    ];
-                    // Ack per completed stage write and on out-of-sequence chunks
-                    let ack = match cx.local.firmware_update.on_data(msg.counter(), &chunk) {
-                        Ok(DataOutcome::Accepted(Some(write))) => {
-                            let stored = cx.shared.memory.lock(|m| m.dfu_write(write.offset, &write.data[..write.len]));
-                            match stored {
-                                Ok(()) => Some(cx.local.firmware_update.expected()),
-                                Err(e) => {
-                                    cx.local.firmware_update.reset();
-                                    cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
-                                    None
-                                }
+                let chunk = [
+                    msg.data_0(), msg.data_1(), msg.data_2(),
+                    msg.data_3(), msg.data_4(), msg.data_5(),
+                ];
+                // Ack per completed stage write and on out-of-sequence chunks
+                let ack = match cx.local.firmware_update.on_data(msg.counter(), &chunk) {
+                    Ok(DataOutcome::Accepted(Some(write))) => {
+                        let stored = cx.shared.memory.lock(|m| m.dfu_write(write.offset, &write.data[..write.len]));
+                        match stored {
+                            Ok(()) => Some(cx.local.firmware_update.expected()),
+                            Err(e) => {
+                                cx.local.firmware_update.reset();
+                                cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                                None
                             }
                         }
-                        Ok(DataOutcome::Accepted(None)) => None,
-                        Ok(DataOutcome::OutOfSequence { expected }) => Some(expected),
-                        Err(e) => {
-                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
-                            None
-                        }
-                    };
-                    if let Some(next_counter) = ack {
-                        let f = FirmwareUpdateAck::try_from(FirmwareUpdateAckInit { next_counter })
-                            .ok().map(|m| m.into_frame());
-                        if let Some(f) = f {
-                            cx.shared.can.lock(|c| c.send(f));
-                        }
+                    }
+                    Ok(DataOutcome::Accepted(None)) => None,
+                    Ok(DataOutcome::OutOfSequence { expected }) => Some(expected),
+                    Err(e) => {
+                        cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause: e.into() }));
+                        None
+                    }
+                };
+                if let Some(next_counter) = ack {
+                    let f = FirmwareUpdateAck::try_from(FirmwareUpdateAckInit { next_counter })
+                        .ok().map(|m| m.into_frame());
+                    if let Some(f) = f {
+                        cx.shared.can.lock(|c| c.send(f));
                     }
                 }
             }
             Ok(Messages::FirmwareUpdateApply(msg)) => {
-                if !cx.shared.mode.lock(|m| matches!(m, OperatingMode::Idle { .. })) {
-                    cx.local.firmware_update.reset();
-                } else {
-                    let applied: Result<(), FaultCause> = match cx.local.firmware_update.on_apply(msg.image_length(), msg.image_crc32()) {
-                        Ok((flush, verify)) => cx.shared.memory.lock(|m| {
-                            if let Some(write) = flush {
-                                m.dfu_write(write.offset, &write.data[..write.len])?;
-                            }
-                            let crc = m.dfu_crc32(verify.length)?;
-                            if crc != verify.crc32 {
-                                return Err(FirmwareUpdateFault::CrcMismatch.into());
-                            }
-                            m.dfu_mark_written(verify.length, verify.crc32)?;
-                            Ok(())
-                        }),
-                        Err(e) => Err(e.into()),
-                    };
-                    match applied {
-                        Err(cause) => {
-                            cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause }));
+                let applied: Result<(), FaultCause> = match cx.local.firmware_update.on_apply(msg.image_length(), msg.image_crc32()) {
+                    Ok((flush, verify)) => cx.shared.memory.lock(|m| {
+                        if let Some(write) = flush {
+                            m.dfu_write(write.offset, &write.data[..write.len])?;
                         }
-                        // reboot into the bootloader, which swaps in the image
-                        Ok(()) => cortex_m::peripheral::SCB::sys_reset(),
+                        let crc = m.dfu_crc32(verify.length)?;
+                        if crc != verify.crc32 {
+                            return Err(FirmwareUpdateFault::CrcMismatch.into());
+                        }
+                        m.dfu_mark_written(verify.length, verify.crc32)?;
+                        Ok(())
+                    }),
+                    Err(e) => Err(e.into()),
+                };
+                match applied {
+                    Err(cause) => {
+                        cx.shared.mode.lock(|mode| mode.on_command(Command::AssertFault { cause }));
                     }
+                    // reboot into the bootloader, which swaps in the image
+                    Ok(()) => cortex_m::peripheral::SCB::sys_reset(),
                 }
             }
             #[cfg(feature = "debug-capture")]
@@ -420,12 +449,14 @@ pub async fn persist_config(mut cx: app::persist_config::Context<'_>) {
         if !cx.shared.mode.lock(|m| m.foc_gate().active) {
             let cfg = cx.shared.config.lock(|c| *c);
             let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
+            let pi_gains = cx.shared.foc.lock(|foc| foc.get_pi_gains());
 
             #[cfg(feature = "hall-feedback")]
             let hall = cx.shared.hall_feedback.lock(|hf| hf.get_calibration());
 
             let result = cx.shared.memory.lock(|memory| {
                 let (r1, r2) = (memory.store(&cfg), memory.store(&params));
+                let r2 = r2.and(memory.store(&pi_gains));
 
                 #[cfg(feature = "hall-feedback")]
                 let r2 = r2.and(memory.store(&hall));

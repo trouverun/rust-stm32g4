@@ -204,14 +204,14 @@ mod app {
             Err(e) => { mode.on_command(Command::AssertFault { cause: e.into() }); }
         }
 
-        match memory.load::<ControllerParameters>() {
-            Ok(Some(p)) => {
+        match memory.load::<Option<ControllerParameters>>() {
+            Ok(Some(Some(p))) => {
                 match foc.set_pi_gains(Some(p)) {
                     Ok(()) => {}
                     Err(e) => { mode.on_command(Command::AssertFault { cause: e.into() }); }
                 }
             },
-            Ok(None) => {}
+            Ok(Some(None) | None) => {}
             Err(e) => { mode.on_command(Command::AssertFault { cause: e.into() }); }
         }
 
@@ -301,7 +301,7 @@ mod app {
         )]
         async fn can_process(_: can_process::Context);
 
-        #[task(priority = 1, shared = [mode, config, motor_parameters, hall_feedback, memory])]
+        #[task(priority = 1, shared = [mode, config, motor_parameters, hall_feedback, foc, memory])]
         async fn persist_config(_: persist_config::Context);
     }
 

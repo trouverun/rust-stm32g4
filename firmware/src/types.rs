@@ -67,6 +67,7 @@ pub struct FirmwareConfig {
     momentary_current_limit_a: f32,
     overcurrent_limit_a: f32,
     rotor_speed_limit_mech_rpm: u16,
+    rotor_overspeed_limit_mech_rpm: u16,
     setpoint_timeout_ms: u16,
     temp_max_c: f32,
     braking_current_limit_a: f32,
@@ -92,7 +93,8 @@ impl Default for FirmwareConfig {
             rated_current_limit_a: DEFAULT_RATED_CURRENT_LIMIT_A,
             momentary_current_limit_a: DEFAULT_MOMENTARY_CURRENT_LIMIT_A,
             overcurrent_limit_a: BOARD.current_limit_a,
-            rotor_speed_limit_mech_rpm: DEFAULT_ROTOR_SPEED_LIMIT_MECH_RPM,
+            rotor_speed_limit_mech_rpm: DEFAULT_ROTOR_SPEED_LIMIT_MECH_RPM.min(DEFAULT_ROTOR_OVERSPEED_LIMIT_MECH_RPM),
+            rotor_overspeed_limit_mech_rpm: DEFAULT_ROTOR_OVERSPEED_LIMIT_MECH_RPM,
             setpoint_timeout_ms: DEFAULT_SETPOINT_TIMEOUT_MS,
             temp_max_c: DEFAULT_TEMP_MAX_C,
             braking_current_limit_a: DEFAULT_BRAKING_CURRENT_LIMIT_A,
@@ -146,6 +148,9 @@ impl FirmwareConfig {
     pub fn rotor_speed_limit_mech_rpm(&self) -> u16 { self.rotor_speed_limit_mech_rpm }
 
     #[inline]
+    pub fn rotor_overspeed_limit_mech_rpm(&self) -> u16 { self.rotor_overspeed_limit_mech_rpm }
+
+    #[inline]
     pub fn hfi(&self) -> HfiParams {
         HfiParams {
             amplitude_v: self.hfi_amplitude_v,
@@ -187,31 +192,42 @@ impl FirmwareConfig {
         Ok(())
     }
 
-    /// Set as a group so none is validated against another's stale value.
-    pub fn set_current_limits(
-        &mut self,
-        rated_a: f32,
-        momentary_a: f32,
-        overcurrent_a: f32,
-    ) -> Result<(), ConfigError> {
+    /// Set as a pair so neither is validated against the other's stale value.
+    pub fn set_current_limits(&mut self, rated_a: f32, momentary_a: f32) -> Result<(), ConfigError> {
         let rated_a = in_range(rated_a, CURRENT_LIMIT_RANGE)?;
         let momentary_a = in_range(momentary_a, CURRENT_LIMIT_RANGE)?;
-        let overcurrent_a = in_range(overcurrent_a, CURRENT_LIMIT_RANGE)?;
-        if rated_a > momentary_a || momentary_a > overcurrent_a {
+        if rated_a > momentary_a {
             return Err(ConfigError::RangeInverted);
         }
-        self.rated_current_limit_a = rated_a;
-        self.momentary_current_limit_a = momentary_a;
-        self.overcurrent_limit_a = overcurrent_a;
-        self.calibration_current_a = self.calibration_current_a.min(rated_a);
+        self.rated_current_limit_a = rated_a.min(self.overcurrent_limit_a);
+        self.momentary_current_limit_a = momentary_a.min(self.overcurrent_limit_a);
+        self.calibration_current_a = self.calibration_current_a.min(self.rated_current_limit_a);
+        Ok(())
+    }
+
+    pub fn set_overcurrent_limit_a(&mut self, v: f32) -> Result<(), ConfigError> {
+        let v = in_range(v, CURRENT_LIMIT_RANGE)?;
+        self.overcurrent_limit_a = v;
+        self.rated_current_limit_a = self.rated_current_limit_a.min(v);
+        self.momentary_current_limit_a = self.momentary_current_limit_a.min(v);
+        self.calibration_current_a = self.calibration_current_a.min(self.rated_current_limit_a);
         Ok(())
     }
 
     pub fn set_rotor_speed_limit_mech_rpm(&mut self, v: u16) -> Result<(), ConfigError> {
-        if v <= 0 {
+        if v == 0 {
             return Err(ConfigError::OutOfRange);
         }
-        self.rotor_speed_limit_mech_rpm = v;
+        self.rotor_speed_limit_mech_rpm = v.min(self.rotor_overspeed_limit_mech_rpm);
+        Ok(())
+    }
+
+    pub fn set_rotor_overspeed_limit_mech_rpm(&mut self, v: u16) -> Result<(), ConfigError> {
+        if v == 0 {
+            return Err(ConfigError::OutOfRange);
+        }
+        self.rotor_overspeed_limit_mech_rpm = v;
+        self.rotor_speed_limit_mech_rpm = self.rotor_speed_limit_mech_rpm.min(v);
         Ok(())
     }
 

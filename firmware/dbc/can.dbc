@@ -31,12 +31,15 @@ BO_ 656 FirmwareUpdateData: 8 Host
  SG_ data_4 : 48|8@1+ (1,0) [0|255] "" Firmware
  SG_ data_5 : 56|8@1+ (1,0) [0|255] "" Firmware
 
-BO_ 560 MotorConfig: 8 Host
+BO_ 560 MotorConfig: 5 Host
  SG_ num_pole_pairs : 0|6@1+ (1,0) [0|63] "" Firmware
- SG_ rotor_speed_limit_mech : 6|16@1+ (1,0) [0|65535] "rpm" Firmware
- SG_ momentary_current_limit : 22|14@1+ (0.01,0) [0|163.83] "A" Firmware
- SG_ rated_current_limit : 36|14@1+ (0.01,0) [0|163.83] "A" Firmware
- SG_ overcurrent_limit : 50|14@1+ (0.01,0) [0|163.83] "A" Firmware
+ SG_ overcurrent_limit : 6|14@1+ (0.01,0) [0|163.83] "A" Firmware
+ SG_ rotor_overspeed_limit_mech : 20|16@1+ (1,0) [0|65535] "rpm" Firmware
+
+BO_ 592 MotorLimits: 6 Host
+ SG_ rotor_speed_limit_mech : 0|16@1+ (1,0) [0|65535] "rpm" Firmware
+ SG_ momentary_current_limit : 16|14@1+ (0.01,0) [0|163.83] "A" Firmware
+ SG_ rated_current_limit : 30|14@1+ (0.01,0) [0|163.83] "A" Firmware
 
 BO_ 528 OperatingModeRequest: 1 Host
  SG_ requested_mode : 0|8@1+ (1,0) [0|255] "" Firmware
@@ -121,18 +124,21 @@ BO_ 320 Heartbeat: 6 Firmware
  SG_ dc_bus_voltage_valid : 40|1@1+ (1,0) [0|1] "" Host
  SG_ temperature_valid : 41|1@1+ (1,0) [0|1] "" Host
 
-BO_ 352 MotorConfigReport: 8 Firmware
+BO_ 352 MotorConfigReport: 5 Firmware
  SG_ num_pole_pairs : 0|6@1+ (1,0) [0|63] "" Host
- SG_ rotor_speed_limit_mech : 6|16@1+ (1,0) [0|65535] "rpm" Host
- SG_ momentary_current_limit : 22|14@1+ (0.01,0) [0|163.83] "A" Host
- SG_ rated_current_limit : 36|14@1+ (0.01,0) [0|163.83] "A" Host
- SG_ overcurrent_limit : 50|14@1+ (0.01,0) [0|163.83] "A" Host
+ SG_ overcurrent_limit : 6|14@1+ (0.01,0) [0|163.83] "A" Host
+ SG_ rotor_overspeed_limit_mech : 20|16@1+ (1,0) [0|65535] "rpm" Host
 
 BO_ 256 MotorCurrents: 8 Firmware
  SG_ iQ_meas : 0|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iD_meas : 16|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iQ_target : 32|16@1- (0.001,0) [-32.768|32.767] "A" Host
  SG_ iD_target : 48|16@1- (0.001,0) [-32.768|32.767] "A" Host
+
+BO_ 360 MotorLimitsReport: 6 Firmware
+ SG_ rotor_speed_limit_mech : 0|16@1+ (1,0) [0|65535] "rpm" Host
+ SG_ momentary_current_limit : 16|14@1+ (0.01,0) [0|163.83] "A" Host
+ SG_ rated_current_limit : 30|14@1+ (0.01,0) [0|163.83] "A" Host
 
 BO_ 416 MotorParameterReport1: 7 Firmware
  SG_ stator_resistance : 0|24@1+ (1e-05,0) [0|167.77215] "ohm" Host
@@ -183,16 +189,22 @@ CM_ BO_ 672 "image_crc32 = CRC-32 (ISO-HDLC) over the first image_length bytes."
 
 BA_DEF_ BO_  "GenMsgCycleTime" INT 0 10000;
 BA_DEF_ BO_  "GenMsgCycleTimeUs" INT 0 1000000;
+BA_DEF_ BO_  "IdleOnly" INT 0 1;
 BA_DEF_DEF_  "GenMsgCycleTime" 0;
 BA_DEF_DEF_  "GenMsgCycleTimeUs" 0;
+BA_DEF_DEF_  "IdleOnly" 0;
 BA_ "GenMsgCycleTimeUs" BO_ 256 400;
 BA_ "GenMsgCycleTimeUs" BO_ 480 1000;
 BA_ "GenMsgCycleTimeUs" BO_ 272 1000;
 BA_ "GenMsgCycleTimeUs" BO_ 288 1000;
 BA_ "GenMsgCycleTimeUs" BO_ 304 100000;
 BA_ "GenMsgCycleTimeUs" BO_ 320 100000;
+BA_ "IdleOnly" BO_ 560 1;
+BA_ "IdleOnly" BO_ 576 1;
+BA_ "IdleOnly" BO_ 656 1;
+BA_ "IdleOnly" BO_ 672 1;
 
 VAL_ 320 mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 4 "Fault" ;
 VAL_ 640 command 0 "Start" 1 "RequestDump" 2 "StartBandwidthTest" ;
 VAL_ 528 requested_mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 3 "CancelCalibration" 4 "FaultClear" ;
-VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 7 "firmware_version" 8 "sensorless_config_1" 9 "sensorless_config_2" 255 "all" ;
+VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 6 "motor_limits" 7 "firmware_version" 8 "sensorless_config_1" 9 "sensorless_config_2" 255 "all" ;

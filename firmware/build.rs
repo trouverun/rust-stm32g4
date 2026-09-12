@@ -10,6 +10,7 @@ use heck::{ToPascalCase, ToSnakeCase};
 
 const CYCLE_TIME_MS_ATTRIBUTE: &str = "GenMsgCycleTime";
 const CYCLE_TIME_US_ATTRIBUTE: &str = "GenMsgCycleTimeUs";
+const IDLE_ONLY_ATTRIBUTE: &str = "IdleOnly";
 /// RAM reserved for core firmware use 
 /// (with remainder being free to use for the debug capture buffer feature)
 const RESERVED_RAM_BYTES: u32 = 40 * 1024;
@@ -186,6 +187,7 @@ fn generate_can(out_dir: &str) {
             }
         }
     }
+    emit_idle_only(&mut messages_src, &collect_int_attribute(&dbc, IDLE_ONLY_ATTRIBUTE));
 
     std::fs::write(&messages_path, messages_src).expect("write messages.rs");
 
@@ -296,6 +298,14 @@ fn emit_init_struct(out: &mut String, msg: &Message) {
 fn emit_cycle_time_const(out: &mut String, msg: &Message, us: u32) {
     let msg_type = type_name(msg.message_name());
     writeln!(out, "\nimpl {msg_type} {{ pub const CYCLE_TIME_US: u32 = {us}; }}").unwrap();
+}
+
+fn emit_idle_only(out: &mut String, idle_only: &HashMap<u32, u32>) {
+    let mut ids: Vec<u32> = idle_only.iter().filter(|(_, v)| **v != 0).map(|(id, _)| *id).collect();
+    ids.sort();
+    let list: Vec<String> = ids.iter().map(u32::to_string).collect();
+    writeln!(out, "\nconst IDLE_ONLY_IDS: [u32; {}] = [{}];", ids.len(), list.join(", ")).unwrap();
+    writeln!(out, "pub fn is_idle_only(id: u32) -> bool {{ IDLE_ONLY_IDS.contains(&id) }}").unwrap();
 }
 
 fn emit_frames(dbc: &DBC) -> String {
