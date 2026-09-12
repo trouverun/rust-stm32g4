@@ -1,14 +1,19 @@
-use crate::{AngleType, HasRotorFeedback, RotorFeedback, RotorFeedbackFault, utils::math::{wrap_to_2pi, wrapped_diff}};
+use crate::{
+    AngleType, HasRotorFeedback, RotorFeedback, RotorFeedbackFault, 
+    utils::math::{wrap_in_range_to_2pi, clamp, wrapped_diff}
+};
 
 pub struct FeedbackArbitrator {
     hall_feedback: Option<Result<RotorFeedback, RotorFeedbackFault>>,
     encoder_feedback: Option<Result<RotorFeedback, RotorFeedbackFault>>,
     saliency_estimate: Option<Result<RotorFeedback, RotorFeedbackFault>>,
     flux_estimate: Option<Result<RotorFeedback, RotorFeedbackFault>>,
+    sensorless_feedback: Option<Result<RotorFeedback, RotorFeedbackFault>>,
     hall_pattern: u8,
     blend_omega: f32,
     low_speed_threshold_omega_rads: f32,
-    high_speed_threshold_omega_rads: f32
+    high_speed_threshold_omega_rads: f32,
+    blend_reciprocal: f32
 }
 
 impl FeedbackArbitrator {
@@ -18,12 +23,21 @@ impl FeedbackArbitrator {
             encoder_feedback: None,
             saliency_estimate: None,
             flux_estimate: None,
+            sensorless_feedback: None,
             hall_pattern: 0,
             blend_omega: 0.0,
             low_speed_threshold_omega_rads,
-            high_speed_threshold_omega_rads
+            high_speed_threshold_omega_rads,
+            blend_reciprocal: 1.0 / (high_speed_threshold_omega_rads - low_speed_threshold_omega_rads)
         }
     }
+
+    pub fn set_thresholds(&mut self, low_speed_threshold_omega_rads: f32, high_speed_threshold_omega_rads: f32) {
+        self.low_speed_threshold_omega_rads = low_speed_threshold_omega_rads;
+        self.high_speed_threshold_omega_rads = high_speed_threshold_omega_rads;
+        self.blend_reciprocal =  1.0 / (high_speed_threshold_omega_rads - low_speed_threshold_omega_rads)
+    }
+
     pub fn update_hall(&mut self, result: Result<RotorFeedback, RotorFeedbackFault>, pattern: u8) {
         self.hall_feedback = Some(result);
         if (1..=6).contains(&pattern) {
@@ -35,12 +49,14 @@ impl FeedbackArbitrator {
         self.encoder_feedback = Some(result);
     }
 
-    pub fn update_hfi_sensorless(&mut self, result: Result<RotorFeedback, RotorFeedbackFault>) {
-        self.saliency_estimate = Some(result);
-    }
-
-    pub fn update_flux_sensorless(&mut self, result: Result<RotorFeedback, RotorFeedbackFault>) {
-        self.flux_estimate = Some(result);
+    pub fn update_sensorless(
+        &mut self,
+        saliency: Result<RotorFeedback, RotorFeedbackFault>,
+        flux: Result<RotorFeedback, RotorFeedbackFault>
+    ) {
+        self.saliency_estimate = Some(saliency);
+        self.flux_estimate = Some(flux);
+        self.sensorless_feedback = self.blend();
     }
 
     pub fn get_hall_pattern(&self) -> u8 {
@@ -55,8 +71,11 @@ impl FeedbackArbitrator {
         self.encoder_feedback
     }
 
-    #[inline(always)]
-    pub fn read_sensorless(&mut self) -> Option<Result<RotorFeedback, RotorFeedbackFault>> {
+    pub fn read_sensorless(&self) -> Option<Result<RotorFeedback, RotorFeedbackFault>> {
+        self.sensorless_feedback
+    }
+
+    fn blend(&mut self) -> Option<Result<RotorFeedback, RotorFeedbackFault>> {
         let low_speed = self.saliency_estimate.and_then(Result::ok);
         let high_speed = self.flux_estimate.and_then(Result::ok);
         match (low_speed, high_speed) {
@@ -66,29 +85,29 @@ impl FeedbackArbitrator {
                 } else if self.blend_omega.abs() < self.low_speed_threshold_omega_rads {
                     1.0
                 } else {
-                    (self.high_speed_threshold_omega_rads-self.blend_omega.abs()) / (self.high_speed_threshold_omega_rads - self.low_speed_threshold_omega_rads)
+                    (self.high_speed_threshold_omega_rads-self.blend_omega.abs()) * self.blend_reciprocal
                 };
                 let blend_omega = alpha*low_speed.omega + (1.0-alpha)*high_speed.omega;
-                self.blend_omega = blend_omega.clamp(-self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
+                self.blend_omega = clamp(blend_omega, -self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
                 Some(Ok(RotorFeedback{
                     angle_type: AngleType::Electrical,
-                    theta: wrap_to_2pi(high_speed.theta + alpha*wrapped_diff(low_speed.theta, high_speed.theta)),
+                    theta: wrap_in_range_to_2pi(high_speed.theta + alpha*wrapped_diff(low_speed.theta, high_speed.theta)),
                     omega: blend_omega
                 }))
             }
             (Some(low_speed), None) => {
-                self.blend_omega = low_speed.omega.clamp(-self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
+                self.blend_omega = clamp(low_speed.omega, -self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
                 Some(Ok(low_speed))
             }
             (None, Some(high_speed)) => {
-                self.blend_omega = high_speed.omega.clamp(-self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
+                self.blend_omega = clamp(high_speed.omega, -self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
                 Some(Ok(high_speed))
             }
             (None, None) => None
         }
     }
 
-    fn fault(&mut self) -> RotorFeedbackFault {
+    fn fault(&self) -> RotorFeedbackFault {
         match (self.hall_feedback, self.read_sensorless()) {
             (Some(Err(fault)), _) | (_, Some(Err(fault))) => fault,
             _ => RotorFeedbackFault::NoFeedback,
@@ -97,7 +116,7 @@ impl FeedbackArbitrator {
 }
 
 impl HasRotorFeedback for FeedbackArbitrator {
-    #[inline]
+    #[inline(always)]
     fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
         let hall = self.hall_feedback.and_then(Result::ok);
         let sensorless = self.read_sensorless().and_then(Result::ok);
@@ -145,8 +164,7 @@ mod test {
         let mut arbitrator = FeedbackArbitrator::new(LOW_THRESHOLD, HIGH_THRESHOLD);
         let mut feedback = None;
         for _ in 0..2 {
-            arbitrator.update_hfi_sensorless(Ok(electrical(saliency_theta, omega)));
-            arbitrator.update_flux_sensorless(Ok(electrical(flux_theta, omega)));
+            arbitrator.update_sensorless(Ok(electrical(saliency_theta, omega)), Ok(electrical(flux_theta, omega)));
             feedback = arbitrator.read_sensorless();
         }
         feedback.unwrap().unwrap()
@@ -183,8 +201,7 @@ mod test {
         };
         saliency.update(&input, &mut bench.accelerator);
         flux.update(&input, &mut bench.accelerator);
-        arbitrator.update_hfi_sensorless(saliency.read());
-        arbitrator.update_flux_sensorless(flux.read());
+        arbitrator.update_sensorless(saliency.read(), flux.read());
         *prev = bench_step.result;
         bench_step
     }

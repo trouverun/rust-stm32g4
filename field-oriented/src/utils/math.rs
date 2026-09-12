@@ -19,10 +19,18 @@ pub fn wrap_to_pi(angle_rad: f32) -> f32 {
     angle_rad - TAU * nearest as f32
 }
 
-/// Wrap an angle within one turn of range to `[0, TAU)`
+/// Wrap an angle to `[0, TAU)`
+#[inline]
 pub(crate) fn wrap_to_2pi(angle_rad: f32) -> f32 {
     const INV_TAU: f32 = 1.0 / TAU;
     angle_rad - TAU * (angle_rad * INV_TAU).floor()
+}
+
+#[inline]
+/// Wrap an angle in `(-TAU, 2*TAU)` to `[0, TAU)`
+pub(crate) fn wrap_in_range_to_2pi(angle_rad: f32) -> f32 {
+    let lifted = if angle_rad < 0.0 { angle_rad + TAU } else { angle_rad };
+    if lifted >= TAU { lifted - TAU } else { lifted }
 }
 
 pub(crate) fn forward_clarke(vals: PhaseValues) -> AlphaBeta {

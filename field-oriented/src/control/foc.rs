@@ -172,10 +172,9 @@ impl FOC {
             _ => false
         };
         
-        // When outside of the linear modulation region clamp in a way
-        // which prioritizes direct axis for field weakening
         const SQRT3_RECIPROCAL: f32 = 1.0/1.73205080757;
         let u_max = input.dc_bus_voltage_v * SQRT3_RECIPROCAL;
+        // Reserve the field weakening voltage from the linear modulation budget:
         let u_clamp = if hfi_injecting {
             max2(u_max - input.hfi_params.amplitude_v, 0.0)
         } else {
@@ -183,7 +182,9 @@ impl FOC {
         };
         let u_mag_sq = u_dq.d*u_dq.d + u_dq.q*u_dq.q;
         let u_clamp_sq = u_clamp*u_clamp;
-        let (u_d_sat, u_q_sat) = if u_mag_sq > u_clamp_sq {
+        // When outside of the linear modulation region clamp in a way
+        // which prioritizes direct axis for field weakening
+        let (u_d_sat, u_q_sat, u_mag_linear) = if u_mag_sq > u_clamp_sq {
             let u_d_clamped = clamp(u_dq.d, -u_clamp, u_clamp);
             let u_d_clampled_sq  = u_d_clamped*u_d_clamped;
             let u_q_limit = if u_clamp_sq > u_d_clampled_sq {
@@ -191,20 +192,20 @@ impl FOC {
             } else {
                 0.0
             };
-            (u_d_clamped, clamp(u_dq.q, -u_q_limit, u_q_limit))
+            (u_d_clamped, clamp(u_dq.q, -u_q_limit, u_q_limit), u_clamp)
         } else {
-            (u_dq.d, u_dq.q)
+            (u_dq.d, u_dq.q, accelerator.sqrt(u_mag_sq))
         };
-        let u_mag_linear = accelerator.sqrt(min2(u_mag_sq, u_max*u_max));
 
         // Update saturation error for next PI iteration anti-windup:
-        self.prev_values.u_max = u_max;
-        self.prev_values.u_mag = u_mag_linear;
-        self.prev_values.u_q = u_dq.q;
         self.prev_values.u_dq_saturation = ClarkParkValue {
             d: u_d_sat - u_dq.d,
             q: u_q_sat - u_dq.q
         };
+        // Store data for next field weakening iteration:
+        self.prev_values.u_max = u_max;
+        self.prev_values.u_mag = u_mag_linear;
+        self.prev_values.u_q = u_dq.q;
         
         // High frequency injection:
         let u_injected = hfi.compute(input.hfi_params);

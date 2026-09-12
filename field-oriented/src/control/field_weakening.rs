@@ -73,15 +73,15 @@ impl FieldWeakening {
     pub fn compute(&mut self, input: FieldWeakeningInput) -> Result<f32, FocFault> {
         let (lower_bound, max_weakening_ratio) = Self::lower_bound_ratio(input.d_inductance, input.pm_flux_linkage, input.current_limit_a);
 
-        let du_did = if input.u_mag > 0.0 {
-            (input.omega * input.u_q * input.d_inductance) / input.u_mag
+        let denom = input.omega * input.u_q * input.d_inductance;
+        let du_did_reciprocal = if denom != 0.0 {
+            input.u_mag / (input.omega * input.u_q * input.d_inductance)
         } else {
             0.0
         };
         let back_emf = (input.omega * input.pm_flux_linkage).abs();
-        if du_did > 0.0 && back_emf > 0.5 * input.u_mag && max_weakening_ratio < MAX_USEFUL_WEAKENING_RATIO {
-            let normalization_factor = 1.0 / du_did;
-            let overmodulation_normalized = normalization_factor * input.overmodulation;
+        if du_did_reciprocal > 0.0 && back_emf > 0.5 * input.u_mag && max_weakening_ratio < MAX_USEFUL_WEAKENING_RATIO {
+            let overmodulation_normalized = du_did_reciprocal * input.overmodulation;
             let integral_accum = self.sampling_time_s * self.k_i * overmodulation_normalized;
             if !integral_accum.is_finite() {
                 return Err(FocFault::NumericalError);

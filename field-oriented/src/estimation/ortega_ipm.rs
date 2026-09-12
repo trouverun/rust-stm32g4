@@ -5,7 +5,7 @@
 use crate::{
     AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, NoHfi, RotorFeedback,
     RotorFeedbackFault, estimation::{SensorlessEstimator, SensorlessEstimatorInput},
-    utils::{filtering::PLL, math::{wrap_to_2pi, wrapped_diff}}
+    utils::{filtering::PLL, math::{wrap_in_range_to_2pi, wrapped_diff}}
 };
 
 ///   lp:  alpha/(p+alpha)[u]
@@ -219,7 +219,7 @@ impl HasRotorFeedback for OrtegaIPMEstimator {
             let state = self.pll.read();
             Ok(RotorFeedback {
                 angle_type: AngleType::Electrical,
-                theta: wrap_to_2pi(state.theta),
+                theta: wrap_in_range_to_2pi(state.theta),
                 omega: state.omega
             })
         }

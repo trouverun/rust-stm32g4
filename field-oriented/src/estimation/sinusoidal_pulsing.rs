@@ -1,7 +1,9 @@
 use core::f32::consts::TAU;
 
 use crate::{
-    AngleType, BiquadNotchFilter, DoesFocMath, HasRotorFeedback, RotorFeedback, RotorFeedbackFault, SinusoidalPulsingHfi, estimation::{SensorlessEstimator, SensorlessEstimatorInput}, utils::{filtering::PLL, math::{wrap_to_2pi, wrapped_diff}}
+    AngleType, BiquadNotchFilter, DoesFocMath, HasRotorFeedback, RotorFeedback, RotorFeedbackFault, SinusoidalPulsingHfi, 
+    estimation::{SensorlessEstimator, SensorlessEstimatorInput}, 
+    utils::{filtering::PLL, math::{wrap_in_range_to_2pi, wrapped_diff}}
 };
 
 pub struct SinusoidalPulsingEstimator {
@@ -77,7 +79,7 @@ impl HasRotorFeedback for SinusoidalPulsingEstimator {
             let state = self.pll.read();
             Ok(RotorFeedback {
                 angle_type: AngleType::Electrical,
-                theta: wrap_to_2pi(state.theta),
+                theta: wrap_in_range_to_2pi(state.theta),
                 omega: state.omega
             })
         }
