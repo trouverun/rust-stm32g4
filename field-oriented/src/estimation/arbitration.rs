@@ -96,12 +96,20 @@ impl FeedbackArbitrator {
                 }))
             }
             (Some(low_speed), None) => {
-                self.blend_omega = clamp(low_speed.omega, -self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
-                Some(Ok(low_speed))
+                if low_speed.omega.abs() < self.high_speed_threshold_omega_rads {
+                    self.blend_omega = clamp(low_speed.omega, -self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
+                    Some(Ok(low_speed))
+                } else {
+                    Some(Err(RotorFeedbackFault::Unobservable))
+                }
             }
             (None, Some(high_speed)) => {
-                self.blend_omega = clamp(high_speed.omega, -self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
-                Some(Ok(high_speed))
+                if high_speed.omega.abs() > self.low_speed_threshold_omega_rads {
+                    self.blend_omega = clamp(high_speed.omega, -self.high_speed_threshold_omega_rads, self.high_speed_threshold_omega_rads);
+                    Some(Ok(high_speed))
+                } else {
+                    Some(Err(RotorFeedbackFault::Unobservable))
+                }
             }
             (None, None) => None
         }
@@ -170,6 +178,19 @@ mod test {
         feedback.unwrap().unwrap()
     }
 
+    /// Runs one step with both estimates healthy at `omega`, then one step with the given estimates,
+    /// and returns the arbitrator output. There is no hall feedback
+    fn fallback_at(
+        omega: f32,
+        saliency: Result<RotorFeedback, RotorFeedbackFault>,
+        flux: Result<RotorFeedback, RotorFeedbackFault>
+    ) -> Result<RotorFeedback, RotorFeedbackFault> {
+        let mut arbitrator = FeedbackArbitrator::new(LOW_THRESHOLD, HIGH_THRESHOLD);
+        arbitrator.update_sensorless(Ok(electrical(1.0, omega)), Ok(electrical(1.0, omega)));
+        arbitrator.update_sensorless(saliency, flux);
+        arbitrator.read()
+    }
+
     /// Misalignment may not cost more torque than the current noise hides
     fn angle_bound(motor: &Motor) -> f32 {
         (1.0 - 3.0*motor.current_noise_a/motor.current_limit_a).acos()
@@ -226,6 +247,28 @@ mod test {
         let inside = blend_at(0.5*(LOW_THRESHOLD + HIGH_THRESHOLD), TAU - 0.1, 0.1);
         assert!(angle_error(inside.theta, 0.0).abs() <= TOLERANCE,
             "half way through the band: {} for an even mix", inside.theta);
+    }
+
+    /// When one estimator is faulty, the other is only used within its own speed range.
+    /// Saliency must not be used above the high threshold, flux must not be used below the low threshold
+    #[test]
+    fn keeps_a_lone_estimate_to_its_own_speed_range() {
+        let healthy = |omega: f32| Ok(electrical(1.0, omega));
+        let faulty = Err(RotorFeedbackFault::Unobservable);
+        for direction in [1.0, -1.0] {
+            let slow = 0.5*LOW_THRESHOLD*direction;
+            let fast = 2.0*HIGH_THRESHOLD*direction;
+
+            assert!(fallback_at(slow, healthy(slow), faulty).is_ok(),
+                "flux faulty: saliency estimate rejected at {slow} rad/s");
+            assert!(fallback_at(fast, healthy(fast), faulty).is_err(),
+                "flux faulty: saliency estimate used at {fast} rad/s");
+
+            assert!(fallback_at(fast, faulty, healthy(fast)).is_ok(),
+                "saliency faulty: flux estimate rejected at {fast} rad/s");
+            assert!(fallback_at(slow, faulty, healthy(slow)).is_err(),
+                "saliency faulty: flux estimate used at {slow} rad/s");
+        }
     }
 
     /// Rest, a climb to twice the top of the band, rest again. On the constant speed segments the
