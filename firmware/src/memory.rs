@@ -15,7 +15,8 @@ pub trait Stored: serde::Serialize + serde::de::DeserializeOwned {
 }
 
 impl Stored for FirmwareConfig       { const PAGE: usize = 3; const VERSION: u16 = 15; }
-impl Stored for HallCalibration      { const PAGE: usize = 2; const VERSION: u16 = 1; }
+// None when cleared for a recalibration:
+impl Stored for Option<HallCalibration> { const PAGE: usize = 2; const VERSION: u16 = 2; }
 impl Stored for MotorParamsEstimate  { const PAGE: usize = 1; const VERSION: u16 = 1; }
 // Controller gains are a discrete-time design: 
 // bind the record so a PWM frequency change invalidates them and forces a retune.
@@ -41,7 +42,7 @@ const _: () = {
     assert!(MAX_RECORD_BYTES % WRITE_SIZE == 0);
     assert!(MAX_RECORD_BYTES <= PAGE_SIZE as usize);
     assert!(FirmwareConfig::PAGE < RESERVED_CONFIG_PAGES as usize);
-    assert!(HallCalibration::PAGE < RESERVED_CONFIG_PAGES as usize);
+    assert!(Option::<HallCalibration>::PAGE < RESERVED_CONFIG_PAGES as usize);
     assert!(MotorParamsEstimate::PAGE < RESERVED_CONFIG_PAGES as usize);
     assert!(ControllerParameters::PAGE < RESERVED_CONFIG_PAGES as usize);
     assert!(crate::constants::PWM_FREQUENCY_HZ.0 / 1000 < (1 << 12));

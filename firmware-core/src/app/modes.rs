@@ -41,11 +41,12 @@ pub enum OperatingMode<C = CalibrationRunner> {
 }
 
 impl<C: Calibrator> OperatingMode<C> {
-    pub fn on_command(&mut self, command: Command) {
+    /// Attempts to apply a state transition command, returns whether the command took effect
+    pub fn on_command(&mut self, command: Command) -> bool {
         let new_state = match (&mut *self, command) {
             (OperatingMode::Fault { safe_strategy, .. }, Command::ClearFault) => {
                 if matches!(*safe_strategy, SafeControlStrategy::RampDown {..} ) {
-                    return;
+                    return false;
                 }
                 if matches!(*safe_strategy, SafeControlStrategy::STOf {..} ) {
                     *safe_strategy = SafeControlStrategy::sto();
@@ -59,28 +60,34 @@ impl<C: Calibrator> OperatingMode<C> {
                     *write_index += 1;
                 }
                 safe_strategy.fault_evolve(&cause.into());
-                return;
+                return true;
             }
             (_, Command::AssertFault { cause }) => {
                 let mut trace = [FaultCause::Empty; 8];
                 trace[0] = cause;
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
-            (OperatingMode::Idle { .. }, Command::StartCalibration { num_pole_pairs, spin_omega, has_hall, dt_s }) => {
-                OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, spin_omega, has_hall, dt_s) }
+            (OperatingMode::Idle { safe_strategy }, Command::StartCalibration { num_pole_pairs, spin_omega, has_hall, dt_s }) => {
+                if !matches!(safe_strategy, SafeControlStrategy::RampDown { .. }) {
+                    OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, spin_omega, has_hall, dt_s) }
+                } else {
+                    return false;
+                }
             }
             (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
                 calibrator.resume();
-                return;
+                return true;
             }
             (OperatingMode::Calibration { .. }, Command::FinishCalibration | Command::CancelCalibration) => {
                 OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }
             },
             (OperatingMode::TorqueControl, Command::Idle { safe_strategy } ) => OperatingMode::Idle { safe_strategy },
-            (_, _) => return,
+            (_, _) => return false,
         };
         *self = new_state;
+
+        true
     }
 
     pub fn foc_gate(&self) -> FocGate {
@@ -94,7 +101,7 @@ impl<C: Calibrator> OperatingMode<C> {
                 // Wait phases must not step the calibration state machine:
                 active: !matches!(
                     calibrator.phase(),
-                    CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
+                    CalibrationPhase::ClearingExistingParameters | CalibrationPhase::WaitingHallCompletion | CalibrationPhase::WaitingTuning
                 ),
                 use_safety_command: false,
                 feedback_optional: true,

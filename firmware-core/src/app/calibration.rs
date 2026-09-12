@@ -57,6 +57,7 @@ impl StageResult {
 
 #[derive(Clone, Copy, defmt::Format)]
 pub enum CalibrationPhase {
+    ClearingExistingParameters,
     HallCalibration { time_passed_s: f32 },
     MotorEstimation,
     WaitingHallCompletion,
@@ -94,28 +95,22 @@ pub struct CalibrationRunner<H = HallCalibrator, E = OfflineMotorEstimator> {
     pub motor_estimator: E,
     pub phase: CalibrationPhase,
     config: CalibrationConfig,
+    has_hall: bool
 }
 
 impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
     pub fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self {
         let config = CalibrationConfig::new(spin_omega, dt_s);
-        let mut hall_calibrator = H::new(config.hall_align_s, dt_s);
-        let mut motor_estimator = E::new(config.estimator, num_pole_pairs);
-
-        let start_phase = if has_hall {
-            hall_calibrator.start();
-            CalibrationPhase::HallCalibration { time_passed_s: 0.0 }
-        } else {
-            motor_estimator.start(num_pole_pairs);
-            CalibrationPhase::MotorEstimation
-        };
+        let hall_calibrator = H::new(config.hall_align_s, dt_s);
+        let motor_estimator = E::new(config.estimator, num_pole_pairs);
 
         Self {
             num_pole_pairs,
             hall_calibrator,
             motor_estimator,
-            phase: start_phase,
+            phase: CalibrationPhase::ClearingExistingParameters,
             config,
+            has_hall
         }
     }
 
@@ -229,6 +224,16 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
     /// Resume after a wait state
     pub fn resume(&mut self) {
         match &self.phase {
+            CalibrationPhase::ClearingExistingParameters => {
+                let start_phase = if self.has_hall {
+                    self.hall_calibrator.start();
+                    CalibrationPhase::HallCalibration { time_passed_s: 0.0 }
+                } else {
+                    self.motor_estimator.start(self.num_pole_pairs);
+                    CalibrationPhase::MotorEstimation
+                };
+                self.phase = start_phase;
+            }
             CalibrationPhase::WaitingHallCompletion => {
                 self.motor_estimator.start(self.num_pole_pairs);
                 self.phase = CalibrationPhase::MotorEstimation;
@@ -424,6 +429,8 @@ mod tests {
         fn get_estimate(&self) -> MotorParamsEstimate {
             self.estimate
         }
+
+        fn invalidate(&mut self) {}
     }
 
     impl EstimatesMotorParams for MockEstimator {
@@ -501,6 +508,7 @@ mod tests {
 
     fn phase_name(phase: &CalibrationPhase) -> &'static str {
         match phase {
+            CalibrationPhase::ClearingExistingParameters => "ClearingExistingParameters",
             CalibrationPhase::HallCalibration { .. } => "HallCalibration",
             CalibrationPhase::MotorEstimation => "MotorEstimation",
             CalibrationPhase::WaitingHallCompletion => "WaitingHallCompletion",
@@ -520,13 +528,15 @@ mod tests {
     /// The hall stage runs only when hall sensors are present.
     #[test]
     fn hall_stage_only_runs_when_hall_present() {
-        let runner: CalibrationRunner<MockHall, MockEstimator> =
+        let mut runner: CalibrationRunner<MockHall, MockEstimator> =
             CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,true, DT_S);
+        runner.resume();
         assert_eq!(phase_name(&runner.phase), "HallCalibration");
         assert!(runner.hall_calibrator.started);
 
         let mut runner: CalibrationRunner<MockHall, MockEstimator> =
             CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,false, DT_S);
+        runner.resume();
         assert_eq!(phase_name(&runner.phase), "MotorEstimation");
         assert!(runner.motor_estimator.started);
         assert!(!runner.hall_calibrator.started);
@@ -540,6 +550,7 @@ mod tests {
     #[test]
     fn wait_phases_advance_only_on_resume() {
         let transitions = [
+            (CalibrationPhase::ClearingExistingParameters, "HallCalibration"),
             (CalibrationPhase::WaitingHallCompletion, "MotorEstimation"),
             (CalibrationPhase::WaitingTuning, "MotorEstimation"),
         ];
@@ -601,6 +612,7 @@ mod tests {
     #[test]
     fn wait_phases_command_zero_voltage() {
         let phases = [
+            CalibrationPhase::ClearingExistingParameters,
             CalibrationPhase::WaitingHallCompletion,
             CalibrationPhase::WaitingTuning,
             CalibrationPhase::Done,

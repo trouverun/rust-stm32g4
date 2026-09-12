@@ -358,6 +358,14 @@ impl HallFeedback {
     pub fn on_hall_interrupt(&mut self) {
         self.hall_timer.on_interrupt();
     }
+
+    pub fn invalidate(&mut self) {
+        self.estimator.invalidate();
+    }
+
+    pub fn get_calibration(&self) -> Option<HallCalibration> {
+        self.estimator.get_calibration()
+    }
 }
 
 impl HasRotorFeedback for HallFeedback {

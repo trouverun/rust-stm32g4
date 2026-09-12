@@ -198,27 +198,27 @@ mod app {
         };
 
         #[cfg(feature = "hall-feedback")]
-        match memory.load::<HallCalibration>() {
-            Ok(Some(cal)) => hall_feedback.set_calibration(cal),
-            Ok(None) => {}
-            Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
+        match memory.load::<Option<HallCalibration>>() {
+            Ok(Some(Some(cal))) => hall_feedback.set_calibration(cal),
+            Ok(Some(None) | None) => {}
+            Err(e) => { mode.on_command(Command::AssertFault { cause: e.into() }); }
         }
 
         match memory.load::<ControllerParameters>() {
             Ok(Some(p)) => {
                 match foc.set_pi_gains(Some(p)) {
                     Ok(()) => {}
-                    Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
+                    Err(e) => { mode.on_command(Command::AssertFault { cause: e.into() }); }
                 }
             },
             Ok(None) => {}
-            Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
+            Err(e) => { mode.on_command(Command::AssertFault { cause: e.into() }); }
         }
 
         // Mark the current firmware as correctly booting
         match memory.confirm_boot() {
             Ok(_) => {},
-            Err(e) => mode.on_command(Command::AssertFault { cause: e.into() }),
+            Err(e) => { mode.on_command(Command::AssertFault { cause: e.into() }); }
         }
 
         // Start CAN interface:
@@ -287,7 +287,7 @@ mod app {
             priority = 1,
             shared = [
                 can, mode, runtime_values, config, foc, motor_parameters, memory,
-                saliency_estimator, flux_estimator, feedback_arbitrator
+                saliency_estimator, flux_estimator, feedback_arbitrator, hall_feedback
             ],
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
@@ -301,7 +301,7 @@ mod app {
         )]
         async fn can_process(_: can_process::Context);
 
-        #[task(priority = 1, shared = [mode, config, motor_parameters, memory])]
+        #[task(priority = 1, shared = [mode, config, motor_parameters, hall_feedback, memory])]
         async fn persist_config(_: persist_config::Context);
     }
 

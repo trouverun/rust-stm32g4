@@ -482,6 +482,10 @@ impl MotorParamEstimator for OfflineMotorEstimator {
     fn get_estimate(&self) -> MotorParamsEstimate {
         self.params
     }
+
+    fn invalidate(&mut self) {
+        self.params.invalidate();
+    }
 }
 
 #[cfg(test)]

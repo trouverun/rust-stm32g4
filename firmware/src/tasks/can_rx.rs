@@ -11,7 +11,7 @@ use crate::bandwidth_test;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::{ConfigError, FirmwareConfig};
-use firmware_core::{Command, DataOutcome, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
+use firmware_core::{CalibrationPhase, Command, DataOutcome, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
 // Build.rs generated version constants:
@@ -50,15 +50,24 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
                     OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
                 };
-                cx.shared.mode.lock(|mode| {
+                let calibration_start: bool = matches!(command, Command::StartCalibration {..} );
+                let command_applied = cx.shared.mode.lock(|mode| {
                     if matches!(command, Command::EnableTorqueControl) && !matches!(mode, OperatingMode::TorqueControl) {
                         cx.shared.runtime_values.lock(|rtv| {
                             let now = rtv.tick;
                             rtv.target_torque.set(0.0, now);
                         });
                     }
-                    mode.on_command(command);
+                    mode.on_command(command)
                 });
+                // Clear the previous calibrations, persist_config resumes the calibration once flash is cleared too:
+                if command_applied && calibration_start {
+                    cx.shared.motor_parameters.lock(|mp| mp.invalidate());
+                    #[cfg(feature = "hall-feedback")]
+                    cx.shared.hall_feedback.lock(|hf| hf.invalidate());
+                    let _ = app::persist_config::spawn();
+                }
+
             }
             Ok(Messages::Setpoint(msg)) => {
                 match cx.local.setpoint_integrity.check(&frame.data()[..3], msg.rolling_counter(), msg.checksum()) {
@@ -405,18 +414,37 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
     }
 }
 
-/// Deferred flash write until in non-active control state
+/// Deferred flash write of the RAM state until in non-active control state
 pub async fn persist_config(mut cx: app::persist_config::Context<'_>) {
     loop {
         if !cx.shared.mode.lock(|m| m.foc_gate().active) {
             let cfg = cx.shared.config.lock(|c| *c);
             let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
-            let (r1, r2) = cx.shared.memory.lock(|memory| {
-                (memory.store(&cfg), memory.store(&params))
+
+            #[cfg(feature = "hall-feedback")]
+            let hall = cx.shared.hall_feedback.lock(|hf| hf.get_calibration());
+
+            let result = cx.shared.memory.lock(|memory| {
+                let (r1, r2) = (memory.store(&cfg), memory.store(&params));
+
+                #[cfg(feature = "hall-feedback")]
+                let r2 = r2.and(memory.store(&hall));
+
+                r1.and(r2)
             });
-            if let Err(f) = r1.and(r2) {
-                cx.shared.mode.lock(|m| m.on_command(Command::AssertFault { cause: f.into() }));
-            }
+            cx.shared.mode.lock(|m| {
+                let clearing = match m {
+                    OperatingMode::Calibration { calibrator } => {
+                        matches!(calibrator.phase, CalibrationPhase::ClearingExistingParameters)
+                    }
+                    _ => false,
+                };
+                match result {
+                    Err(f) => { m.on_command(Command::AssertFault { cause: f.into() }); }
+                    Ok(()) if clearing => { m.on_command(Command::ResumeCalibration); }
+                    Ok(()) => {}
+                }
+            });
             return;
         }
         Mono::delay(100.millis()).await;

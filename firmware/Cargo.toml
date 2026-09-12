@@ -2,6 +2,7 @@
 name = "stm32g4_firmware"
 edition = "2021"
 version = "0.9.0"
+license = "MIT OR Apache-2.0"
 
 [features]
 debug-capture = []

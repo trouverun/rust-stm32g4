@@ -214,6 +214,14 @@ impl HallEstimator {
             theta: wrap_to_2pi(theta), omega
         })
     }
+
+    pub fn invalidate(&mut self) {
+        self.tables = None;
+    }
+
+    pub fn get_calibration(&self) -> Option<HallCalibration> {
+        self.tables.as_ref().map(|t| t.hall_pattern_to_theta)
+    }
 }
 
 #[cfg(test)]

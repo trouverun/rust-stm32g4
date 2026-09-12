@@ -274,7 +274,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
 pub async fn store_hall_table(mut cx: app::store_hall_table::Context<'_>, angle_table: HallCalibration) {
     cx.shared.hall_feedback.lock(|hf| hf.set_calibration(angle_table));
     let command = cx.shared.memory.lock(|memory| {
-        match memory.store(&angle_table) {
+        match memory.store(&Some(angle_table)) {
             Ok( .. ) => Command::ResumeCalibration,
             Err(f) => Command::AssertFault { cause: f.into() }
         }

@@ -69,11 +69,19 @@ impl MotorParamsEstimate {
             pm_flux_linkage: self.pm_flux_linkage?,
         })
     }
+
+    pub fn invalidate(&mut self) {
+        self.stator_resistance = None;
+        self.d_inductance = None;
+        self.q_inductance = None;
+        self.pm_flux_linkage = None;
+    }
 }
 
 pub trait MotorParamEstimator {
     fn after_foc_iteration(&mut self, data: FocResult);
     fn get_estimate(&self) -> MotorParamsEstimate;
+    fn invalidate(&mut self);
 }
 
 pub struct ConstantMotorParameters {
@@ -103,5 +111,9 @@ impl MotorParamEstimator for ConstantMotorParameters {
 
     fn get_estimate(&self) -> MotorParamsEstimate {
         self.params
+    }
+
+    fn invalidate(&mut self) {
+        self.params.invalidate();
     }
 }

@@ -2,6 +2,7 @@
 name = "field-oriented"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 num-complex = { version = "0.4", default-features = false, features = ["libm"] }
