@@ -34,12 +34,12 @@ pub async fn can_tx_task(mut cx: app::can_tx_task::Context<'_>) {
         for slot in slots.iter_mut().filter(|s| s.next_due <= now) {
             let frame = match slot.kind {
                 Periodic::MotorCurrents => {
-                    let r = cx.shared.foc_result.lock(|r| *r);
+                    let snapshot = cx.shared.current_loop_snapshot.lock(|s| *s);
                     MotorCurrents::try_from(MotorCurrentsInit {
-                        i_q_meas:   r.measured_i_dq.q,
-                        i_d_meas:   r.measured_i_dq.d,
-                        i_q_target: r.target_i_dq.q,
-                        i_d_target: r.target_i_dq.d,
+                        i_q_meas:   snapshot.measured_i_dq.q,
+                        i_d_meas:   snapshot.measured_i_dq.d,
+                        i_q_target: snapshot.target_i_dq.q,
+                        i_d_target: snapshot.target_i_dq.d,
                     }).ok().map(|m| m.into_frame())
                 }
                 Periodic::RotorEstimates => {

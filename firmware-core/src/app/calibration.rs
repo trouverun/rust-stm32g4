@@ -326,14 +326,16 @@ impl EstimatesMotorParams for OfflineMotorEstimator {
 
 /// Trait to enable test mocking
 pub trait Calibrator {
+    type Estimator: MotorParamEstimator;
     fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self where Self: Sized;
     fn resume(&mut self);
     fn phase(&self) -> CalibrationPhase;
     fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>);
-    fn get_estimator(&mut self) -> &mut dyn MotorParamEstimator;
+    fn get_estimator(&mut self) -> &mut Self::Estimator;
 }
 
-impl<H: HallCalibrates, E: EstimatesMotorParams> Calibrator for CalibrationRunner<H, E> {
+impl<H: HallCalibrates> Calibrator for CalibrationRunner<H> {
+    type Estimator = OfflineMotorEstimator;
     fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self {
         CalibrationRunner::new(num_pole_pairs, spin_omega, has_hall, dt_s)
     }
@@ -350,7 +352,7 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> Calibrator for CalibrationRunne
         CalibrationRunner::step(self, inputs)
     }
 
-    fn get_estimator(&mut self) -> &mut dyn MotorParamEstimator {
+    fn get_estimator(&mut self) -> &mut Self::Estimator {
         &mut self.motor_estimator
     }
 }

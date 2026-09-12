@@ -1,11 +1,43 @@
 use firmware_core::Stamped;
-use field_oriented::HfiParams;
+use field_oriented::{ClarkParkValue, HfiParams, AlphaBeta};
 use crate::boards::BOARD;
 use crate::constants::*;
 
 pub struct BoardStatus {
     pub dc_bus_voltage_v: Option<f32>,
     pub temperature_c: Option<f32>,
+}
+
+#[derive(Clone, Copy)]
+pub struct FocIterationSnapshot {
+    pub u_dq: ClarkParkValue,
+    pub u_ab: AlphaBeta,
+    pub is_injecting: bool,
+}
+
+impl FocIterationSnapshot {
+    pub fn none() -> Self {
+        Self {
+            u_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
+            is_injecting: false
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct CurrentLoopSnapshot {
+    pub measured_i_dq: ClarkParkValue,
+    pub target_i_dq: ClarkParkValue,
+}
+
+impl CurrentLoopSnapshot {
+    pub fn none() -> Self {
+        Self {
+            measured_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            target_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+        }
+    }
 }
 
 #[derive(Clone, Copy, defmt::Format)]

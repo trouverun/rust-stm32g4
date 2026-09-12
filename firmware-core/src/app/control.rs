@@ -7,8 +7,8 @@ use super::calibration::{CalibrationInputs, Calibrator, StageResult};
 use super::modes::{Command, OperatingMode};
 use super::faults::FaultCause;
 use field_oriented::{
-    AlphaBeta, AngleType, ClarkParkValue, ConstantMotorParameters, DoesFocMath, FOC,
-    FocInput, FocFault, FocResult, HfiParams, HfiSource, MotorParamEstimator, MotorParamsEstimate, PhaseValues,
+    AngleType, DoesFocMath, FOC, FocInput, FocFault, FocResult,
+    HfiParams, HfiSource, MotorParamEstimator, MotorParamsEstimate, PhaseValues,
     RotorFeedback, RotorFeedbackFault, FocInputType
 };
 
@@ -81,13 +81,13 @@ impl CurrentController for FOC {
 #[inline]
 pub fn foc_step<A, C, M, H>(
     mode: &mut OperatingMode<M>,
-    params: &mut ConstantMotorParameters,
+    params_estimate: MotorParamsEstimate,
     foc: &mut C,
     acceleration: &mut A,
     hfi: &mut H,
     inputs: FocStepInputs,
 ) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator, H: HfiSource {
-    let (outcome, stage_result) = foc_step_inner(mode, params, foc, acceleration, hfi, inputs);
+    let (outcome, stage_result) = foc_step_inner(mode, params_estimate, foc, acceleration, hfi, inputs);
     if !matches!(outcome, FocStepOutcome::Normal { .. }) {
         foc.clear_windup();
     }
@@ -97,7 +97,7 @@ pub fn foc_step<A, C, M, H>(
 #[inline]
 fn foc_step_inner<A, C, M, H>(
     mode: &mut OperatingMode<M>,
-    params: &mut ConstantMotorParameters,
+    params_estimate: MotorParamsEstimate,
     foc: &mut C,
     acceleration: &mut A,
     hfi: &mut H,
@@ -131,28 +131,9 @@ fn foc_step_inner<A, C, M, H>(
     let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
-    // Mechanical speed limits scaled to the feedback's angle domain:
-    let mech_to_feedback = match angle_type {
-        AngleType::Mechanical => Some(1.0),
-        AngleType::Electrical => params.get_estimate().num_pole_pairs.map(|pp| pp as f32),
-    };
-
-    // Rotor overspeed checked only with valid feedback:
-    if !rotor_feedback_fault {
-        const RPM_TO_RADS: f32 = PI / 30.0;
-        if let Some(scale) = mech_to_feedback {
-            let max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS * scale;
-            if omega.abs() > max_omega {
-                mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
-            }
-        }
-    }
-    let stationary_omega_threshold = inputs.stationary_omega_threshold * mech_to_feedback.unwrap_or(1.0);
-
-    let torque_constant = params.get_estimate().torque_constant().unwrap_or(0.0);
-    let max_braking_torque = torque_constant * inputs.braking_current_limit_a;
     let mut stage_result = None;
     let mut calibration_output = None;
+    let mut active_estimate = params_estimate;
 
     // Calibration / estimation, only active modulation stages step the state machine:
     if mode.foc_gate().active {
@@ -168,20 +149,39 @@ fn foc_step_inner<A, C, M, H>(
             });
             stage_result = result;
             calibration_output = Some(output);
+            active_estimate = calibrator.get_estimator().get_estimate();
         }
     }
     if let Some(StageResult::Failure { cause }) = &stage_result {
         mode.on_command(Command::AssertFault { cause: (*cause).into() });
     }
 
+    // Mechanical speed limits scaled to the feedback's angle domain:
+    let mech_to_feedback = match angle_type {
+        AngleType::Mechanical => Some(1.0),
+        AngleType::Electrical => active_estimate.num_pole_pairs.map(|pp| pp as f32),
+    };
+    // Rotor overspeed checked only with valid feedback:
+    if !rotor_feedback_fault {
+        const RPM_TO_RADS: f32 = PI / 30.0;
+        if let Some(scale) = mech_to_feedback {
+            let max_omega = inputs.max_rotor_speed_mech_rpm as f32 * RPM_TO_RADS * scale;
+            if omega.abs() > max_omega {
+                mode.on_command(Command::AssertFault { cause: FaultCause::Overspeed });
+            }
+        }
+    }
+    let stationary_omega_threshold = inputs.stationary_omega_threshold * mech_to_feedback.unwrap_or(1.0);
+    let torque_constant = active_estimate.torque_constant().unwrap_or(0.0);
+    let max_braking_torque = torque_constant * inputs.braking_current_limit_a;
+
     // Determine safe outputs for idle / fault:
     gate = mode.foc_gate();
     let safety_foc_command = if gate.use_safety_command {
-        let estimate = params.get_estimate();
-        let pole_pairs = estimate.num_pole_pairs.map(|pp| pp as f32);
+        let pole_pairs = active_estimate.num_pole_pairs.map(|pp| pp as f32);
         let back_emf_constant = match angle_type {
-            AngleType::Electrical => estimate.pm_flux_linkage,
-            AngleType::Mechanical => estimate.pm_flux_linkage.zip(pole_pairs).map(|(pmf, pp)| pmf * pp)
+            AngleType::Electrical => active_estimate.pm_flux_linkage,
+            AngleType::Mechanical => active_estimate.pm_flux_linkage.zip(pole_pairs).map(|(pmf, pp)| pmf * pp)
         };
 
         let safe_strategy = match mode {
@@ -212,15 +212,11 @@ fn foc_step_inner<A, C, M, H>(
     };
 
     // Determine the FOC inputs "source":
-    let mut estimator: &mut dyn MotorParamEstimator = params;
     let (angle_type, theta, foc_command) = if let Some(safety_command) = safety_foc_command {
         // Safety braking / deceleration:
         (angle_type, theta, safety_command)
     } else if let Some(output) = calibration_output {
         // Calibration / estimation:
-        if let OperatingMode::Calibration { calibrator } = mode {
-            estimator = calibrator.get_estimator();
-        }
         (output.angle_type, output.theta, output.foc_command)
     } else {
         // Normal torque control:
@@ -246,14 +242,12 @@ fn foc_step_inner<A, C, M, H>(
     };
 
     // Do FOC computations and process the results:
-    let outcome = match foc.compute(foc_input, estimator.get_estimate(), acceleration, hfi, true) {
+    let outcome = match foc.compute(foc_input, active_estimate, acceleration, hfi, true) {
         Ok(foc_result) => {
             if let Some(result) = &stage_result {
                 if result.clears_windup() {
                     foc.clear_windup();
                 }
-            } else {
-                estimator.after_foc_iteration(foc_result);
             }
             FocStepOutcome::Normal {
                 result: foc_result
@@ -275,13 +269,41 @@ fn foc_step_inner<A, C, M, H>(
     (outcome, stage_result)
 }
 
+pub fn after_foc_step<M: Calibrator, P: MotorParamEstimator>(
+    mode: &mut OperatingMode<M>,
+    params: &mut P,
+    outcome: &FocStepOutcome,
+    stage_result: &Option<StageResult>,
+) -> MotorParamsEstimate {
+    let result = match outcome {
+        FocStepOutcome::Normal { result } if stage_result.is_none() => Some(result),
+        _ => None,
+    };
+    match mode {
+        OperatingMode::Calibration { calibrator } => {
+            let estimator = calibrator.get_estimator();
+            if let Some(result) = result {
+                estimator.after_foc_iteration(*result);
+            }
+            estimator.get_estimate()
+        }
+        OperatingMode::TorqueControl => {
+            if let Some(result) = result {
+                params.after_foc_iteration(*result);
+            }
+            params.get_estimate()
+        }
+        OperatingMode::Idle { .. } | OperatingMode::Fault { .. } => params.get_estimate(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::super::calibration::{CalibrationOutput, CalibrationPhase, CalibrationRunner};
     use crate::HALL_CALIBRATION_TIMEOUT_S;
     use field_oriented::{
-        ControllerParameters, FocConfig, MotorParams, MotorParamsEstimate, NoHfi,
+        ConstantMotorParameters, ControllerParameters, FocConfig, MotorParams, MotorParamsEstimate, NoHfi,
         RotorFeedbackFault, SinCosResult, compute_current_pi_controller_gains
     };
 
@@ -372,11 +394,11 @@ mod tests {
         }
 
         fn step(&mut self, mode: &mut OperatingMode, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
-            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
+            foc_step(mode, self.params.get_estimate(), &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
         }
 
         fn step_mock(&mut self, mode: &mut OperatingMode<MockCalibrator>, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
-            foc_step(mode, &mut self.params, &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
+            foc_step(mode, self.params.get_estimate(), &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
         }
     }
 
@@ -401,6 +423,8 @@ mod tests {
     }
 
     impl Calibrator for MockCalibrator {
+        type Estimator = ConstantMotorParameters;
+
         fn new(_num_pole_pairs: u8, _spin_omega: f32, _has_hall: bool, _dt_s: f32) -> Self {
             Self::at(CalibrationPhase::MotorEstimation)
         }
@@ -424,7 +448,7 @@ mod tests {
             (output, self.result.take())
         }
 
-        fn get_estimator(&mut self) -> &mut dyn MotorParamEstimator {
+        fn get_estimator(&mut self) -> &mut Self::Estimator {
             &mut self.estimator
         }
     }

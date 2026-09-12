@@ -385,7 +385,8 @@ impl HasRotorFeedback for HallFeedback {
 pub struct PwmOutput {
     #[cfg(feature = "overcurrent-comparators")]
     comparators: CurrentComparators,
-    pwm: PWM<'static, PwmTimer, PwmRunning>
+    pwm: PWM<'static, PwmTimer, PwmRunning>,
+    arv: f32
 }
 
 impl PwmOutput {
@@ -419,7 +420,8 @@ impl PwmOutput {
         Self {
             #[cfg(feature = "overcurrent-comparators")]
             comparators: mappings.comparators,
-            pwm: tmp.start()
+            pwm: tmp.start(),
+            arv: 0.0
         }
     }
 
@@ -428,14 +430,14 @@ impl PwmOutput {
     }
 
     pub fn enable(&mut self) {
+        self.arv = self.pwm.get_autoreload_value() as f32;
         self.pwm.enable();
     }
 
     fn write_preload_values(&self, duty_cycles: PhaseValues) {
-        let arv = self.pwm.get_autoreload_value() as f32;
-        self.pwm.set_compare_value(Channel::Ch1, (duty_cycles.u * arv) as u32 as u16);
-        self.pwm.set_compare_value(Channel::Ch2, (duty_cycles.v * arv) as u32 as u16);
-        self.pwm.set_compare_value(Channel::Ch3, (duty_cycles.w * arv) as u32 as u16);
+        self.pwm.set_compare_value(Channel::Ch1, (duty_cycles.u * self.arv) as u32 as u16);
+        self.pwm.set_compare_value(Channel::Ch2, (duty_cycles.v * self.arv) as u32 as u16);
+        self.pwm.set_compare_value(Channel::Ch3, (duty_cycles.w * self.arv) as u32 as u16);
     }
 
     #[cfg(not(feature = "overcurrent-comparators"))]
@@ -485,7 +487,7 @@ impl DoesFocMath for Acceleration {
     fn sin_cos(&mut self, angle_rad: f32) -> SinCosResult {
         const INV_PI: f32 = 1.0 / PI;
         let angle_normalized = (wrap_to_pi(angle_rad) * INV_PI).clamp(-1.0, 1.0);
-        let angle_q15 = f32_to_q1_15(angle_normalized).unwrap();
+        let angle_q15 = f32_to_q1_15(angle_normalized).unwrap_or(0);
         let mut sin_cfg = self.cordic.configure::<Sin, Q15>(Precision::Iters12, NoScale);
         let (sin_raw, cos_raw) = sin_cfg.start_one_arg(angle_q15).result_two_values();
 
@@ -507,8 +509,8 @@ impl DoesFocMath for Acceleration {
             return 0.0
         }
         let inv = 1.0 / m;
-        let x_q15 = f32_to_q1_15(x * inv).unwrap();
-        let y_q15 = f32_to_q1_15(y * inv).unwrap();
+        let x_q15 = f32_to_q1_15(x * inv).unwrap_or(0);
+        let y_q15 = f32_to_q1_15(y * inv).unwrap_or(0);
 
         let mut phase_cfg = self.cordic.configure::<Phase, Q15>(Precision::Iters12, NoScale);
         let (phase, _modulus) = phase_cfg.start_two_args(x_q15, y_q15).result_two_values();

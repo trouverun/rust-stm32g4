@@ -70,7 +70,7 @@ mod app {
     };
     use crate::types::*;
     use field_oriented::{
-        FocResult, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator, 
+        FocResult, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator,
         FocConfig, HallCalibration, MotorParamsEstimate, OrtegaIPMEstimator, PhaseCurrentFilter, SinusoidalPulsingEstimator
     };
     use crate::tasks::*;
@@ -91,9 +91,7 @@ mod app {
         feedback_arbitrator: FeedbackArbitrator,
         saliency_estimator: SinusoidalPulsingEstimator,
         flux_estimator: OrtegaIPMEstimator,
-        phase_current_filter: PhaseCurrentFilter,
-        braking_current_filter: CurrentFilter,
-        foc_result: FocResult,
+        current_loop_snapshot: CurrentLoopSnapshot,
         // Only touched by the priority 6 ISRs, so no lock is needed:
         #[lock_free]
         software_watchdog: SoftwareWatchdog,
@@ -106,6 +104,9 @@ mod app {
         acceleration: Acceleration,
         hardware_watchdog: HardwareWatchdog,
         debug_mappings: DebugMappings,
+        phase_current_filter: PhaseCurrentFilter,
+        braking_current_filter: CurrentFilter,
+        prev_foc_result: FocIterationSnapshot,
     }
 
     #[init]
@@ -240,7 +241,7 @@ mod app {
             memory,
             foc,
             motor_parameters,
-            foc_result: FocResult::none(),
+            current_loop_snapshot: CurrentLoopSnapshot::none(),
             feedback_arbitrator: FeedbackArbitrator::new(
                 config.sensorless_low_speed_threshold(), 
                 config.sensorless_high_speed_threshold()
@@ -255,8 +256,6 @@ mod app {
                 config.ortega_alpha(),
                 config.sensorless_high_speed_pll_frequency_hz()
             ),
-            phase_current_filter,
-            braking_current_filter,
             software_watchdog: SoftwareWatchdog::new(
                 peripheral_mappings.watchdog.timer,
                 Hertz((FOC_ISR_WATCHDOG_SLACK_FACTOR*PWM_FREQUENCY_HZ.0 as f32) as u32)
@@ -268,6 +267,9 @@ mod app {
             acceleration,
             hardware_watchdog: HardwareWatchdog::new(peripheral_mappings.watchdog.iwdg, IWDG_TIMEOUT_US),
             debug_mappings: peripheral_mappings.debug,
+            phase_current_filter,
+            braking_current_filter,
+            prev_foc_result: FocIterationSnapshot::none(),
         })
     }
 
@@ -278,15 +280,14 @@ mod app {
         #[task(priority = 1, shared = [motor_parameters, mode, memory])]
         async fn store_motor_params(_: store_motor_params::Context, parameters: MotorParamsEstimate);
 
-        #[task(priority = 1, shared = [can, foc_result, feedback_arbitrator, mode, board_status])]
+        #[task(priority = 1, shared = [can, current_loop_snapshot, feedback_arbitrator, mode, board_status])]
         async fn can_tx_task(_: can_tx_task::Context);
 
         #[task(
             priority = 1,
             shared = [
-                can, mode, runtime_values, config, phase_current_filter,
-                braking_current_filter, foc, motor_parameters, memory,
-                saliency_estimator, flux_estimator
+                can, mode, runtime_values, config, foc, motor_parameters, memory,
+                saliency_estimator, flux_estimator, feedback_arbitrator
             ],
             local = [
                 setpoint_integrity: FrameIntegrity = FrameIntegrity::new(),
@@ -308,6 +309,7 @@ mod app {
         priority = 6, binds = $foc_irq,
         local = [
             adc_feedback, acceleration, hardware_watchdog, debug_mappings,
+            phase_current_filter, braking_current_filter, prev_foc_result,
             board_overtemp: Debounced = Debounced::new(false),
             dc_undervolt: Debounced = Debounced::new(false),
             dc_overvolt: Debounced = Debounced::new(false),
@@ -316,10 +318,9 @@ mod app {
             dc_bus_v: Option<f32> = None,
         ],
         shared = [
-            pwm_output, foc, motor_parameters, feedback_arbitrator, 
-            saliency_estimator, flux_estimator, mode, board_status, 
-            config, runtime_values, foc_result, phase_current_filter, 
-            software_watchdog, braking_current_filter, hall_feedback
+            pwm_output, foc, motor_parameters, mode, 
+            feedback_arbitrator, saliency_estimator, flux_estimator, hall_feedback, 
+            board_status, config, runtime_values, current_loop_snapshot, software_watchdog, 
         ]
     )]    
     #[link_section = ".ccmram"]
@@ -361,6 +362,7 @@ mod app {
 
     #[cfg(feature = "hall-feedback")]
     #[task(priority = 5, binds = $hall_irq, shared = [hall_feedback])]
+    #[link_section = ".ccmram"]
     fn hall_isr(mut cx: hall_isr::Context) {
         cx.shared.hall_feedback.lock(|hall_feedback| {
             hall_feedback.on_hall_interrupt();

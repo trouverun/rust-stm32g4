@@ -83,13 +83,10 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     candidate.set_dc_bus_limits(msg.dc_bus_v_min(), msg.dc_bus_v_max())?;
                     candidate.set_braking_current_limits(msg.braking_current_limit(), msg.braking_current_fault())?;
                     *cfg = candidate;
-                    Ok::<f32, ConfigError>(candidate.braking_current_fault_a())
+                    Ok::<(), ConfigError>(())
                 });
                 match applied {
-                    Ok(braking_fault) => {
-                        cx.shared.braking_current_filter.lock(|cf| cf.set_limit(braking_fault));
-                        let _ = app::persist_config::spawn();
-                    }
+                    Ok(()) => { let _ = app::persist_config::spawn(); }
                     Err(_) => {},
                 }
             }
@@ -116,11 +113,10 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     )?;
                     candidate.set_rotor_speed_limit_mech_rpm(msg.rotor_speed_limit_mech())?;
                     *cfg = candidate;
-                    Ok::<f32, ConfigError>(candidate.overcurrent_limit_a())
+                    Ok::<(), ConfigError>(())
                 });
                 match applied {
-                    Ok(overcurrent) => {
-                        cx.shared.phase_current_filter.lock(|cf| cf.set_limits(overcurrent));
+                    Ok(()) => {
                         cx.shared.motor_parameters.lock(|mp| {
                             mp.params.num_pole_pairs = Some(msg.num_pole_pairs());
                         });
@@ -165,6 +161,12 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                             est.set_tuning(
                                 cfg.ortega_gamma(), cfg.ortega_alpha(),
                                 cfg.sensorless_high_speed_pll_frequency_hz()
+                            )
+                        });
+                        cx.shared.feedback_arbitrator.lock(|fa| {
+                            fa.set_thresholds(
+                                cfg.sensorless_low_speed_threshold(),
+                                cfg.sensorless_high_speed_threshold()
                             )
                         });
                         let _ = app::persist_config::spawn();

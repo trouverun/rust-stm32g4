@@ -4,13 +4,14 @@ use rtic::mutex::prelude::*;
 use crate::app;
 use crate::constants::PWM_FREQUENCY_HZ;
 use crate::constants::*;
+use crate::types::CurrentLoopSnapshot;
 #[cfg(feature = "debug-capture")]
 use crate::capture;
 #[cfg(feature = "bandwidth-test")]
 use crate::bandwidth_test;
 use firmware_core::{
-    OperatingMode, Command,
-    FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step
+    Command,
+    FaultCause, FocStepInputs, FocStepOutcome, StageResult, foc_step, after_foc_step
 };
 #[cfg(feature = "bandwidth-test")]
 use firmware_core::SafeControlStrategy;
@@ -18,6 +19,8 @@ use field_oriented::{
     FocResult, HallCalibration, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate,
     SensorlessEstimator, SensorlessEstimatorInput, compute_current_pi_controller_gains, wrap_to_pi
 };
+
+
 
 #[link_section = ".ccmram"]
 #[inline(never)]
@@ -27,7 +30,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         cx.local.hardware_watchdog.feed();
         cx.local.debug_mappings.la_a.set_high();
 
-        // Gather inputs:
         let watchdog_fault = {
             let wd = &mut cx.shared.software_watchdog;
             if wd.is_faulted() && !wd.fault_acknowledged() {
@@ -43,39 +45,42 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         let overcurrent = *cx.local.overcurrent;
         let braking_limit_exceeded = *cx.local.braking_limit_exceeded;
         let dc_bus_reading_v = *cx.local.dc_bus_v;
-        
+
+        // Gather inputs:
+        const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
+        const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         let (
             calibration_voltage_v, calibration_current_a,
             calibration_sweep_omega, max_rotor_speed_mech_rpm,
             setpoint_timeout_ms, active_current_limit_a, 
-            dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a, 
-            hfi_params, overcurrent_limit_a
+            dc_bus_min_v,  dc_bus_max_v , braking_current_limit_a,
+            hfi_params, overcurrent_limit_a, braking_current_fault_a
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(),
                 cfg.calibration_sweep_omega(), cfg.rotor_speed_limit_mech_rpm(),
                 cfg.setpoint_timeout_ms(), cfg.rated_current_limit_a(),
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
-                cfg.braking_current_limit_a(), cfg.hfi(), cfg.overcurrent_limit_a())
+                cfg.braking_current_limit_a(), cfg.hfi(), 
+                cfg.overcurrent_limit_a(), cfg.braking_current_fault_a())
             });
-        const TICKS_PER_MS: u64 = PWM_FREQUENCY_HZ.0 as u64 / 1000;
-        let mut target_torque = cx.shared.runtime_values.lock(|rtv| {
-            rtv.tick += 1;
-            rtv.target_torque.fresh(rtv.tick, setpoint_timeout_ms as u64 * TICKS_PER_MS)
-        });
-        const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
-        const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         
-        let params = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
         let (mut rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
             (fa.read(), fa.get_hall_pattern())
         });
-        if let Ok(mut feedback) = &mut rotor_feedback {
+        if let Ok(feedback) = &mut rotor_feedback {
             feedback.latency_compensate(DT_S);
         }
 
+        let params_estimate = cx.shared.motor_parameters.lock(|mp| mp.get_estimate());
+        let mut target_torque = cx.shared.runtime_values.lock(|rtv| {
+            const TICKS_PER_MS: u64 = PWM_FREQUENCY_HZ.0 as u64 / 1000;
+            rtv.tick += 1;
+            // Outdated setpoint becomes None:
+            rtv.target_torque.fresh(rtv.tick, setpoint_timeout_ms as u64 * TICKS_PER_MS)
+        });
         #[cfg(feature = "bandwidth-test")]
         let (mut target_torque, rotor_feedback) = bandwidth_test::multisine_torque(
-            target_torque, rotor_feedback, active_current_limit_a, params.torque_constant()
+            target_torque, rotor_feedback, active_current_limit_a, params_estimate.torque_constant()
         );
 
         // FOC compute:
@@ -102,18 +107,14 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         };
         cx.local.debug_mappings.la_b.set_high();
         let (outcome, stage_result) = (
-            &mut cx.shared.mode, &mut cx.shared.motor_parameters, cx.shared.foc, 
-            &mut cx.shared.saliency_estimator
-        ).lock(
-            |mode, params, foc, saliency_est| {
-                foc_step(mode, params, foc, cx.local.acceleration, saliency_est.hfi_source(), inputs)
-            }
-        );
+            &mut cx.shared.mode, cx.shared.foc, &mut cx.shared.saliency_estimator
+        ).lock(|mode, foc, saliency_est| {
+            foc_step(mode, params_estimate, foc, cx.local.acceleration, saliency_est.hfi_source(), inputs)
+        });
 
         // Apply outputs:
-        let foc_result = match outcome {
+        let foc_result = match &outcome {
             FocStepOutcome::Normal { result } => {
-                cx.shared.pwm_output.enable();
                 cx.shared.pwm_output.set_duty_cycles(result.duty_cycles);
                 cx.local.debug_mappings.la_b.set_low();
 
@@ -136,7 +137,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
                     }));
                 }
 
-                result
+                *result
             }
             FocStepOutcome::ActiveShort => {
                 cx.shared.pwm_output.active_short();
@@ -150,52 +151,41 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             }
         };
 
-        let params_estimate = cx.shared.mode.lock(|mode| match mode {
-            OperatingMode::Calibration { calibrator } => calibrator.get_estimator().get_estimate(),
-            _ => params,
-        });
-        let (sensorless_input, braking_current) = cx.shared.foc_result.lock(|prev| {
-            let braking_current = match dc_bus_reading_v {
-                Some(dc_v) if dc_v > dc_bus_min_v => {
-                    -1.5 * (prev.u_dq.d * foc_result.measured_i_dq.d + prev.u_dq.q * foc_result.measured_i_dq.q) / dc_v
-                }
-                _ => 0.0,
-            };
-            let sensorless_input = SensorlessEstimatorInput {
-                theta: foc_result.theta_e,
-                i_ab: foc_result.measured_i_ab,
-                i_dq: foc_result.measured_i_dq,
-                u_ab: prev.u_ab,
-                u_dq: prev.u_dq,
-                is_injecting: prev.is_injecting,
-                hfi_i_dq: foc_result.hfi_i_dq,
-                motor_params: params_estimate,
-                hfi_params,
-                dt_s: DT_S,
-            };
-            *prev = foc_result;
-            (sensorless_input, braking_current)
+        // Update the motor param estimate:
+        let active_estimate = (&mut cx.shared.mode, &mut cx.shared.motor_parameters).lock(|mode, params| {
+            after_foc_step(mode, params, &outcome, &stage_result)
         });
 
-        // Deferred checks, results feed the next tick's FOC step:
-        cx.shared.pwm_output.set_comparator_current_limit(overcurrent_limit_a);
-        *cx.local.braking_limit_exceeded = cx.shared.braking_current_filter.lock(|cf| {
-            cf.update(braking_current);
-            cf.exceeds_limit()
-        });
-        *cx.local.overcurrent = cx.shared.phase_current_filter.lock(|cf| {
-            cf.update(phase_currents);
-            cf.check_overcurrent()
-        });
-
-        cx.local.debug_mappings.la_c.set_high();       
+        cx.local.debug_mappings.la_c.set_high();    
         // Do the rotor feedback updates here instead of at the start to minimize the latency to PWM duty application:
         // (trade one tick of rotor angle staleness, which is almost nothing, for more headroom to meet the PWM duty update "deadline")
         #[cfg(feature = "hall-feedback")]
         let (hall_feedback, hall_pattern) = cx.shared.hall_feedback.lock(|hall_feedback| {
             (hall_feedback.read(), hall_feedback.get_pattern())
         });
-  
+
+        let prev = cx.local.prev_foc_result;
+        let braking_current = match dc_bus_reading_v {
+            Some(dc_v) if dc_v > dc_bus_min_v => {
+                -1.5 * (prev.u_dq.d * foc_result.measured_i_dq.d + prev.u_dq.q * foc_result.measured_i_dq.q) / dc_v
+            }
+            _ => 0.0,
+        };
+        let sensorless_input = SensorlessEstimatorInput {
+            theta: foc_result.theta_e,
+            i_ab: foc_result.measured_i_ab,
+            i_dq: foc_result.measured_i_dq,
+            u_ab: prev.u_ab,
+            u_dq: prev.u_dq,
+            is_injecting: prev.is_injecting,
+            hfi_i_dq: foc_result.hfi_i_dq,
+            motor_params: active_estimate,
+            hfi_params,
+            dt_s: DT_S,
+        };
+        prev.u_ab = foc_result.u_ab;
+        prev.u_dq = foc_result.u_dq;
+        prev.is_injecting = foc_result.is_injecting;
         let saliency_feedback = cx.shared.saliency_estimator.lock(|est| {
             est.update(&sensorless_input, cx.local.acceleration);
             est.read()
@@ -209,10 +199,27 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             #[cfg(feature = "hall-feedback")]
             fa.update_hall(hall_feedback, hall_pattern);
 
-            fa.update_hfi_sensorless(saliency_feedback);
-            fa.update_flux_sensorless(flux_feedback);
+            fa.update_sensorless(saliency_feedback, flux_feedback);
         });
         cx.local.debug_mappings.la_c.set_low();
+
+        // Deferred checks, results feed the next tick's FOC step:
+        cx.shared.pwm_output.set_comparator_current_limit(overcurrent_limit_a);
+        cx.local.braking_current_filter.set_limit(braking_current_fault_a);
+        cx.local.braking_current_filter.update(braking_current);
+        *cx.local.braking_limit_exceeded = cx.local.braking_current_filter.exceeds_limit();
+
+        cx.local.phase_current_filter.set_limits(overcurrent_limit_a);
+        cx.local.phase_current_filter.update(phase_currents);
+        *cx.local.overcurrent = cx.local.phase_current_filter.check_overcurrent();
+
+        // Store current measurements for CAN Tx:
+        cx.shared.current_loop_snapshot.lock(|snapshot| {
+            *snapshot = CurrentLoopSnapshot {
+                measured_i_dq: foc_result.measured_i_dq,
+                target_i_dq: foc_result.target_i_dq,
+            };
+        });
 
         // Do flash writes and tuning outside this ISR:
         match stage_result {
@@ -291,7 +298,6 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
                         });
                     });
                 }
-                foc.clear_windup();
             });
             let command = cx.shared.memory.lock(|memory| {
                 match memory.store(&pi_gains) {
@@ -306,7 +312,6 @@ pub async fn tune_pi(mut cx: app::tune_pi::Context<'_>, estimate: MotorParamsEst
         Err(fault) => {
             cx.shared.foc.lock(|foc| {
                 let _ = foc.set_pi_gains(None);
-                foc.clear_windup();
             });
             cx.shared.mode.lock(|mode| {
                 mode.on_command(Command::AssertFault {
