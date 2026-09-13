@@ -1,5 +1,5 @@
 use firmware_core::Stamped;
-use field_oriented::{ClarkParkValue, HfiParams, AlphaBeta};
+use field_oriented::{ClarkParkValue, AlphaBeta};
 use crate::boards::BOARD;
 use crate::constants::*;
 
@@ -73,6 +73,7 @@ pub struct FirmwareConfig {
     braking_current_limit_a: f32,
     braking_current_fault_a: f32,
     hfi_amplitude_v: f32,
+    hfi_startup_amplitude_v: f32,
     ortega_gamma: f32,
     ortega_alpha: f32,
     sensorless_low_speed_threshold: f32,
@@ -100,6 +101,7 @@ impl Default for FirmwareConfig {
             braking_current_limit_a: DEFAULT_BRAKING_CURRENT_LIMIT_A,
             braking_current_fault_a: DEFAULT_BRAKING_CURRENT_FAULT_A,
             hfi_amplitude_v: DEFAULT_HFI_AMPLITUDE_V,
+            hfi_startup_amplitude_v: DEFAULT_HFI_STARTUP_AMPLITUDE_V,
             ortega_gamma: DEFAULT_ORTEGA_GAMMA,
             ortega_alpha: DEFAULT_ORTEGA_ALPHA,
             sensorless_low_speed_threshold: DEFAULT_SENSORLESS_LOW_SPEED_THRESHOLD,
@@ -133,6 +135,8 @@ impl FirmwareConfig {
         temp_max_c,
         braking_current_limit_a,
         braking_current_fault_a,
+        hfi_amplitude_v,
+        hfi_startup_amplitude_v,
         ortega_gamma,
         ortega_alpha,
         sensorless_low_speed_threshold,
@@ -149,15 +153,6 @@ impl FirmwareConfig {
 
     #[inline]
     pub fn rotor_overspeed_limit_mech_rpm(&self) -> u16 { self.rotor_overspeed_limit_mech_rpm }
-
-    #[inline]
-    pub fn hfi(&self) -> HfiParams {
-        HfiParams {
-            amplitude_v: self.hfi_amplitude_v,
-            injection_frequency_hz: HFI_FREQUENCY_HZ,
-            disable_threshold_omega_rads: self.sensorless_high_speed_threshold,
-        }
-    }
 
     /// Set as a pair so min/max aren't validated against each other's stale value.
     pub fn set_dc_bus_limits(&mut self, min_v: f32, max_v: f32) -> Result<(), ConfigError> {
@@ -247,12 +242,14 @@ impl FirmwareConfig {
     pub fn set_sensorless_1(
         &mut self,
         hfi_amplitude_v: f32,
+        hfi_startup_amplitude_v: f32,
         low_speed_threshold: f32,
         high_speed_threshold: f32,
         low_speed_pll_frequency_hz: f32,
         high_speed_pll_frequency_hz: f32,
     ) -> Result<(), ConfigError> {
         let hfi_amplitude_v = in_range(hfi_amplitude_v, HFI_AMPLITUDE_RANGE)?;
+        let hfi_startup_amplitude_v = in_range(hfi_startup_amplitude_v, HFI_AMPLITUDE_RANGE)?;
         let low_speed_threshold = in_range(low_speed_threshold, SENSORLESS_SPEED_THRESHOLD_RANGE)?;
         let high_speed_threshold = in_range(high_speed_threshold, SENSORLESS_SPEED_THRESHOLD_RANGE)?;
         if high_speed_threshold < low_speed_threshold {
@@ -265,6 +262,7 @@ impl FirmwareConfig {
             return Err(ConfigError::OutOfRange);
         }
         self.hfi_amplitude_v = hfi_amplitude_v;
+        self.hfi_startup_amplitude_v = hfi_startup_amplitude_v;
         self.sensorless_low_speed_threshold = low_speed_threshold;
         self.sensorless_high_speed_threshold = high_speed_threshold;
         self.sensorless_low_speed_pll_frequency_hz = low_speed_pll_frequency_hz;

@@ -1,5 +1,5 @@
 use super::calibration::{CalibrationFailureCause};
-use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuningFault};
+use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuningFault, PolarityTestFault};
 
 #[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
 #[repr(u8)]
@@ -34,6 +34,7 @@ pub enum FaultCause {
 
     MissingMotorParams,
     MissingControllerGains,
+    SensorlessPolarityTestFault,
     InvalidRotorFeedback,
     ControllerNumericalError,
     RealtimeViolated,
@@ -102,6 +103,14 @@ impl From<PITuningFault> for FaultCause {
             PITuningFault::InfeasibleMotorParameters => FaultCause::TuningInfeasibleParameters,
             PITuningFault::InvalidTuningGoals => FaultCause::TuningInvalidTuningGoals,
             PITuningFault::Unstable | PITuningFault::NotRobust => FaultCause::TuningUnstable,
+        }
+    }
+}
+
+impl From<PolarityTestFault> for FaultCause {
+    fn from(f: PolarityTestFault) -> Self {
+        match f {
+            _ => FaultCause::SensorlessPolarityTestFault
         }
     }
 }

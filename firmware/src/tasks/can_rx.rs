@@ -52,14 +52,14 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                             None => Command::AssertFault { cause: FaultCause::MissingMotorParams },
                         }
                     }
-                    OperatingModeRequestRequestedMode::TorqueControl => Command::EnableTorqueControl,
+                    OperatingModeRequestRequestedMode::TorqueControl => Command::RequestTorqueControl,
                     OperatingModeRequestRequestedMode::CancelCalibration => Command::CancelCalibration,
                     OperatingModeRequestRequestedMode::FaultClear => Command::ClearFault,
                     OperatingModeRequestRequestedMode::_Other(_) => Command::NoOp,
                 };
                 let calibration_start: bool = matches!(command, Command::StartCalibration {..} );
                 let command_applied = cx.shared.mode.lock(|mode| {
-                    if matches!(command, Command::EnableTorqueControl) && !matches!(mode, OperatingMode::TorqueControl) {
+                    if matches!(command, Command::RequestTorqueControl) && !matches!(mode, OperatingMode::SaliencyPolarityTest | OperatingMode::TorqueControl) {
                         cx.shared.runtime_values.lock(|rtv| {
                             let now = rtv.tick;
                             rtv.target_torque.set(0.0, now);
@@ -181,7 +181,8 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 let applied = cx.shared.config.lock(|cfg| {
                     let mut candidate = *cfg;
                     candidate.set_sensorless_1(
-                        msg.hfi_amplitude(), msg.sensorless_low_speed_threshold(),
+                        msg.hfi_amplitude(), msg.hfi_startup_amplitude(),
+                        msg.sensorless_low_speed_threshold(),
                         msg.sensorless_high_speed_threshold(),
                         msg.sensorless_low_speed_pll_frequency() as f32,
                         msg.sensorless_high_speed_pll_frequency() as f32,
@@ -336,7 +337,8 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                 if all || matches!(block, ConfigQueryBlockId::SensorlessConfig1) {
                     let cfg = cx.shared.config.lock(|c| *c);
                     let f = SensorlessConfig1Report::try_from(SensorlessConfig1ReportInit {
-                        hfi_amplitude: cfg.hfi().amplitude_v,
+                        hfi_amplitude: cfg.hfi_amplitude_v(),
+                        hfi_startup_amplitude: cfg.hfi_startup_amplitude_v(),
                         sensorless_low_speed_threshold: cfg.sensorless_low_speed_threshold(),
                         sensorless_high_speed_threshold: cfg.sensorless_high_speed_threshold(),
                         sensorless_low_speed_pll_frequency: cfg.sensorless_low_speed_pll_frequency_hz() as u8,

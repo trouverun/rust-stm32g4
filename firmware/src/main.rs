@@ -71,7 +71,8 @@ mod app {
     use crate::types::*;
     use field_oriented::{
         FocResult, ConstantMotorParameters, ControllerParameters, CurrentFilter, FOC, FeedbackArbitrator,
-        FocConfig, HallCalibration, MotorParamsEstimate, OrtegaIPMEstimator, PhaseCurrentFilter, SinusoidalPulsingEstimator
+        FocConfig, HallCalibration, MotorParamsEstimate, OrtegaIPMEstimator, PhaseCurrentFilter, PolarityTestConfig,
+        SinusoidalPulsingEstimator
     };
     use crate::tasks::*;
 
@@ -249,7 +250,12 @@ mod app {
             saliency_estimator: SinusoidalPulsingEstimator::new(
                 PWM_FREQUENCY_HZ.0 as f32,
                 HFI_FREQUENCY_HZ,
-                config.sensorless_low_speed_pll_frequency_hz()
+                config.sensorless_low_speed_pll_frequency_hz(),
+                PolarityTestConfig {
+                    timeout_ms: POLARITY_TEST_TIMEOUT_MS,
+                    convergence_tolerance_rad: POLARITY_TEST_CONVERGENCE_TOLERANCE_RAD,
+                    test_duration_ms: POLARITY_TEST_DURATION_MS,
+                }
             ),
             flux_estimator: OrtegaIPMEstimator::new(
                 config.ortega_gamma(),

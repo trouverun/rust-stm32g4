@@ -21,6 +21,7 @@ pub enum Command {
     ResumeCalibration,
     FinishCalibration,
     CancelCalibration,
+    RequestTorqueControl,
     EnableTorqueControl,
     AssertFault { cause: FaultCause },
     ClearFault, 
@@ -32,6 +33,7 @@ pub enum OperatingMode<C = CalibrationRunner> {
         safe_strategy: SafeControlStrategy
     },
     Calibration { calibrator: C },
+    SaliencyPolarityTest,
     TorqueControl,
     Fault {
         safe_strategy: SafeControlStrategy,
@@ -74,7 +76,7 @@ impl<C: Calibrator> OperatingMode<C> {
                     return false;
                 }
             }
-            (OperatingMode::Idle { ..}, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
+            (OperatingMode::Idle { ..}, Command::RequestTorqueControl) => OperatingMode::SaliencyPolarityTest,
             (OperatingMode::Calibration { calibrator }, Command::ResumeCalibration) => {
                 calibrator.resume();
                 return true;
@@ -82,6 +84,8 @@ impl<C: Calibrator> OperatingMode<C> {
             (OperatingMode::Calibration { .. }, Command::FinishCalibration | Command::CancelCalibration) => {
                 OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() }
             },
+            (OperatingMode::SaliencyPolarityTest, Command::Idle { safe_strategy }) => OperatingMode::Idle { safe_strategy },
+            (OperatingMode::SaliencyPolarityTest, Command::EnableTorqueControl) => OperatingMode::TorqueControl,
             (OperatingMode::TorqueControl, Command::Idle { safe_strategy } ) => OperatingMode::Idle { safe_strategy },
             (_, _) => return false,
         };
@@ -105,6 +109,11 @@ impl<C: Calibrator> OperatingMode<C> {
                 ),
                 use_safety_command: false,
                 feedback_optional: true,
+            },
+            OperatingMode::SaliencyPolarityTest => FocGate { 
+                active: true, 
+                use_safety_command: false, 
+                feedback_optional: false 
             },
             OperatingMode::TorqueControl => FocGate {
                 active: true,
@@ -130,7 +139,8 @@ impl<C: Calibrator> OperatingMode<C> {
         match self {
             OperatingMode::Idle { .. } => 0,
             OperatingMode::Calibration { .. } => 1,
-            OperatingMode::TorqueControl => 2,
+            OperatingMode::SaliencyPolarityTest => 2,
+            OperatingMode::TorqueControl => 3,
             OperatingMode::Fault { .. } => 4,
         }
     }
@@ -178,12 +188,32 @@ mod tests {
         assert!(matches!(mode, OperatingMode::Fault { .. }));
     }
 
-    /// Torque control can be entered from idle and from nowhere else.
+    /// A torque control request enters the polarity test from idle and from nowhere else.
     #[test]
-    fn torque_control_entry_only_from_idle() {
+    fn torque_control_request_only_from_idle() {
         let mut mode: OperatingMode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
+        mode.on_command(Command::RequestTorqueControl);
+        assert!(matches!(mode, OperatingMode::SaliencyPolarityTest));
+
+        let mut mode = calibrating();
+        mode.on_command(Command::RequestTorqueControl);
+        assert!(matches!(mode, OperatingMode::Calibration { .. }));
+
+        let mut mode = faulted(FaultCause::Overcurrent);
+        mode.on_command(Command::RequestTorqueControl);
+        assert!(matches!(mode, OperatingMode::Fault { .. }));
+    }
+
+    /// Torque control is entered from the polarity test and from nowhere else.
+    #[test]
+    fn torque_control_entry_only_from_polarity_test() {
+        let mut mode: OperatingMode = OperatingMode::SaliencyPolarityTest;
         mode.on_command(Command::EnableTorqueControl);
         assert!(matches!(mode, OperatingMode::TorqueControl));
+
+        let mut mode: OperatingMode = OperatingMode::Idle { safe_strategy: SafeControlStrategy::sto() };
+        mode.on_command(Command::EnableTorqueControl);
+        assert!(matches!(mode, OperatingMode::Idle { .. }));
 
         let mut mode = calibrating();
         mode.on_command(Command::EnableTorqueControl);

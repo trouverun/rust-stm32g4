@@ -16,11 +16,10 @@ use firmware_core::{
 #[cfg(feature = "bandwidth-test")]
 use firmware_core::SafeControlStrategy;
 use field_oriented::{
-    FocResult, HallCalibration, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate,
-    SensorlessEstimator, SensorlessEstimatorInput, compute_current_pi_controller_gains, wrap_to_pi
+    FocResult, HallCalibration, HasRotorFeedback, MotorParamEstimator, MotorParamsEstimate, 
+    RotorFeedbackFault, SensorlessEstimator, SensorlessEstimatorInput, RotorFeedback,
+    compute_current_pi_controller_gains, wrap_to_pi
 };
-
-
 
 #[link_section = ".ccmram"]
 #[inline(never)]
@@ -55,14 +54,16 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             rotor_speed_limit_mech_rpm, rotor_overspeed_fault_threshold_mech_rpm,
             dc_bus_min_v, dc_bus_max_v,
             braking_current_limit_a, braking_current_fault_a,
-            setpoint_timeout_ms, hfi_params
+            setpoint_timeout_ms, sensorless_high_speed_threshold,
+            hfi_amplitude_v, hfi_startup_amplitude_v
         ) = cx.shared.config.lock(|cfg| {
                 (cfg.calibration_voltage_v(), cfg.calibration_current_a(), cfg.calibration_sweep_omega(),
                 cfg.rated_current_limit_a(), cfg.overcurrent_limit_a(),
                 cfg.rotor_speed_limit_mech_rpm(), cfg.rotor_overspeed_limit_mech_rpm(),
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
                 cfg.braking_current_limit_a(), cfg.braking_current_fault_a(),
-                cfg.setpoint_timeout_ms(), cfg.hfi())
+                cfg.setpoint_timeout_ms(), cfg.sensorless_high_speed_threshold(),
+                cfg.hfi_amplitude_v(), cfg.hfi_startup_amplitude_v())
             });
         
         let (mut rotor_feedback, hall_pattern) = cx.shared.feedback_arbitrator.lock(|fa| {
@@ -105,13 +106,16 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             dc_bus_min_v,
             dc_bus_max_v,
             tick_dt_ms: DT_MS,
-            hfi_params,
+            hfi_amplitude_v,
+            hfi_startup_amplitude_v,
+            hfi_frequency_hz: HFI_FREQUENCY_HZ,
+            hfi_disable_threshold_omega_rads: sensorless_high_speed_threshold,
         };
         cx.local.debug_mappings.la_b.set_high();
         let (outcome, stage_result) = (
             &mut cx.shared.mode, cx.shared.foc, &mut cx.shared.saliency_estimator
         ).lock(|mode, foc, saliency_est| {
-            foc_step(mode, params_estimate, foc, cx.local.acceleration, saliency_est.hfi_source(), inputs)
+            foc_step(mode, params_estimate, foc, cx.local.acceleration, saliency_est, inputs)
         });
 
         // Apply outputs:
@@ -182,21 +186,34 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             is_injecting: prev.is_injecting,
             hfi_i_dq: foc_result.hfi_i_dq,
             motor_params: active_estimate,
-            hfi_params,
+            hfi_params: foc_result.hfi_params,
             dt_s: DT_S,
         };
         prev.u_ab = foc_result.u_ab;
         prev.u_dq = foc_result.u_dq;
         prev.is_injecting = foc_result.is_injecting;
-        let saliency_feedback = cx.shared.saliency_estimator.lock(|est| {
-            est.update(&sensorless_input, cx.local.acceleration);
-            est.read()
-        });
-        let flux_feedback = cx.shared.flux_estimator.lock(|est| {
-            est.update(&sensorless_input, cx.local.acceleration);
-            est.read()
-        });      
 
+        // Update the sensorless estimators, or reset them if in an unobservable non-conducting state:
+        let (saliency_feedback, flux_feedback) = (
+            cx.shared.saliency_estimator, cx.shared.flux_estimator
+        ).lock(|saliency_est, flux_est| {
+            if matches!(outcome, FocStepOutcome::Normal { .. }) {
+                saliency_est.update(&sensorless_input, cx.local.acceleration);
+                flux_est.update(&sensorless_input, cx.local.acceleration);
+                (saliency_est.read(), flux_est.read())
+            } else {     
+                // Seed with hall feedback when possible: 
+                #[cfg(feature = "hall-feedback")]
+                let seed = hall_feedback;
+                #[cfg(not(feature = "hall-feedback"))]
+                let seed = Err(RotorFeedbackFault::NoFeedback);
+                saliency_est.reset(seed.ok(), params_estimate, cx.local.acceleration);
+                flux_est.reset(seed.ok(), params_estimate, cx.local.acceleration);
+                (Err(RotorFeedbackFault::Unobservable), Err(RotorFeedbackFault::Unobservable))
+            }
+        });
+
+        // Update feedback arbitration:
         cx.shared.feedback_arbitrator.lock(|fa| {            
             #[cfg(feature = "hall-feedback")]
             fa.update_hall(hall_feedback, hall_pattern);
@@ -247,7 +264,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
 
     // if board status ISR (sampled DC bus voltage and board temperature):
     if let Some((vbus, tboard)) = cx.local.adc_feedback.read_board_info() {
-        // Local copy for the FOC branch, so it needs no board_status lock:
         *cx.local.dc_bus_v = Some(vbus);
         cx.shared.board_status.lock(|bs| {
             bs.dc_bus_voltage_v = Some(vbus);

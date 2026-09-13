@@ -25,6 +25,12 @@ pub const FOC_ISR_WATCHDOG_SLACK_FACTOR: f32 = 0.9;
 pub const HFI_FREQUENCY_SUBMULTIPLE: u32 = 10;
 pub const HFI_FREQUENCY_HZ: f32 = PWM_FREQUENCY_HZ.0 as f32 / HFI_FREQUENCY_SUBMULTIPLE as f32;
 
+/// Upper bound on the sensorless startup pole polarity test, from its first tick to a verdict
+pub const POLARITY_TEST_TIMEOUT_MS: f32 = 500.0;
+/// Largest filtered saliency PLL innovation which still counts as locked onto the d-axis
+pub const POLARITY_TEST_CONVERGENCE_TOLERANCE_RAD: f32 = 0.05;
+pub const POLARITY_TEST_DURATION_MS: f32 = 100.0;
+
 // Factor of the linear modulation voltage budget that can be used before field weakening starts
 pub const OVERMODULATION_THRESHOLD_RATIO: f32 = 0.95;
 // The design bandwidth of the field weakening controller
@@ -54,6 +60,7 @@ pub const DEFAULT_TEMP_MAX_C: f32 = 80.0;
 pub const DEFAULT_BRAKING_CURRENT_LIMIT_A: f32 = 0.0;
 pub const DEFAULT_BRAKING_CURRENT_FAULT_A: f32 = 0.1;
 pub const DEFAULT_HFI_AMPLITUDE_V: f32 = 0.0;
+pub const DEFAULT_HFI_STARTUP_AMPLITUDE_V: f32 = 0.0;
 pub const DEFAULT_ORTEGA_GAMMA: f32 = 100.0;
 pub const DEFAULT_ORTEGA_ALPHA: f32 = 20.0;
 pub const DEFAULT_SENSORLESS_LOW_SPEED_THRESHOLD: f32 = 15.0;
@@ -70,7 +77,7 @@ pub const TEMP_MAX_RANGE: (f32, f32) = (-40.0, 150.0);
 pub const SETPOINT_TIMEOUT_MAX_MS: u16 = 60_000;
 pub const HFI_AMPLITUDE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
 pub const ORTEGA_ALPHA_MAX: f32 = 6553.5;
-pub const SENSORLESS_SPEED_THRESHOLD_RANGE: (f32, f32) = (0.0, 6553.5);
+pub const SENSORLESS_SPEED_THRESHOLD_RANGE: (f32, f32) = (0.0, 409.5);
 pub const SENSORLESS_PLL_FREQUENCY_HZ_MAX: f32 = 255.0;
 
 // BSP:

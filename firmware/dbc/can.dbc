@@ -55,9 +55,10 @@ BO_ 608 ProtectionLimits2: 4 Host
  SG_ temp_max : 16|16@1- (0.1,0) [-3276.8|3276.7] "degC" Firmware
 
 BO_ 688 SensorlessConfig1: 8 Host
- SG_ hfi_amplitude : 0|16@1+ (0.01,0) [0|655.35] "V" Firmware
- SG_ sensorless_low_speed_threshold : 16|16@1+ (0.1,0) [0|6553.5] "rad/s" Firmware
- SG_ sensorless_high_speed_threshold : 32|16@1+ (0.1,0) [0|6553.5] "rad/s" Firmware
+ SG_ hfi_amplitude : 0|12@1+ (0.1,0) [0|409.5] "V" Firmware
+ SG_ hfi_startup_amplitude : 12|12@1+ (0.1,0) [0|409.5] "V" Firmware
+ SG_ sensorless_low_speed_threshold : 24|12@1+ (0.1,0) [0|409.5] "rad/s" Firmware
+ SG_ sensorless_high_speed_threshold : 36|12@1+ (0.1,0) [0|409.5] "rad/s" Firmware
  SG_ sensorless_low_speed_pll_frequency : 48|8@1+ (1,0) [0|255] "Hz" Firmware
  SG_ sensorless_high_speed_pll_frequency : 56|8@1+ (1,0) [0|255] "Hz" Firmware
 
@@ -171,9 +172,10 @@ BO_ 272 RotorEstimates: 8 Firmware
  SG_ sensl_valid : 59|1@1+ (1,0) [0|1] "" Host
 
 BO_ 488 SensorlessConfig1Report: 8 Firmware
- SG_ hfi_amplitude : 0|16@1+ (0.01,0) [0|655.35] "V" Host
- SG_ sensorless_low_speed_threshold : 16|16@1+ (0.1,0) [0|6553.5] "rad/s" Host
- SG_ sensorless_high_speed_threshold : 32|16@1+ (0.1,0) [0|6553.5] "rad/s" Host
+ SG_ hfi_amplitude : 0|12@1+ (0.1,0) [0|409.5] "V" Host
+ SG_ hfi_startup_amplitude : 12|12@1+ (0.1,0) [0|409.5] "V" Host
+ SG_ sensorless_low_speed_threshold : 24|12@1+ (0.1,0) [0|409.5] "rad/s" Host
+ SG_ sensorless_high_speed_threshold : 36|12@1+ (0.1,0) [0|409.5] "rad/s" Host
  SG_ sensorless_low_speed_pll_frequency : 48|8@1+ (1,0) [0|255] "Hz" Host
  SG_ sensorless_high_speed_pll_frequency : 56|8@1+ (1,0) [0|255] "Hz" Host
 
@@ -204,7 +206,7 @@ BA_ "IdleOnly" BO_ 576 1;
 BA_ "IdleOnly" BO_ 656 1;
 BA_ "IdleOnly" BO_ 672 1;
 
-VAL_ 320 mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 4 "Fault" ;
+VAL_ 320 mode 0 "Idle" 1 "Calibration" 2 "SaliencyPolarityTest" 3 "TorqueControl" 4 "Fault" ;
 VAL_ 640 command 0 "Start" 1 "RequestDump" 2 "StartBandwidthTest" ;
 VAL_ 528 requested_mode 0 "Idle" 1 "Calibration" 2 "TorqueControl" 3 "CancelCalibration" 4 "FaultClear" ;
 VAL_ 624 block_id 0 "protection_limits" 1 "motor_config" 2 "calibration_targets" 3 "current_gains_d" 4 "current_gains_q" 5 "motor_parameters" 6 "motor_limits" 7 "firmware_version" 8 "sensorless_config_1" 9 "sensorless_config_2" 255 "all" ;

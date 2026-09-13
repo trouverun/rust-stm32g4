@@ -9,7 +9,7 @@ use super::faults::FaultCause;
 use field_oriented::{
     AngleType, DoesFocMath, FOC, FocInput, FocFault, FocResult,
     HfiParams, HfiSource, MotorParamEstimator, MotorParamsEstimate, PhaseValues,
-    RotorFeedback, RotorFeedbackFault, FocInputType
+    RotorFeedback, RotorFeedbackFault, FocInputType, SaliencyBasedEstimator
 };
 
 pub struct FocStepInputs {
@@ -35,7 +35,11 @@ pub struct FocStepInputs {
     pub dc_bus_min_v: f32,
     pub dc_bus_max_v: f32,
     pub tick_dt_ms: f32,
-    pub hfi_params: HfiParams,
+
+    pub hfi_amplitude_v: f32,
+    pub hfi_startup_amplitude_v: f32,
+    pub hfi_frequency_hz: f32,
+    pub hfi_disable_threshold_omega_rads: f32,
 }
 
 pub enum FocStepOutcome {
@@ -80,15 +84,15 @@ impl CurrentController for FOC {
 /// Failure stage results assert the fault here, other stage results propagate through the output.
 /// Any outcome other than normal modulation clears controller windup.
 #[inline]
-pub fn foc_step<A, C, M, H>(
+pub fn foc_step<A, C, M, E>(
     mode: &mut OperatingMode<M>,
     params_estimate: MotorParamsEstimate,
     foc: &mut C,
     acceleration: &mut A,
-    hfi: &mut H,
+    saliency_estimator: &mut E,
     inputs: FocStepInputs,
-) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator, H: HfiSource {
-    let (outcome, stage_result) = foc_step_inner(mode, params_estimate, foc, acceleration, hfi, inputs);
+) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator, E: SaliencyBasedEstimator {
+    let (outcome, stage_result) = foc_step_inner(mode, params_estimate, foc, acceleration, saliency_estimator, inputs);
     if !matches!(outcome, FocStepOutcome::Normal { .. }) {
         foc.clear_windup();
     }
@@ -96,14 +100,14 @@ pub fn foc_step<A, C, M, H>(
 }
 
 #[inline]
-fn foc_step_inner<A, C, M, H>(
+fn foc_step_inner<A, C, M, E>(
     mode: &mut OperatingMode<M>,
     params_estimate: MotorParamsEstimate,
     foc: &mut C,
     acceleration: &mut A,
-    hfi: &mut H,
+    saliency_estimator: &mut E,
     inputs: FocStepInputs,
-) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator, H: HfiSource {
+) -> (FocStepOutcome, Option<StageResult>) where A: DoesFocMath, C: CurrentController, M: Calibrator, E: SaliencyBasedEstimator {
 
     // Fault diagnostics:
     if inputs.watchdog_fault {
@@ -115,11 +119,48 @@ fn foc_step_inner<A, C, M, H>(
     if inputs.braking_limit_exceeded {
         mode.on_command(Command::AssertFault { cause: FaultCause::RegenLimitExceeded });
     }
-    if matches!(mode, OperatingMode::TorqueControl) && inputs.target_torque.is_none() {
+    
+    let rotor_feedback = if matches!(mode, OperatingMode::SaliencyPolarityTest) {
+        match saliency_estimator.pole_polarity() {
+            // Test ongoing:
+            None => {
+                if let Ok(feedback) = inputs.rotor_feedback {
+                    // Above the hfi disable threshold the saliency estimator can (and must)
+                    // be seeded from another source if possible, resolving the pole polarity in the process:
+                    let is_electrical = matches!(feedback.angle_type, AngleType::Electrical);
+                    if is_electrical && feedback.omega.abs() > inputs.hfi_disable_threshold_omega_rads {
+                        saliency_estimator.reset(Some(feedback), params_estimate, acceleration);
+                        foc.clear_windup();
+                        mode.on_command(Command::EnableTorqueControl); 
+                        inputs.rotor_feedback
+                    } else {
+                        saliency_estimator.read()
+                    }
+                } else {
+                    saliency_estimator.read()
+                }
+            }, 
+            // Test done:
+            Some(Ok(())) => { 
+                foc.clear_windup();
+                mode.on_command(Command::EnableTorqueControl); 
+                inputs.rotor_feedback
+            }
+            // Test failed:
+            Some(Err(e)) => { 
+                mode.on_command(Command::AssertFault { cause: e.into() }); 
+                inputs.rotor_feedback
+            }
+        }   
+    } else {
+        inputs.rotor_feedback
+    };
+
+    if matches!(mode, OperatingMode::SaliencyPolarityTest | OperatingMode::TorqueControl) && inputs.target_torque.is_none() {
         mode.on_command(Command::AssertFault { cause: FaultCause::SetpointTimeout });
     }
     let mut gate = mode.foc_gate();
-    let rotor_feedback_fault = inputs.rotor_feedback.is_err() && !gate.feedback_optional;
+    let rotor_feedback_fault = rotor_feedback.is_err() && !gate.feedback_optional;
     if rotor_feedback_fault {
         mode.on_command(Command::AssertFault { cause: FaultCause::InvalidRotorFeedback });
     }
@@ -129,7 +170,7 @@ fn foc_step_inner<A, C, M, H>(
 
     // During hall calibration there may be no valid rotor feedback,
     // but feedback is not used anyways, so we can safely default to zero values:
-    let RotorFeedback { angle_type, theta, omega } = inputs.rotor_feedback.ok()
+    let RotorFeedback { angle_type, theta, omega } = rotor_feedback.ok()
         .unwrap_or(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 });
 
     let mut stage_result = None;
@@ -194,7 +235,7 @@ fn foc_step_inner<A, C, M, H>(
         };
         let safety_input = SafeControlStrategyInput {
             omega,
-            rotor_feedback_valid: inputs.rotor_feedback.is_ok(),
+            rotor_feedback_valid: rotor_feedback.is_ok(),
             back_emf_constant,
             dc_bus_v: dc_bus_voltage_v,
             dc_bus_max_v: inputs.dc_bus_max_v,
@@ -212,6 +253,8 @@ fn foc_step_inner<A, C, M, H>(
         None
     };
 
+    let mut hfi_amplitude_v = inputs.hfi_amplitude_v;
+
     // Determine the FOC inputs "source":
     let (angle_type, theta, foc_command) = if let Some(safety_command) = safety_foc_command {
         // Safety braking / deceleration:
@@ -219,6 +262,10 @@ fn foc_step_inner<A, C, M, H>(
     } else if let Some(output) = calibration_output {
         // Calibration / estimation:
         (output.angle_type, output.theta, output.foc_command)
+    } else if matches!(mode, OperatingMode::SaliencyPolarityTest) {
+        // HFI needs higher amplitude during the polarity test:
+        hfi_amplitude_v = inputs.hfi_startup_amplitude_v;
+        (angle_type, theta, saliency_estimator.polarity_test_command())
     } else {
         // Normal torque control:
         let mut torque_demand = inputs.target_torque.unwrap_or(0.0);
@@ -251,11 +298,15 @@ fn foc_step_inner<A, C, M, H>(
         omega,
         phase_currents: inputs.phase_currents,
         current_limit_a: inputs.active_current_limit_a,
-        hfi_params: inputs.hfi_params,
+        hfi_params: HfiParams {
+            amplitude_v: hfi_amplitude_v,
+            injection_frequency_hz: inputs.hfi_frequency_hz,
+            disable_threshold_omega_rads: inputs.hfi_disable_threshold_omega_rads,
+        },
     };
 
     // Do FOC computations and process the results:
-    let outcome = match foc.compute(foc_input, active_estimate, acceleration, hfi, true) {
+    let outcome = match foc.compute(foc_input, active_estimate, acceleration, saliency_estimator.hfi_source(), true) {
         Ok(foc_result) => {
             if let Some(result) = &stage_result {
                 if result.clears_windup() {
@@ -306,7 +357,7 @@ pub fn after_foc_step<M: Calibrator, P: MotorParamEstimator>(
             }
             params.get_estimate()
         }
-        OperatingMode::Idle { .. } | OperatingMode::Fault { .. } => params.get_estimate(),
+        OperatingMode::Idle { .. } | OperatingMode::SaliencyPolarityTest | OperatingMode::Fault { .. } => params.get_estimate(),
     }
 }
 
@@ -316,8 +367,9 @@ mod tests {
     use super::super::calibration::{CalibrationOutput, CalibrationPhase, CalibrationRunner};
     use crate::HALL_CALIBRATION_TIMEOUT_S;
     use field_oriented::{
-        ConstantMotorParameters, ControllerParameters, FocConfig, MotorParams, MotorParamsEstimate, NoHfi,
-        RotorFeedbackFault, SinCosResult, compute_current_pi_controller_gains
+        ClarkParkValue, ConstantMotorParameters, ControllerParameters, FocConfig, HasRotorFeedback, MotorParams,
+        MotorParamsEstimate, NoHfi, PolarityTestFault, RotorFeedbackFault, SensorlessEstimator, SensorlessEstimatorInput,
+        SinCosResult, compute_current_pi_controller_gains
     };
 
     const PWM_FREQ_HZ: f32 = 20_000.0;
@@ -327,6 +379,7 @@ mod tests {
     const CURRENT_LIMIT_A: f32 = 10.0;
     const BRAKING_LIMIT_A: f32 = 4.0;
     const STATIONARY_OMEGA: f32 = 5.0;
+    const HFI_DISABLE_OMEGA: f32 = 30.0;
 
     struct DummyAccelerator;
 
@@ -376,11 +429,58 @@ mod tests {
         }
     }
 
+    /// Saliency estimator with scripted feedback and polarity test outcome: None while testing, Some(true) found, Some(false) failed.
+    /// A reset from known feedback adopts it and reports the polarity found, like the real estimator.
+    struct MockSaliencyEstimator {
+        polarity: Option<bool>,
+        feedback: Result<RotorFeedback, RotorFeedbackFault>,
+        seeded_with: Option<RotorFeedback>,
+        hfi: NoHfi,
+    }
+
+    impl HasRotorFeedback for MockSaliencyEstimator {
+        fn read(&mut self) -> Result<RotorFeedback, RotorFeedbackFault> {
+            self.feedback
+        }
+    }
+
+    impl SensorlessEstimator for MockSaliencyEstimator {
+        fn update<A>(&mut self, _input: &SensorlessEstimatorInput, _accelerator: &mut A) where A: DoesFocMath {}
+
+        fn reset<A>(&mut self,
+            initial: Option<RotorFeedback>,
+            _params: MotorParamsEstimate,
+            _accelerator: &mut A
+        ) where A: DoesFocMath {
+            self.seeded_with = initial;
+            self.polarity = initial.map(|_| true);
+            if let Some(feedback) = initial {
+                self.feedback = Ok(feedback);
+            }
+        }
+    }
+
+    impl SaliencyBasedEstimator for MockSaliencyEstimator {
+        type Hfi = NoHfi;
+
+        fn hfi_source(&mut self) -> &mut NoHfi {
+            &mut self.hfi
+        }
+
+        fn polarity_test_command(&self) -> FocInputType {
+            FocInputType::RawVoltages(ClarkParkValue { d: 0.0, q: 0.0 })
+        }
+
+        fn pole_polarity(&self) -> Option<Result<(), PolarityTestFault>> {
+            self.polarity.map(|found| if found { Ok(()) } else { Err(PolarityTestFault::ConvergenceTimeout) })
+        }
+    }
+
     struct TestHarness {
         params: ConstantMotorParameters,
         foc: SpyFoc,
         acceleration: DummyAccelerator,
-        hfi: NoHfi,
+        saliency: MockSaliencyEstimator,
     }
 
     impl TestHarness {
@@ -402,16 +502,16 @@ mod tests {
                 params: ConstantMotorParameters::from_other(motor_params()),
                 foc: SpyFoc { inner: foc, clear_windup_calls: 0, last_estimate: None },
                 acceleration: DummyAccelerator,
-                hfi: NoHfi,
+                saliency: MockSaliencyEstimator { polarity: None, feedback: Ok(at_angle(0.0)), seeded_with: None, hfi: NoHfi },
             }
         }
 
         fn step(&mut self, mode: &mut OperatingMode, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
-            foc_step(mode, self.params.get_estimate(), &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
+            foc_step(mode, self.params.get_estimate(), &mut self.foc, &mut self.acceleration, &mut self.saliency, inputs)
         }
 
         fn step_mock(&mut self, mode: &mut OperatingMode<MockCalibrator>, inputs: FocStepInputs) -> (FocStepOutcome, Option<StageResult>) {
-            foc_step(mode, self.params.get_estimate(), &mut self.foc, &mut self.acceleration, &mut self.hfi, inputs)
+            foc_step(mode, self.params.get_estimate(), &mut self.foc, &mut self.acceleration, &mut self.saliency, inputs)
         }
     }
 
@@ -497,7 +597,10 @@ mod tests {
             dc_bus_min_v: 20.0,
             dc_bus_max_v: 60.0,
             tick_dt_ms: 1000.0 / PWM_FREQ_HZ,
-            hfi_params: HfiParams::none(),
+            hfi_amplitude_v: 0.0,
+            hfi_startup_amplitude_v: 0.0,
+            hfi_frequency_hz: 0.0,
+            hfi_disable_threshold_omega_rads: HFI_DISABLE_OMEGA,
         }
     }
 
@@ -513,6 +616,10 @@ mod tests {
         let mut calibrator = CalibrationRunner::new(POLE_PAIRS, 100.0, true, 1.0 / PWM_FREQ_HZ);
         calibrator.phase = phase;
         OperatingMode::Calibration { calibrator }
+    }
+
+    fn at_angle(theta: f32) -> RotorFeedback {
+        RotorFeedback { angle_type: AngleType::Electrical, theta, omega: 0.0 }
     }
 
     fn raised_fault(mode: &OperatingMode, cause: FaultCause) -> bool {
@@ -577,26 +684,29 @@ mod tests {
     #[test]
     fn speed_limit_blocks_only_accelerating_demand() {
         const LIMIT_RPM: u16 = 100;
-        let limit_omega = LIMIT_RPM as f32 * PI / 30.0 * POLE_PAIRS as f32;
-        let cases = [
-            (1.2 * limit_omega, 1.0, 0.0),
-            (-1.2 * limit_omega, -1.0, 0.0),
-            (1.2 * limit_omega, -1.0, -1.0),
-            (-1.2 * limit_omega, 1.0, 1.0),
-            (0.5 * limit_omega, 1.0, 1.0),
-            (0.5 * limit_omega, -1.0, -1.0),
-            (-0.5 * limit_omega, -1.0, -1.0),
-        ];
-        for (omega, demand_iq, expected_iq) in cases {
-            let mut mode = OperatingMode::TorqueControl;
-            let mut demanding = nominal_inputs();
-            demanding.rotor_speed_limit_mech_rpm = LIMIT_RPM;
-            demanding.rotor_feedback = Ok(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega });
-            demanding.target_torque = Some(demand_iq * motor_params().torque_constant().unwrap());
+        let feedback_types = [("electrical", AngleType::Electrical, POLE_PAIRS as f32), ("mechanical", AngleType::Mechanical, 1.0)];
+        for (label, angle_type, scale) in feedback_types {
+            let limit_omega = LIMIT_RPM as f32 * PI / 30.0 * scale;
+            let cases = [
+                (1.2 * limit_omega, 1.0, 0.0),
+                (-1.2 * limit_omega, -1.0, 0.0),
+                (1.2 * limit_omega, -1.0, -1.0),
+                (-1.2 * limit_omega, 1.0, 1.0),
+                (0.5 * limit_omega, 1.0, 1.0),
+                (0.5 * limit_omega, -1.0, -1.0),
+                (-0.5 * limit_omega, -1.0, -1.0),
+            ];
+            for (omega, demand_iq, expected_iq) in cases {
+                let mut mode = OperatingMode::TorqueControl;
+                let mut demanding = nominal_inputs();
+                demanding.rotor_speed_limit_mech_rpm = LIMIT_RPM;
+                demanding.rotor_feedback = Ok(RotorFeedback { angle_type, theta: 0.0, omega });
+                demanding.target_torque = Some(demand_iq * motor_params().torque_constant().unwrap());
 
-            let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
-            let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
-            assert!((iq - expected_iq).abs() < 1e-3, "iq {iq}, expected {expected_iq} at omega {omega}");
+                let (outcome, _) = TestHarness::new().step(&mut mode, demanding);
+                let iq = iq_target(outcome).expect("no Normal outcome, so no iq target");
+                assert!((iq - expected_iq).abs() < 1e-3, "{label}: iq {iq}, expected {expected_iq} at omega {omega}");
+            }
         }
     }
 
@@ -652,17 +762,117 @@ mod tests {
         }
     }
 
+    /// During the polarity test the feedback comes from the saliency estimator, whose loss faults.
+    #[test]
+    fn polarity_test_feedback_comes_from_the_estimator() {
+        let cases = [(Ok(at_angle(0.0)), false), (Err(RotorFeedbackFault::Unobservable), true)];
+        for (estimator_feedback, expect_fault) in cases {
+            let mut rig = TestHarness::new();
+            rig.saliency.feedback = estimator_feedback;
+            let mut mode = OperatingMode::SaliencyPolarityTest;
+            let mut lost = nominal_inputs();
+            lost.rotor_feedback = Err(RotorFeedbackFault::NoFeedback);
+
+            rig.step(&mut mode, lost);
+            assert_eq!(raised_fault(&mode, FaultCause::InvalidRotorFeedback), expect_fault);
+        }
+    }
+
+    /// While the polarity test runs, FOC follows the estimator's angle and command, not the torque setpoint.
+    #[test]
+    fn polarity_test_ignores_the_torque_setpoint() {
+        let mut rig = TestHarness::new();
+        rig.saliency.feedback = Ok(at_angle(1.0));
+        let mut mode = OperatingMode::SaliencyPolarityTest;
+        let mut demanding = nominal_inputs();
+        demanding.rotor_feedback = Ok(at_angle(2.0));
+        demanding.target_torque = Some(overcurrent_torque(CURRENT_LIMIT_A));
+
+        let (outcome, _) = rig.step(&mut mode, demanding);
+        assert!(matches!(mode, OperatingMode::SaliencyPolarityTest), "left the polarity test");
+        let FocStepOutcome::Normal { result } = outcome else { panic!("polarity test did not modulate") };
+        assert_eq!(result.theta_e, 1.0, "not on the estimator's angle");
+        assert_eq!(result.target_i_dq.q, 0.0, "followed the torque setpoint");
+    }
+
+    /// A found polarity hands the same tick over to torque control, on the arbitrated feedback.
+    #[test]
+    fn found_polarity_enters_torque_control() {
+        let mut rig = TestHarness::new();
+        rig.saliency.polarity = Some(true);
+        rig.saliency.feedback = Ok(at_angle(1.0));
+        let mut mode = OperatingMode::SaliencyPolarityTest;
+        let mut demanding = nominal_inputs();
+        demanding.rotor_feedback = Ok(at_angle(2.0));
+        demanding.target_torque = Some(overcurrent_torque(CURRENT_LIMIT_A));
+
+        let (outcome, _) = rig.step(&mut mode, demanding);
+        assert!(matches!(mode, OperatingMode::TorqueControl), "did not enter torque control");
+        assert!(rig.foc.clear_windup_calls > 0, "kept the polarity test windup");
+        let FocStepOutcome::Normal { result } = outcome else { panic!("torque control did not modulate") };
+        assert_eq!(result.theta_e, 2.0, "not on the arbitrated feedback");
+        assert!((result.target_i_dq.q - CURRENT_LIMIT_A).abs() < 1e-3, "iq {}, expected {CURRENT_LIMIT_A}", result.target_i_dq.q);
+    }
+
+    /// Electrical feedback above the HFI disable threshold resolves the polarity by seeding the estimator,
+    /// entering torque control on the same tick. Slower or mechanical feedback keeps the test running.
+    #[test]
+    fn fast_electrical_feedback_seeds_the_estimator() {
+        let spinning = |angle_type, omega| RotorFeedback { angle_type, theta: 2.0, omega };
+        let cases = [
+            (spinning(AngleType::Electrical, 1.5 * HFI_DISABLE_OMEGA), true),
+            (spinning(AngleType::Electrical, -1.5 * HFI_DISABLE_OMEGA), true),
+            (spinning(AngleType::Electrical, 0.5 * HFI_DISABLE_OMEGA), false),
+            (spinning(AngleType::Mechanical, 1.5 * HFI_DISABLE_OMEGA), false),
+        ];
+        for (feedback, expect_seeded) in cases {
+            let mut rig = TestHarness::new();
+            rig.saliency.feedback = Ok(at_angle(1.0));
+            let mut mode = OperatingMode::SaliencyPolarityTest;
+            let mut arbitrated = nominal_inputs();
+            arbitrated.rotor_feedback = Ok(feedback);
+
+            let (outcome, _) = rig.step(&mut mode, arbitrated);
+            let FocStepOutcome::Normal { result } = outcome else { panic!("did not modulate") };
+            if expect_seeded {
+                assert!(matches!(mode, OperatingMode::TorqueControl), "did not enter torque control at {}", feedback.omega);
+                assert!(rig.foc.clear_windup_calls > 0, "kept the polarity test windup");
+                assert_eq!(rig.saliency.seeded_with.map(|f| (f.theta, f.omega)), Some((feedback.theta, feedback.omega)));
+                assert_eq!(result.theta_e, feedback.theta, "not on the arbitrated feedback");
+            } else {
+                assert!(matches!(mode, OperatingMode::SaliencyPolarityTest), "left the polarity test at {}", feedback.omega);
+                assert!(rig.saliency.seeded_with.is_none(), "seeded the estimator");
+                assert_eq!(result.theta_e, 1.0, "not on the estimator's angle");
+            }
+        }
+    }
+
+    /// A failed polarity test faults instead of modulating.
+    #[test]
+    fn failed_polarity_test_faults() {
+        let mut rig = TestHarness::new();
+        rig.saliency.polarity = Some(false);
+        let mut mode = OperatingMode::SaliencyPolarityTest;
+
+        let (outcome, _) = rig.step(&mut mode, nominal_inputs());
+        assert!(raised_fault(&mode, FaultCause::SensorlessPolarityTestFault));
+        assert!(!matches!(outcome, FocStepOutcome::Normal { .. }), "still modulating on the faulting tick");
+    }
+
     /// Overspeed is measured against the configured mechanical speed limit.
     #[test]
     fn overspeed_uses_the_configured_mechanical_limit() {
-        let limit_omega = MAX_RPM as f32 * PI / 30.0;
-        for (omega, expected) in [(0.9 * limit_omega, false), (1.1 * limit_omega, true)] {
-            let mut mode = OperatingMode::TorqueControl;
-            let mut spinning = nominal_inputs();
-            spinning.rotor_feedback = Ok(RotorFeedback { angle_type: AngleType::Mechanical, theta: 0.0, omega });
+        let feedback_types = [("electrical", AngleType::Electrical, POLE_PAIRS as f32), ("mechanical", AngleType::Mechanical, 1.0)];
+        for (label, angle_type, scale) in feedback_types {
+            let limit_omega = MAX_RPM as f32 * PI / 30.0 * scale;
+            for (omega, expected) in [(0.9 * limit_omega, false), (1.1 * limit_omega, true)] {
+                let mut mode = OperatingMode::TorqueControl;
+                let mut spinning = nominal_inputs();
+                spinning.rotor_feedback = Ok(RotorFeedback { angle_type, theta: 0.0, omega });
 
-            TestHarness::new().step(&mut mode, spinning);
-            assert_eq!(raised_fault(&mode, FaultCause::Overspeed), expected, "omega {omega}");
+                TestHarness::new().step(&mut mode, spinning);
+                assert_eq!(raised_fault(&mode, FaultCause::Overspeed), expected, "{label}: omega {omega}");
+            }
         }
     }
 
