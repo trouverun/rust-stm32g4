@@ -8,7 +8,11 @@ mod control;
 mod estimation;
 mod types;
 mod utils;
+#[cfg(test)]
+mod testing;
 
+#[cfg(test)]
+pub use crate::testing::*;
 pub use crate::utils::math::wrap_to_pi;
 pub use crate::commission::{
     ConstantMotorParameters, MotorParams, MotorParamsEstimate, MotorParamEstimator,

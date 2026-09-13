@@ -511,11 +511,11 @@ mod test {
             settle_time_s: 2.5,
             test_time_s: 3.0,
             max_spin_time_s: 20.0,
-            spin_omega: motor.calibration_omega * sim_cfg.num_pole_pairs,
+            spin_omega: motor.calibration_omega * sim_cfg.pole_pairs(),
             dt_s: dt,
         };
-        let mut estimator = OfflineMotorEstimator::new(est_config, sim_cfg.num_pole_pairs as u8);
-        estimator.start(sim_cfg.num_pole_pairs as u8);
+        let mut estimator = OfflineMotorEstimator::new(est_config, sim_cfg.params.num_pole_pairs);
+        estimator.start(sim_cfg.params.num_pole_pairs);
 
         let mut recorder = Recorder::new(plot_path, dt, record_interval(2_000.0, dt));
         let mut t = 0.0;
@@ -546,10 +546,10 @@ mod test {
             }
 
             // Electrical to mechanical for plotting:
-            let branch = (step.out.state.theta * sim_cfg.num_pole_pairs / TAU).floor();
+            let branch = (step.out.state.theta * sim_cfg.pole_pairs() / TAU).floor();
             recorder.record(&step, &[EstimatorRecord {
                 name: "forced",
-                theta: (cmd.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.num_pole_pairs,
+                theta: (cmd.theta.rem_euclid(TAU) + TAU * branch) / sim_cfg.pole_pairs(),
                 omega: 0.0,
             }]);
 
@@ -577,19 +577,19 @@ mod test {
             let est = run_estimation(motor, &std::format!("motor_estimation_{}.html", motor.name));
             let sim_cfg = motor.config;
 
-            let r_err = (est.stator_resistance.unwrap() - sim_cfg.stator_resistance).abs() / sim_cfg.stator_resistance;
-            let ld_err = (est.d_inductance.unwrap() - sim_cfg.d_inductance).abs() / sim_cfg.d_inductance;
-            let lq_err = (est.q_inductance.unwrap() - sim_cfg.q_inductance).abs() / sim_cfg.q_inductance;
-            let f_err = (est.pm_flux_linkage.unwrap() - sim_cfg.pm_flux_linkage).abs() / sim_cfg.pm_flux_linkage;
+            let r_err = (est.stator_resistance.unwrap() - sim_cfg.params.stator_resistance).abs() / sim_cfg.params.stator_resistance;
+            let ld_err = (est.d_inductance.unwrap() - sim_cfg.params.d_inductance).abs() / sim_cfg.params.d_inductance;
+            let lq_err = (est.q_inductance.unwrap() - sim_cfg.params.q_inductance).abs() / sim_cfg.params.q_inductance;
+            let f_err = (est.pm_flux_linkage.unwrap() - sim_cfg.params.pm_flux_linkage).abs() / sim_cfg.params.pm_flux_linkage;
 
             assert!(r_err < 0.10, "{}: R estimate error {:.1}%: got {}, expected {}",
-                motor.name, r_err * 100.0, est.stator_resistance.unwrap(), sim_cfg.stator_resistance);
+                motor.name, r_err * 100.0, est.stator_resistance.unwrap(), sim_cfg.params.stator_resistance);
             assert!(ld_err < 0.10, "{}: Ld estimate error {:.1}%: got {}, expected {}",
-                motor.name, ld_err * 100.0, est.d_inductance.unwrap(), sim_cfg.d_inductance);
+                motor.name, ld_err * 100.0, est.d_inductance.unwrap(), sim_cfg.params.d_inductance);
             assert!(lq_err < 0.10, "{}: Lq estimate error {:.1}%: got {}, expected {}",
-                motor.name, lq_err * 100.0, est.q_inductance.unwrap(), sim_cfg.q_inductance);
+                motor.name, lq_err * 100.0, est.q_inductance.unwrap(), sim_cfg.params.q_inductance);
             assert!(f_err < 0.05, "{}: F estimate error {:.1}%: got {}, expected {}",
-                motor.name, f_err * 100.0, est.pm_flux_linkage.unwrap(), sim_cfg.pm_flux_linkage);
+                motor.name, f_err * 100.0, est.pm_flux_linkage.unwrap(), sim_cfg.params.pm_flux_linkage);
         }
     }
 }

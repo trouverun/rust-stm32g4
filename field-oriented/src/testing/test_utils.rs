@@ -2,7 +2,8 @@ extern crate std;
 use core::f32::consts::TAU;
 use std::vec::Vec;
 use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, HfiSource, NoHfi, PolarityTestConfig, compute_current_pi_controller_gains};
-use crate::utils::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
+use super::sim::{MotorConfig, MotorSim, SimOutput};
+use super::sim_utils::HallEncoder;
 use crate::types::*;
 use crate::commission::{MotorParams, MotorParamsEstimate};
 
@@ -43,13 +44,7 @@ pub const fn pll_settling_s(time_constants: f32, pll_frequency_hz: f32) -> f32 {
 
 /// Nominal parameter estimate matching a sim config exactly
 pub fn nominal_params(config: MotorConfig) -> MotorParamsEstimate {
-    MotorParamsEstimate::from_nominal(MotorParams {
-        num_pole_pairs: config.num_pole_pairs as u8,
-        stator_resistance: config.stator_resistance,
-        d_inductance: config.d_inductance,
-        q_inductance: config.q_inductance,
-        pm_flux_linkage: config.pm_flux_linkage,
-    })
+    MotorParamsEstimate::from_nominal(config.params)
 }
 
 /// A machine to run scenarios against, together with its rated current
@@ -77,7 +72,7 @@ impl Motor {
 
     /// Speed at which the back-emf alone fills the bus
     pub fn base_omega(&self) -> f32 {
-        self.u_max() / (self.config.pm_flux_linkage * self.config.num_pole_pairs)
+        self.u_max() / (self.config.params.pm_flux_linkage * self.config.pole_pairs())
     }
 
     pub fn torque_at_current_limit(&self) -> f32 {
@@ -86,12 +81,14 @@ impl Motor {
 }
 
 pub const MOONS_R57BLB50L2: MotorConfig = MotorConfig {
+    params: MotorParams {
+        num_pole_pairs: 2,
+        stator_resistance: 0.66,
+        d_inductance: 0.733e-3,
+        q_inductance: 0.996e-3,
+        pm_flux_linkage: 16.7e-3,
+    },
     dc_bus_voltage: 24.0,
-    num_pole_pairs: 2.0,
-    stator_resistance: 0.66,
-    d_inductance: 0.733e-3,
-    q_inductance: 0.996e-3,
-    pm_flux_linkage: 16.7e-3,
     rotor_inertia: 6.7e-6,
 };
 

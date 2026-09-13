@@ -130,7 +130,7 @@ mod test {
         FIELD_WEAKENING_BANDWIDTH_HZ, Motor, OVERMODULATION_THRESHOLD_RATIO, MotorSim, PWM_FREQUENCY_HZ,
         Recorder, TestBench, Windowed, record_interval, reference_motors
     };
-    use crate::utils::sim::MotorConfig;
+    use crate::testing::MotorConfig;
     use std::vec::Vec;
 
     const SETTLING_S: f32 = 3.0/(TAU*FIELD_WEAKENING_BANDWIDTH_HZ);
@@ -256,7 +256,7 @@ mod test {
         config.rotor_inertia = (command - load_torque) * ramp_s / motor.base_omega();
 
         let (i_d_bound, flux_ratio) = FieldWeakening::lower_bound_ratio(
-            config.d_inductance, config.pm_flux_linkage, motor.current_limit_a
+            config.params.d_inductance, config.params.pm_flux_linkage, motor.current_limit_a
         );
         let cannot_weaken = flux_ratio >= MAX_USEFUL_WEAKENING_RATIO;
         // Sweep target, kept under the ideal weakened ceiling base_omega/flux_ratio:
@@ -342,7 +342,7 @@ mod test {
             };
 
             let (i_d_bound, flux_ratio) = FieldWeakening::lower_bound_ratio(
-                config.d_inductance, config.pm_flux_linkage, motor.current_limit_a
+                config.params.d_inductance, config.params.pm_flux_linkage, motor.current_limit_a
             );
             let cannot_weaken = flux_ratio >= MAX_USEFUL_WEAKENING_RATIO;
             let mut signals = Windowed::new(TORQUE_WINDOW_S, dt);
@@ -437,7 +437,7 @@ mod test {
             // This test is only valid if the rotor never broke away:
             assert!(run.final_omega.abs() < 1e-3, "{}: rotor was not stalled, {:.1} rad/s", motor.name, run.final_omega);
             let (i_d_bound, _) = FieldWeakening::lower_bound_ratio(
-                motor.config.d_inductance, motor.config.pm_flux_linkage, motor.current_limit_a
+                motor.config.params.d_inductance, motor.config.params.pm_flux_linkage, motor.current_limit_a
             );
             assert!(run.worst_i_d > 0.05 * i_d_bound,
                 "{}: weakening current spent on a stalled rotor, i_d target {:.3}",

@@ -246,7 +246,7 @@ mod test {
         let dt = 1.0/PWM_FREQUENCY_HZ;
         for motor in reference_motors() {
             let c = motor.config;
-            let p = c.num_pole_pairs;
+            let p = c.pole_pairs();
             let sim = MotorSim::new(dt, c)
                 .with_current_noise(motor.current_noise_a, 987)
                 .with_load_torque(0.5*motor.torque_at_current_limit());
@@ -256,7 +256,7 @@ mod test {
 
             let mut estimator = OrtegaIPMEstimator::new(ORTEGA_GAMMA, TAU*ORTEGA_LOWPASS_HZ, FLUX_PLL_HZ);
             // A quarter turn off, the polarity resolved:
-            estimator.set_stator_flux(0.25*TAU, c.pm_flux_linkage, &mut bench.accelerator);
+            estimator.set_stator_flux(0.25*TAU, c.params.pm_flux_linkage, &mut bench.accelerator);
             // Misalignment may not cost more torque than the current noise hides:
             let bound = (1.0 - 3.0*motor.current_noise_a/motor.current_limit_a).acos();
 

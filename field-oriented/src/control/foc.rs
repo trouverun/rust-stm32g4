@@ -3,13 +3,6 @@ use crate::utils::math::*;
 use crate::control::field_weakening::{FieldWeakening, FieldWeakeningInput};
 use crate::{BiquadNotchFilter, ControllerParameters, HfiSource, MotorParamsEstimate, PIController, PIGains};
 
-#[cfg(test)]
-pub use crate::utils::sim::*;
-#[cfg(test)]
-pub use crate::utils::test_utils::*;
-#[cfg(test)]
-pub use crate::utils::test_plotting::*;
-
 struct PrevIterValues {
     u_max: f32,
     u_q: f32,

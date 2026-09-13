@@ -345,7 +345,7 @@ mod tests {
         for motor in reference_motors() {
             let u_max = motor.u_max();
             // 10 times the current the bus can push through the winding, unreachable for good:
-            let target = 10.0*u_max/motor.config.stator_resistance;
+            let target = 10.0*u_max/motor.config.params.stator_resistance;
             // Load the motor cannot overcome even at the unreachable target:
             let load = 2.0*motor.params().torque_constant().unwrap()*target;
             let sim = MotorSim::new(dt, motor.config).with_load_torque(load);
@@ -354,7 +354,7 @@ mod tests {
             bench.tune_pi(bench.params);
 
             let mut t = 0.0;
-            while t < 10.0*motor.config.q_inductance/motor.config.stator_resistance {
+            while t < 10.0*motor.config.params.q_inductance/motor.config.params.stator_resistance {
                 bench.step_measured(FocInputType::TargetCurrents(ClarkParkValue { d: 0.0, q: target }));
                 t += dt;
             }

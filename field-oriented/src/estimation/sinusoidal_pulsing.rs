@@ -146,7 +146,7 @@ mod test {
         HfiParams {
             amplitude_v: INJECTION_RATIO*motor.u_max(),
             injection_frequency_hz: HFI_FREQUENCY_HZ,
-            disable_threshold_omega_rads: 0.1*motor.base_omega()*motor.config.num_pole_pairs,
+            disable_threshold_omega_rads: 0.1*motor.base_omega()*motor.config.pole_pairs(),
         }
     }
 
@@ -169,7 +169,7 @@ mod test {
 
     fn standstill_sim(motor: &Motor, initial_error: f32, dt_s: f32) -> MotorSim {
         MotorSim::new(dt_s, motor.config)
-            .with_rotor_angle(initial_error/motor.config.num_pole_pairs)
+            .with_rotor_angle(initial_error/motor.config.pole_pairs())
             .with_current_noise(motor.current_noise_a, 987)
             .with_load_torque(0.5*motor.torque_at_current_limit())
     }
@@ -227,7 +227,7 @@ mod test {
         recorder: &mut Recorder,
         mut command: impl FnMut(f32, &TestBench, &SinusoidalPulsingEstimator) -> FocInputType,
     ) -> Run {
-        let p = motor.config.num_pole_pairs;
+        let p = motor.config.pole_pairs();
         let tracking_amplitude = bench.hfi.amplitude_v;
         let startup_amplitude = tracking_amplitude*STARTUP_INJECTION_RATIO/INJECTION_RATIO;
         let mut prev = FocResult::none();

@@ -285,7 +285,7 @@ mod test {
         let dt = 1.0/PWM_FREQUENCY_HZ;
         for motor in reference_motors() {
             let c = motor.config;
-            let p = c.num_pole_pairs;
+            let p = c.pole_pairs();
             let bound = angle_bound(&motor);
             let low_threshold = 0.05*motor.base_omega()*p;
             let high_threshold = 0.25*motor.base_omega()*p;
@@ -305,7 +305,7 @@ mod test {
             let mut saliency = SinusoidalPulsingEstimator::new(PWM_FREQUENCY_HZ, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ, POLARITY_TEST);
             let mut flux = OrtegaIPMEstimator::new(ORTEGA_GAMMA, TAU*ORTEGA_LOWPASS_HZ, FLUX_PLL_HZ);
             // The rotor starts at zero, so the active flux points along alpha
-            flux.set_stator_flux(0.0, c.pm_flux_linkage, &mut bench.accelerator);
+            flux.set_stator_flux(0.0, c.params.pm_flux_linkage, &mut bench.accelerator);
             let mut arbitrator = FeedbackArbitrator::new(low_threshold, high_threshold);
             let mut recorder = Recorder::new(&format!("arbitration_blend_{}.html", motor.name), dt, record_interval(RECORD_HZ, dt));
 

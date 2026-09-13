@@ -3,114 +3,50 @@ use libm::{cosf as cosf32, sinf as sinf32};
 use rand::{SeedableRng, rngs::StdRng};
 use rand_distr::{Distribution, Normal};
 use crate::ClarkParkValue;
+use crate::commission::MotorParams;
+use super::sim_utils::HallEncoder;
 
-/// Sim quantities at one instant.
 #[derive(Clone, Copy)]
 pub struct SimSnapshot {
-    /// Rotor angle in radians
     pub theta: f32,
-    /// Rotor angular velocity in rad/s
     pub omega: f32,
-    /// Phase winding currents in UVW coordinates
     pub currents: crate::PhaseValues,
-    /// Currents in the dq frame
     pub i_dq: ClarkParkValue,
-    /// Produced rotor torque in Nm
     pub torque: f32,
-    /// Hall encoder pattern, if a hall encoder is attached
     pub hall_pattern: Option<u8>,
 }
 
 #[derive(Clone, Copy)]
 pub struct SimOutput {
-    /// Ground truth at the step end
+    /// Ground truth at the PWM period end
     pub state: SimSnapshot,
-    /// What the sensors read at the mid-step sample instant
+    /// What the sensors read at the PWM period midpoint
     pub measurement: SimSnapshot,
-}
-
-/// Maps electrical angle to a 3-bit hall sensor pattern.
-/// `edges` contains the 6 electrical angles (in radians, ascending) where the pattern transitions.
-/// `patterns` contains the 6 corresponding hall patterns (the pattern active after each edge).
-#[derive(Clone, Copy)]
-pub struct HallEncoder {
-    pub edges: [f32; 6],
-    pub patterns: [u8; 6],
-}
-
-impl HallEncoder {
-    /// Create a hall encoder with ideal 60-degree-spaced edges starting at 0.
-    pub fn ideal() -> Self {
-        use core::f32::consts::PI;
-        Self {
-            edges: [
-                0.0,
-                PI / 3.0,
-                2.0 * PI / 3.0,
-                PI,
-                4.0 * PI / 3.0,
-                5.0 * PI / 3.0,
-            ],
-            patterns: [0b110, 0b010, 0b011, 0b001, 0b101, 0b100],
-        }
-    }
-
-    /// Ideal encoder with clamped Gaussian error on each edge.
-    pub fn noisy(std_dev_rad: f32, max_error_rad: f32, seed: u64) -> Self {
-        let distribution = Normal::new(0.0, std_dev_rad).unwrap();
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut encoder = Self::ideal();
-        for edge in encoder.edges.iter_mut() {
-            *edge += distribution.sample(&mut rng).clamp(-max_error_rad, max_error_rad);
-        }
-        encoder
-    }
-
-    /// Returns the electrical edge angle where the given pattern becomes active.
-    pub fn edge_theta(&self, pattern: u8) -> Option<f32> {
-        self.patterns.iter().position(|&p| p == pattern).map(|i| self.edges[i])
-    }
-
-    /// Returns the hall pattern for a given mechanical angle and pole pair count.
-    pub fn read(&self, theta_mechanical: f32, num_pole_pairs: f32) -> u8 {
-        let theta_e = (theta_mechanical * num_pole_pairs).rem_euclid(TAU);
-        // Find which sector we're in (last edge <= theta_e)
-        let mut idx = 0;
-        for i in 0..6 {
-            if theta_e >= self.edges[i] {
-                idx = i;
-            }
-        }
-        self.patterns[idx]
-    }
 }
 
 #[derive(Clone, Copy)]
 struct MotorState {
-    /// Direct axis current
     i_d: f32,
-    /// Quadrature axis current
     i_q: f32,
-    /// Rotor angular velocity in rad/s
     omega: f32,
-    /// Rotor angle in radians
     theta: f32,
 }
 
 #[derive(Clone, Copy)]
 pub struct MotorConfig {
+    pub params: MotorParams,
     pub dc_bus_voltage: f32,
-    pub num_pole_pairs: f32,
-    pub stator_resistance: f32,
-    pub d_inductance: f32,
-    pub q_inductance: f32,
-    pub pm_flux_linkage: f32,
     pub rotor_inertia: f32,
 }
 
 impl MotorConfig {
+    pub fn pole_pairs(&self) -> f32 {
+        self.params.num_pole_pairs as f32
+    }
+
     pub fn torque(&self, i_d: f32, i_q: f32) -> f32 {
-        1.5 * self.num_pole_pairs * (self.pm_flux_linkage + (self.d_inductance - self.q_inductance) * i_d) * i_q
+        let p = &self.params;
+        1.5 * self.pole_pairs() * (p.pm_flux_linkage + (p.d_inductance - p.q_inductance) * i_d) * i_q
     }
 }
 
@@ -130,7 +66,7 @@ impl CurrentNoise {
     }
 }
 
-/// Gaussian rotor feedback noise, as a position sensor and its speed estimate would have
+/// Gaussian rotor feedback noise
 struct FeedbackNoise {
     theta_distribution: Normal<f32>,
     omega_distribution: Normal<f32>,
@@ -138,8 +74,9 @@ struct FeedbackNoise {
 }
 
 pub struct MotorSim {
-    /// Simulation timestep in seconds, represents one PWM period: duties take effect at the
-    /// step start (the update event) and sensors sample mid-step (the carrier peak)
+    /// Simulation timestep in seconds, represents one PWM period: 
+    /// duties take effect at the PWM period start 
+    /// currents and other measurements are samples at the PWM period midpoint
     dt: f32,
     state: MotorState,
     config: MotorConfig,
@@ -207,7 +144,7 @@ impl MotorSim {
     pub fn step(&mut self, input: crate::FocResult) -> SimOutput {
         let duties = input.duty_cycles;
         let torque = self.substep(duties);
-        // Currents would be sampled at the midpoint of a PWM interval:
+        // Currents are sampled at the PWM period midpoint:
         let measurement = self.measure(torque);
         let torque = self.substep(duties);
         SimOutput {
@@ -228,8 +165,8 @@ impl MotorSim {
         let MotorState { i_d, i_q, omega, theta } = self.state;
 
         // Electrical angles:
-        let omega_e = cfg.num_pole_pairs * omega;
-        let theta_e = cfg.num_pole_pairs * theta;
+        let omega_e = cfg.pole_pairs() * omega;
+        let theta_e = cfg.pole_pairs() * theta;
 
         let sc = crate::SinCosResult { sin: sinf32(theta_e), cos: cosf32(theta_e) };
         let voltages = crate::PhaseValues {
@@ -242,8 +179,9 @@ impl MotorSim {
         // Euler integration of the salient machine dq current dynamics:
         //   Ld*di_d/dt = v_d - R*i_d + omega_e*Lq*i_q
         //   Lq*di_q/dt = v_q - R*i_q - omega_e*(Ld*i_d + pm_flux_linkage)
-        let di_d = (v.d - cfg.stator_resistance * i_d + cfg.q_inductance * omega_e * i_q) / cfg.d_inductance;
-        let di_q = (v.q - cfg.stator_resistance * i_q - omega_e * (cfg.d_inductance * i_d + cfg.pm_flux_linkage)) / cfg.q_inductance;
+        let p = &cfg.params;
+        let di_d = (v.d - p.stator_resistance * i_d + p.q_inductance * omega_e * i_q) / p.d_inductance;
+        let di_q = (v.q - p.stator_resistance * i_q - omega_e * (p.d_inductance * i_d + p.pm_flux_linkage)) / p.q_inductance;
         let i_d = i_d + h * di_d;
         let i_q = i_q + h * di_q;
 
@@ -265,7 +203,7 @@ impl MotorSim {
     fn snapshot(&self, torque: f32) -> SimSnapshot {
         let cfg = &self.config;
         let MotorState { i_d, i_q, omega, theta } = self.state;
-        let theta_e = cfg.num_pole_pairs * theta;
+        let theta_e = cfg.pole_pairs() * theta;
         let sc = crate::SinCosResult { sin: sinf32(theta_e), cos: cosf32(theta_e) };
         let i_dq = ClarkParkValue { d: i_d, q: i_q };
         SimSnapshot {
@@ -274,12 +212,10 @@ impl MotorSim {
             currents: crate::utils::math::inverse_clark_park(i_dq, sc),
             i_dq,
             torque,
-            hall_pattern: self.hall_encoder.map(|e| e.read(theta, cfg.num_pole_pairs)),
+            hall_pattern: self.hall_encoder.map(|e| e.read(theta, cfg.pole_pairs())),
         }
     }
 
-    /// Snapshot as the sensors read it: noise applied to the rotor feedback and to the currents,
-    /// with the currents transformed by the angle the controller would actually see.
     fn measure(&mut self, torque: f32) -> SimSnapshot {
         let mut snapshot = self.snapshot(torque);
         if let Some(noise) = &mut self.feedback_noise {
@@ -287,7 +223,7 @@ impl MotorSim {
             snapshot.omega += noise.omega_distribution.sample(&mut noise.rng);
         }
         if let Some(noise) = &mut self.noise {
-            let theta_e = self.config.num_pole_pairs * snapshot.theta;
+            let theta_e = self.config.pole_pairs() * snapshot.theta;
             let sc = crate::SinCosResult { sin: sinf32(theta_e), cos: cosf32(theta_e) };
             snapshot.currents = noise.apply(snapshot.currents);
             snapshot.i_dq = crate::utils::math::forward_clark_park(snapshot.currents, sc).1;
