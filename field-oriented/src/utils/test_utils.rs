@@ -1,7 +1,7 @@
 extern crate std;
 use core::f32::consts::TAU;
 use std::vec::Vec;
-use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, HfiSource, NoHfi, compute_current_pi_controller_gains};
+use crate::{DoesFocMath, FOC, FocInput, FocInputType, FocResult, HallEstimatorInput, HfiParams, HfiSource, NoHfi, PolarityTestConfig, compute_current_pi_controller_gains};
 use crate::utils::sim::{HallEncoder, MotorConfig, MotorSim, SimOutput};
 use crate::types::*;
 use crate::commission::{MotorParams, MotorParamsEstimate};
@@ -27,6 +27,14 @@ pub const FLUX_PLL_HZ: f32 = 100.0;
 pub const SALIENCY_PLL_HZ: f32 = 20.0;
 /// Injection amplitude as a fraction of the largest linear voltage vector
 pub const INJECTION_RATIO: f32 = 0.15;
+/// Injection amplitude while the pole polarity is still unknown
+pub const STARTUP_INJECTION_RATIO: f32 = 0.5;
+/// Pole polarity test settings of the saliency observer under test
+pub const POLARITY_TEST: PolarityTestConfig = PolarityTestConfig {
+    timeout_ms: 500.0,
+    convergence_tolerance_rad: 0.05,
+    test_duration_ms: 100.0,
+};
 
 /// Time a tracking PLL of the given frequency needs to settle, in loop time constants
 pub const fn pll_settling_s(time_constants: f32, pll_frequency_hz: f32) -> f32 {

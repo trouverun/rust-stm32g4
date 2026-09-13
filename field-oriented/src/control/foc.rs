@@ -112,7 +112,7 @@ impl FOC {
         };
 
         let (u_dq, target_i_dq) = match input.command {
-            FocInputType::CalibrationVoltage(voltage) => {
+            FocInputType::CalibrationVoltage(voltage) | FocInputType::RawVoltages(voltage) => {
                 (voltage, ClarkParkValue { d: 0.0, q: 0.0 })
             }
             FocInputType::CalibrationCurrents(target_i_dq) => {
@@ -168,7 +168,7 @@ impl FOC {
         };
 
         let hfi_injecting = match input.command {
-            FocInputType::TargetTorque(_) => omega_e.abs() < input.hfi_params.disable_threshold_omega_rads,
+            FocInputType::RawVoltages(_) | FocInputType::TargetTorque(_) => omega_e.abs() < input.hfi_params.disable_threshold_omega_rads,
             _ => false
         };
         
@@ -251,7 +251,8 @@ impl FOC {
             u_dq,
             u_ab,
             is_injecting: hfi_injecting,
-            hfi_i_dq
+            hfi_i_dq,
+            hfi_params: input.hfi_params,
         })
     }
 

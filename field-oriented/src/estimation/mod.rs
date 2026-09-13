@@ -2,12 +2,14 @@ mod hall_estimation;
 mod arbitration;
 mod ortega_ipm;
 mod sinusoidal_pulsing;
+mod utils;
 
 pub use hall_estimation::{HallEstimator, HallEstimatorInput, HallEstimatorOutput};
 pub use arbitration::FeedbackArbitrator;
 pub use ortega_ipm::{OrtegaIPMEstimator};
 pub use sinusoidal_pulsing::SinusoidalPulsingEstimator;
-use crate::{ClarkParkValue, HfiParams, HfiSource, types::{AlphaBeta, DoesFocMath}, MotorParamsEstimate};
+pub use utils::PolarityTestConfig;
+use crate::{ClarkParkValue, FocInputType, HasRotorFeedback, HfiParams, HfiSource, MotorParamsEstimate, RotorFeedback, types::{AlphaBeta, DoesFocMath}};
 
 pub struct SensorlessEstimatorInput {
     pub theta: f32,
@@ -22,13 +24,36 @@ pub struct SensorlessEstimatorInput {
     pub dt_s: f32,
 }
 
-pub trait SensorlessEstimator {
-    type Hfi: HfiSource;
-
-    fn hfi_source(&mut self) -> &mut Self::Hfi;
-
+pub trait SensorlessEstimator : HasRotorFeedback {
     fn update<A>(&mut self,
         input: &SensorlessEstimatorInput,
         accelerator: &mut A
     ) where A: DoesFocMath;
+
+    /// Clears any stale internal values after a nonconducting state without udpates
+    fn reset<A>(&mut self,
+        initial: Option<RotorFeedback>,
+        params: MotorParamsEstimate,
+        accelerator: &mut A
+    ) where A: DoesFocMath;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PolarityTestFault {
+    /// The tracking PLL did not lock onto the d-axis within the test timeout
+    ConvergenceTimeout,
+    /// The PLL locked, but the test itself reached no verdict within the timeout
+    TestTimeout,
+    Inconclusive,
+    MissingParameter,
+}
+
+pub trait SaliencyBasedEstimator : SensorlessEstimator {
+    type Hfi: HfiSource;
+
+    fn hfi_source(&mut self) -> &mut Self::Hfi;
+
+    fn polarity_test_command(&self) -> FocInputType;
+
+    fn pole_polarity(&self) -> Option<Result<(), PolarityTestFault>>;
 }

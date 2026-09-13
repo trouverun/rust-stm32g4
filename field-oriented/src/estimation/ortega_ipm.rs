@@ -3,7 +3,7 @@
 // Automatica, 125, 109371. arXiv:1905.00833
 
 use crate::{
-    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, NoHfi, RotorFeedback,
+    AlphaBeta, AngleType, DoesFocMath, HasRotorFeedback, MotorParamsEstimate, RotorFeedback,
     RotorFeedbackFault, estimation::{SensorlessEstimator, SensorlessEstimatorInput},
     utils::{filtering::PLL, math::{wrap_in_range_to_2pi, wrapped_diff}}
 };
@@ -72,9 +72,7 @@ pub struct OrtegaIPMEstimator {
     flux: AlphaBeta,
     prev_u_ab: AlphaBeta,
     prev_i_ab: AlphaBeta,
-    theta_est: f32,
     fault: Option<RotorFeedbackFault>,
-    hfi: NoHfi,
 }
 
 impl OrtegaIPMEstimator {
@@ -92,28 +90,14 @@ impl OrtegaIPMEstimator {
             flux: AlphaBeta { alpha: 0.0, beta: 0.0 },
             prev_u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
             prev_i_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
-            theta_est: 0.0,
             fault: None,
-            hfi: NoHfi,
         }
     }
 
-    pub fn reset(&mut self) {
-        for filter in self.emf_filter.iter_mut().chain(self.current_filter.iter_mut()) {
-            filter.reset();
-        }
-        self.cross_filter.reset();
-        self.disturbance_filter.reset();
-        self.pll.reset();
-        self.flux = AlphaBeta { alpha: 0.0, beta: 0.0 };
-        self.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
-        self.prev_i_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
-        self.theta_est = 0.0;
-        self.fault = None;
-    }
-
-    pub fn set_stator_flux(&mut self, flux: AlphaBeta) {
-        self.flux = flux;
+    /// Seeds the stator flux at the electrical angle `theta`, assuming no stator current
+    pub fn set_stator_flux<A>(&mut self, theta: f32, pm_flux_linkage: f32, accelerator: &mut A) where A: DoesFocMath {
+        let sc = accelerator.sin_cos(theta);
+        self.flux = AlphaBeta { alpha: pm_flux_linkage * sc.cos, beta: pm_flux_linkage * sc.sin };
     }
 
     pub fn set_tuning(&mut self, gamma: f32, alpha: f32, pll_frequency_hz: f32) {
@@ -130,12 +114,6 @@ impl OrtegaIPMEstimator {
 }
 
 impl SensorlessEstimator for OrtegaIPMEstimator {
-    type Hfi = NoHfi;
-
-    fn hfi_source(&mut self) -> &mut NoHfi {
-        &mut self.hfi
-    }
-
     #[inline]
     fn update<A>(&mut self,
         input: &SensorlessEstimatorInput,
@@ -179,7 +157,7 @@ impl SensorlessEstimator for OrtegaIPMEstimator {
         let x = AlphaBeta { alpha: self.flux.alpha - Lq * input.i_ab.alpha, beta: self.flux.beta - Lq * input.i_ab.beta };
         let x_norm = accelerator.sqrt(dot(x, x));
         let epsilon = 0.5 * pm_flux_linkage;
-        let sigma = if x_norm > epsilon {
+        let sigma = if x_norm >= epsilon {
             let norm_recip = 1. / x_norm;
             AlphaBeta { alpha: x.alpha *norm_recip, beta: x.beta * norm_recip }
         } else {
@@ -191,23 +169,45 @@ impl SensorlessEstimator for OrtegaIPMEstimator {
         let innovation = y - dot(phi, x) + disturbance;
         self.flux.alpha += dt_s * (flux_rate.alpha + self.gamma * phi.alpha * innovation);
         self.flux.beta += dt_s * (flux_rate.beta + self.gamma * phi.beta * innovation);
-
         if !self.flux.alpha.is_finite() || !self.flux.beta.is_finite() {
-            self.reset();
             self.fault = Some(RotorFeedbackFault::ErroneousValue);
             return
         }
-
         let x_alpha = self.flux.alpha - Lq * input.i_ab.alpha;
         let x_beta = self.flux.beta - Lq * input.i_ab.beta;
-        self.theta_est = accelerator.atan2(x_beta, x_alpha);
-
-        let angle_error = wrapped_diff(self.theta_est, self.pll.read().theta);
-        self.pll.update(angle_error, dt_s);
-
-        self.fault = None;
         self.prev_u_ab = input.u_ab;
         self.prev_i_ab = input.i_ab;
+
+        // Do not feed PLL with just noise:
+        if x_norm < epsilon {
+            self.fault = Some(RotorFeedbackFault::Unobservable);
+            return
+        }
+
+        let theta_est = accelerator.atan2(x_beta, x_alpha);
+        let angle_error = wrapped_diff(theta_est, self.pll.read().theta);
+        self.pll.update(angle_error, dt_s);
+        self.fault = None;
+    }
+
+    fn reset<A>(&mut self,
+        initial: Option<RotorFeedback>,
+        params: MotorParamsEstimate,
+        accelerator: &mut A
+    ) where A: DoesFocMath {
+        for filter in self.emf_filter.iter_mut().chain(self.current_filter.iter_mut()) {
+            filter.reset();
+        }
+        self.cross_filter.reset();
+        self.disturbance_filter.reset();
+        self.pll.reset(initial);
+        match (initial, params.pm_flux_linkage) {
+            (Some(feedback), Some(pm_flux_linkage)) => self.set_stator_flux(feedback.theta, pm_flux_linkage, accelerator),
+            _ => self.flux = AlphaBeta { alpha: 0.0, beta: 0.0 },
+        }
+        self.prev_u_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
+        self.prev_i_ab = AlphaBeta { alpha: 0.0, beta: 0.0 };
+        self.fault = None;
     }
 }
 
@@ -256,7 +256,7 @@ mod test {
 
             let mut estimator = OrtegaIPMEstimator::new(ORTEGA_GAMMA, TAU*ORTEGA_LOWPASS_HZ, FLUX_PLL_HZ);
             // A quarter turn off, the polarity resolved:
-            estimator.set_stator_flux(AlphaBeta { alpha: 0.0, beta: c.pm_flux_linkage });
+            estimator.set_stator_flux(0.25*TAU, c.pm_flux_linkage, &mut bench.accelerator);
             // Misalignment may not cost more torque than the current noise hides:
             let bound = (1.0 - 3.0*motor.current_noise_a/motor.current_limit_a).acos();
 

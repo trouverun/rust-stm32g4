@@ -111,7 +111,14 @@ impl FeedbackArbitrator {
                     Some(Err(RotorFeedbackFault::Unobservable))
                 }
             }
-            (None, None) => None
+            (None, None) => {
+                if let Some(Ok(hall_feedback)) = self.hall_feedback {
+                    self.blend_omega = hall_feedback.omega;
+                } else {
+                    self.blend_omega = self.high_speed_threshold_omega_rads;
+                }
+                None
+            }
         }
     }
 
@@ -149,12 +156,12 @@ mod test {
     use core::f32::consts::TAU;
     use super::*;
     use crate::{
-        AlphaBeta, BenchStep, CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, FLUX_PLL_HZ,
+        BenchStep, CURRENT_LOOP_BANDWIDTH_HZ, EstimatorRecord, FLUX_PLL_HZ,
         FocInputType, FocResult, HFI_FREQUENCY_HZ, HfiParams, INJECTION_RATIO, Motor, MotorSim,
-        ORTEGA_GAMMA, ORTEGA_LOWPASS_HZ, OrtegaIPMEstimator, PWM_FREQUENCY_HZ, Recorder,
+        ORTEGA_GAMMA, ORTEGA_LOWPASS_HZ, OrtegaIPMEstimator, POLARITY_TEST, PWM_FREQUENCY_HZ, Recorder,
         SALIENCY_PLL_HZ, SinusoidalPulsingEstimator, TestBench, angle_error, pll_settling_s,
         record_interval, reference_motors,
-        estimation::{SensorlessEstimator, SensorlessEstimatorInput}
+        estimation::{SaliencyBasedEstimator, SensorlessEstimator, SensorlessEstimatorInput}
     };
     use std::format;
 
@@ -295,10 +302,10 @@ mod test {
                 disable_threshold_omega_rads: high_threshold,
             };
 
-            let mut saliency = SinusoidalPulsingEstimator::new(PWM_FREQUENCY_HZ, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ);
+            let mut saliency = SinusoidalPulsingEstimator::new(PWM_FREQUENCY_HZ, HFI_FREQUENCY_HZ, SALIENCY_PLL_HZ, POLARITY_TEST);
             let mut flux = OrtegaIPMEstimator::new(ORTEGA_GAMMA, TAU*ORTEGA_LOWPASS_HZ, FLUX_PLL_HZ);
             // The rotor starts at zero, so the active flux points along alpha
-            flux.set_stator_flux(AlphaBeta { alpha: c.pm_flux_linkage, beta: 0.0 });
+            flux.set_stator_flux(0.0, c.pm_flux_linkage, &mut bench.accelerator);
             let mut arbitrator = FeedbackArbitrator::new(low_threshold, high_threshold);
             let mut recorder = Recorder::new(&format!("arbitration_blend_{}.html", motor.name), dt, record_interval(RECORD_HZ, dt));
 

@@ -1,5 +1,5 @@
 use core::f32::consts::{PI, TAU};
-use crate::{PhaseValues, wrap_to_pi, utils::math::clamp};
+use crate::{PhaseValues, RotorFeedback, utils::math::clamp, wrap_to_pi};
 
 #[derive(Clone, Copy)]
 pub struct PLLState {
@@ -46,8 +46,18 @@ impl PLL {
         self.state
     }
 
-    pub fn reset(&mut self) {
-        self.state = PLLState { theta: 0.0, omega: 0.0 };
+    #[inline]
+    pub fn rotate(&mut self, delta_rad: f32) {
+        self.state.theta = wrap_to_pi(self.state.theta + delta_rad);
+    }
+
+    pub fn reset(&mut self, initial: Option<RotorFeedback>) {
+        let(theta, omega) = if let Some(feedback) = initial {
+            (feedback.theta, feedback.omega)
+        } else {
+            (0.0, 0.0)
+        };
+        self.state = PLLState { theta, omega };
     }
 }
 

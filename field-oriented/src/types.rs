@@ -92,12 +92,14 @@ pub struct FocConfig {
 type TorqueNm = f32;
 #[derive(Clone, Copy)]
 pub enum FocInputType {
-    /// Raw voltage command which gets directly converted to duty cycles
+    /// Raw voltage command which gets directly converted to duty cycles (prevents HFI)
     CalibrationVoltage(ClarkParkValue),
     /// Command for calibration use, uses separate slow PI controllers, and has no feedforward compensation
     CalibrationCurrents(ClarkParkValue),
     /// Command for estimation use, uses the normal fast PI controllers, but bypasses back-emf feedforward compensation
     TargetCurrents(ClarkParkValue),
+    /// Raw voltage command which gets directly converted to duty cycles (allows HFI)
+    RawVoltages(ClarkParkValue),
     /// Torque command for normal use
     TargetTorque(TorqueNm),
 }
@@ -137,7 +139,9 @@ pub struct FocResult {
     pub u_ab: AlphaBeta,
     /// Whether the HFI voltage was added to the applied voltage this iteration
     pub is_injecting: bool,
-    pub hfi_i_dq: ClarkParkValue
+    pub hfi_i_dq: ClarkParkValue,
+    /// HFI parameters in effect this iteration
+    pub hfi_params: HfiParams,
 }
 
 impl FocResult {
@@ -154,6 +158,7 @@ impl FocResult {
             u_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },
             is_injecting: false,
             hfi_i_dq: ClarkParkValue { d: 0.0, q: 0.0 },
+            hfi_params: HfiParams::none(),
         }
     }
 }
