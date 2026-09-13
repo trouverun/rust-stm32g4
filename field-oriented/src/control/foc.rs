@@ -161,7 +161,8 @@ impl FOC {
         };
 
         let hfi_injecting = match input.command {
-            FocInputType::RawVoltages(_) | FocInputType::TargetTorque(_) => omega_e.abs() < input.hfi_params.disable_threshold_omega_rads,
+            FocInputType::RawVoltages(_) => true,
+            FocInputType::TargetTorque(_) => omega_e.abs() < input.hfi_params.disable_threshold_omega_rads,
             _ => false
         };
         
