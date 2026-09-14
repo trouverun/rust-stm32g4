@@ -1,4 +1,27 @@
 use super::EstimationStepFault;
+use crate::ClarkParkValue;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Axis {
+    D,
+    Q,
+}
+
+impl Axis {
+    pub fn of(self, value: ClarkParkValue) -> f32 {
+        match self {
+            Axis::D => value.d,
+            Axis::Q => value.q,
+        }
+    }
+
+    pub fn vector(self, magnitude: f32) -> ClarkParkValue {
+        match self {
+            Axis::D => ClarkParkValue { d: magnitude, q: 0.0 },
+            Axis::Q => ClarkParkValue { d: 0.0, q: magnitude },
+        }
+    }
+}
 
 /// Accumulator for solving y = a*x via least-squares: a = sum(x*y) / sum(x^2)
 pub struct Lse {
@@ -41,6 +64,37 @@ impl Lse {
         } else {
             Err(EstimationStepFault::DegenSolution)
         }
+    }
+}
+
+/// Accumulator for the mean of (x, y) samples
+pub struct Mean {
+    x_sum: f32,
+    y_sum: f32,
+    num_data: u32,
+}
+
+impl Mean {
+    pub fn new() -> Self {
+        Self { x_sum: 0.0, y_sum: 0.0, num_data: 0 }
+    }
+
+    pub fn accumulate(&mut self, x: f32, y: f32) {
+        self.x_sum += x;
+        self.y_sum += y;
+        self.num_data += 1;
+    }
+
+    pub fn num_data(&self) -> u32 {
+        self.num_data
+    }
+
+    pub fn x(&self) -> f32 {
+        self.x_sum / self.num_data as f32
+    }
+
+    pub fn y(&self) -> f32 {
+        self.y_sum / self.num_data as f32
     }
 }
 

@@ -458,6 +458,7 @@ mod tests {
                     d_inductance: None,
                     q_inductance: None,
                     pm_flux_linkage: None,
+                    inverter_voltage_error: None,
                 },
                 command_output: || OfflineEstimatorOutput::CalibrationVoltage(ClarkParkValue { d: 0.0, q: 0.0 }),
                 command_theta: 0.0,

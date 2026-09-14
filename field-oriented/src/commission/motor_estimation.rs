@@ -1,7 +1,7 @@
 use crate::{
     ClarkParkValue, FocResult, MotorParamEstimator, MotorParamsEstimate
 };
-use super::utils::Lse;
+use super::utils::{Axis, Lse, Mean};
 use crate::utils::math::{clamp, wrap_to_2pi};
 use libm::sqrtf;
 
@@ -11,41 +11,22 @@ pub enum EstimationStepFault {
     Overflow,
     InsufficientSamples,
     DegenSolution,
-    ParameterOutOfBounds
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Axis {
-    D,
-    Q,
-}
-
-impl Axis {
-    fn of(self, value: ClarkParkValue) -> f32 {
-        match self {
-            Axis::D => value.d,
-            Axis::Q => value.q,
-        }
-    }
-
-    fn vector(self, magnitude: f32) -> ClarkParkValue {
-        match self {
-            Axis::D => ClarkParkValue { d: magnitude, q: 0.0 },
-            Axis::Q => ClarkParkValue { d: 0.0, q: magnitude },
-        }
-    }
+    ParameterOutOfBounds,
+    TargetCurrentUnreachable
 }
 
 enum StepResult {
     Transition(OfflineEstimatorState),
-    EstimateR { resistance: f32, next: OfflineEstimatorState },
+    EstimateR { resistance: f32, inverter_voltage_error: f32, next: OfflineEstimatorState },
     EstimateL { axis: Axis, inductance: f32, next: OfflineEstimatorState },
     EstimateF { next: OfflineEstimatorState },
     RampDown { pm_flux_linkage: Option<f32> }
 }
 
 const MIN_SOLVE_SAMPLES: u32 = 1000;
-const EST_L_HOLD_TICKS: u32 = 2;
+const EST_R_BLOCKS: u32 = 4;
+const EST_R_TARGET_TOLERANCE: f32 = 0.05;
+const EST_L_VOLTAGE_MARGIN: f32 = 1.5;
 
 #[derive(Clone, Copy)]
 pub struct OfflineEstimatorConfig {
@@ -62,23 +43,24 @@ enum OfflineEstimatorState {
     Off,
     /// Commanding d-axis current, waiting for rotor to align
     RotorLockWait { waited_s: f32 },
-    /// Steady-state d-axis current: 
-    /// R = v_d / i_d (di/dt ≈ 0)
+    /// Steady-state d-axis current (di/dt ≈ 0) at two levels, high and low:
+    /// R = (mean(v_d_high) - mean(v_d_low)) / (mean(i_d_high) - mean(i_d_low))
+    /// inverter_voltage_error = mean(v_d_high) - R * mean(i_d_high)
     EstR {
-        ran_s: f32,
-        /// Solves R from the LSE problem:
-        /// v_d = R * i_d
-        lse: Lse,
+        block: u32,
+        block_ran_s: f32,
+        target_reached: bool,
+        levels: [Mean; 2],
     },
-    /// Square wave voltage on one axis, R term cancels over symmetric excitation:
+    /// Square wave voltage on one axis, flipped when the current reaches the calibration target.
+    /// R term cancels due to symmetry over whole periods so the voltage equation simplifies to:
     /// L = |v| / |di/dt|
     EstL {
         axis: Axis,
         ran_s: f32,
         resistance: f32,
-        /// Excitation polarity
         sign: f32,
-        hold_ticks_left: u32,
+        sign_flips: u32,
         /// Signs commanded two and one ticks ago, the interval di/dt spans
         applied_signs: [Option<f32>; 2],
         prev_i: f32,
@@ -117,6 +99,10 @@ enum OfflineEstimatorState {
     Done
 }
 
+fn est_r_target(block: u32, config: &OfflineEstimatorConfig) -> f32 {
+    if block % 2 == 0 { config.calibration_current_a } else { 0.5 * config.calibration_current_a }
+}
+
 impl OfflineEstimatorState {
     fn est_l(axis: Axis, resistance: f32, data: &FocResult) -> Self {
         Self::EstL {
@@ -124,7 +110,7 @@ impl OfflineEstimatorState {
             ran_s: 0.0,
             resistance,
             sign: 1.0,
-            hold_ticks_left: EST_L_HOLD_TICKS,
+            sign_flips: 0,
             applied_signs: [None, None],
             prev_i: axis.of(data.measured_i_dq),
             lse: Lse::new(),
@@ -144,8 +130,10 @@ impl OfflineEstimatorState {
                 if *waited_s >= config.settle_time_s {
                     let result = Some(StepResult::Transition(
                         Self::EstR {
-                            ran_s: 0.0,
-                            lse: Lse::new(),
+                            block: 0,
+                            block_ran_s: 0.0,
+                            target_reached: false,
+                            levels: [Mean::new(), Mean::new()],
                         }
                     ));
                     Ok(result)
@@ -153,12 +141,42 @@ impl OfflineEstimatorState {
                     Ok(None)
                 }
             }
-            Self::EstR { ran_s, lse } => {
-                // v_d = R * i_d
-                lse.accumulate(data.measured_i_dq.d, data.u_dq.d);
-                *ran_s += dt_s;
-                if *ran_s >= config.test_time_s {
-                    let resistance = lse.solve(MIN_SOLVE_SAMPLES)?;
+            Self::EstR { block, block_ran_s, target_reached, levels } => {
+                let i = data.measured_i_dq.d;
+                let target = est_r_target(*block, config);
+                *block_ran_s += dt_s;
+
+                if !*target_reached {
+                    let error_ratio = (i - target).abs() / target;
+                    *target_reached = error_ratio <= EST_R_TARGET_TOLERANCE;
+                    if *target_reached {
+                        *block_ran_s = 0.0;
+                    } else if *block_ran_s >= config.test_time_s {
+                        return Err(EstimationStepFault::TargetCurrentUnreachable);
+                    }
+                    return Ok(None);
+                }
+
+                levels[(*block % 2) as usize].accumulate(i, data.u_dq.d);
+                if *block_ran_s < config.test_time_s / EST_R_BLOCKS as f32 {
+                    return Ok(None);
+                }
+                *block += 1;
+                *block_ran_s = 0.0;
+                *target_reached = false;
+
+                if *block >= EST_R_BLOCKS {
+                    if levels.iter().any(|level| level.num_data() < MIN_SOLVE_SAMPLES) {
+                        return Err(EstimationStepFault::InsufficientSamples);
+                    }
+                    
+                    let [high, low] = levels;
+                    let delta_i = high.x() - low.x();
+                    if delta_i.abs() < 1e-3 {
+                        return Err(EstimationStepFault::DegenSolution);
+                    }
+                    let resistance = (high.y() - low.y()) / delta_i;
+                    let inverter_voltage_error = high.y() - resistance * high.x();
 
                     if resistance <= 0.0  {
                         return Err(EstimationStepFault::ParameterOutOfBounds);
@@ -166,6 +184,7 @@ impl OfflineEstimatorState {
 
                     let result = Some(StepResult::EstimateR {
                         resistance,
+                        inverter_voltage_error,
                         next: Self::est_l(Axis::D, resistance, data),
                     });
                     Ok(result)
@@ -174,31 +193,43 @@ impl OfflineEstimatorState {
                 }
             }
             Self::EstL {
-                axis, ran_s, resistance, sign, hold_ticks_left, applied_signs, prev_i, lse,
+                axis, ran_s, resistance, sign, sign_flips, applied_signs, prev_i, lse,
             } => {
+                if config.calibration_voltage_v < EST_L_VOLTAGE_MARGIN * *resistance * config.calibration_current_a {
+                    return Err(EstimationStepFault::TargetCurrentUnreachable);
+                }
+
                 let i = axis.of(data.measured_i_dq);
                 let di_dt = (i - *prev_i) / dt_s;
                 *prev_i = i;
 
-                // Midpoint sampling with compare preload PWM means we can't simply alternate sign every cycle
-                // (the current takes a triangular shape in response, and the sampling point would be at i=0 rather than |i|=max)
-                // Instead, alternate sign every N cycle, and only record data when the sign didn't just flip
-                // (a sign flip indicates we went "through" a peak of the triangular current, so due to symmetry: i(t-1) = i(t) = di/dt=0)
-                if let [Some(early_half), Some(late_half)] = *applied_signs {
-                    if early_half == late_half {
-                        lse.accumulate(axis.of(data.u_dq).abs(), late_half * di_dt);
+                if *sign_flips > 0 {
+                    if let [Some(early_half), Some(late_half)] = *applied_signs {
+                        // The current takes a triangular shape in response, and a sign flip indicates we went "through" a peak,
+                        // so due to symmetry: i(t-1) = i(t) = di/dt=0, which would make the sample invalid:
+                        if early_half == late_half {
+                            lse.accumulate(axis.of(data.u_dq).abs(), late_half * di_dt);
+                        }
                     }
                 }
                 *applied_signs = [applied_signs[1], Some(*sign)];
 
-                *hold_ticks_left -= 1;
-                if *hold_ticks_left == 0 {
-                    *sign = -*sign;
-                    *hold_ticks_left = EST_L_HOLD_TICKS;
+                *ran_s += dt_s;
+                if *ran_s >= 2.0 * config.test_time_s {
+                    return Err(EstimationStepFault::InsufficientSamples);
                 }
 
-                *ran_s += dt_s;
-                if *ran_s >= config.test_time_s {
+                // Flip when the current (+ some predicted change) exceeds the target:
+                if *sign * (i + 1.5*di_dt*dt_s) < config.calibration_current_a {
+                    return Ok(None);
+                }
+                *sign = -*sign;
+                *sign_flips += 1;
+
+                // The R term will only cancel with data from symmetric excitation:
+                let accumulated_halves = *sign_flips - 1;
+                let whole_periods = accumulated_halves >= 2 && accumulated_halves % 2 == 0;
+                if *ran_s >= config.test_time_s && whole_periods {
                     let inductance = 1.0 / lse.solve(MIN_SOLVE_SAMPLES)?;
 
                     if inductance <= 0.0  {
@@ -321,8 +352,8 @@ impl OfflineMotorEstimator {
                 output: OfflineEstimatorOutput::CalibrationCurrent(ClarkParkValue { d: self.config.calibration_current_a, q: 0.0 }),
                 theta: 0.0,
             },
-            OfflineEstimatorState::EstR { .. } => OfflineEstimatorCommand {
-                output: OfflineEstimatorOutput::CalibrationCurrent(ClarkParkValue { d: self.config.calibration_current_a, q: 0.0 }),
+            OfflineEstimatorState::EstR { block, .. } => OfflineEstimatorCommand {
+                output: OfflineEstimatorOutput::CalibrationCurrent(ClarkParkValue { d: est_r_target(*block, &self.config), q: 0.0 }),
                 theta: 0.0,
             },
             OfflineEstimatorState::EstL { axis, sign, .. } => OfflineEstimatorCommand {
@@ -409,8 +440,9 @@ impl MotorParamEstimator for OfflineMotorEstimator {
                     StepResult::Transition(next) => {
                         self.state = next;
                     }
-                    StepResult::EstimateR { resistance, next } => {
+                    StepResult::EstimateR { resistance, inverter_voltage_error, next } => {
                         self.params.stator_resistance = Some(resistance);
+                        self.params.inverter_voltage_error = Some(inverter_voltage_error);
                         self.state = next;
                         self.should_unwind_controller = true;
                     }
@@ -456,6 +488,15 @@ mod test {
     /// Run the estimation routine against a motor, using noisy current measurements and
     /// no rotor feedback
     fn run_estimation(motor: Motor, plot_path: &str) -> MotorParamsEstimate {
+        match run_estimation_at(motor, motor.calibration_voltage_v, plot_path) {
+            Ok(params) => params,
+            Err(fault) => panic!("Estimation failed! ({fault:?})"),
+        }
+    }
+
+    fn run_estimation_at(
+        motor: Motor, calibration_voltage_v: f32, plot_path: &str
+    ) -> Result<MotorParamsEstimate, EstimationStepFault> {
         let dt = 1.0 / PWM_FREQUENCY_HZ;
         let timeout_s = 60.0;
         let sim_cfg = motor.config;
@@ -469,7 +510,7 @@ mod test {
             max_spin_time_s: 20.0,
             spin_omega: motor.calibration_omega * sim_cfg.pole_pairs(),
             calibration_current_a: motor.calibration_current_a,
-            calibration_voltage_v: motor.calibration_voltage_v,
+            calibration_voltage_v,
             dt_s: dt,
         };
         let mut estimator = OfflineMotorEstimator::new(est_config, sim_cfg.params.num_pole_pairs);
@@ -511,13 +552,12 @@ mod test {
                 panic!("Estimation did not complete within {timeout_s}s");
             }
 
-            if estimator.estimation_failed() {
-                let fault = estimator.get_fault().unwrap();
-                panic!("Estimation failed! ({fault:?})")
+            if let Some(fault) = estimator.get_fault() {
+                return Err(fault);
             }
         }
 
-        estimator.params
+        Ok(estimator.params)
     }
 
     /// Estimate every reference motor and assert the parameters land within:
@@ -544,5 +584,19 @@ mod test {
             assert!(f_err < 0.05, "{}: F estimate error {:.1}%: got {}, expected {}",
                 motor.name, f_err * 100.0, est.pm_flux_linkage.unwrap(), sim_cfg.params.pm_flux_linkage);
         }
+    }
+
+    /// A calibration voltage that cannot drive the calibration current through the
+    /// measured resistance aborts before the inductance test
+    #[test]
+    fn unreachable_target_current_faults() {
+        let motor = reference_motors()[0];
+        let params = motor.config.params;
+        let voltage = 0.9 * params.stator_resistance * motor.calibration_current_a;
+        let result = run_estimation_at(motor, voltage, "motor_estimation_unreachable.html");
+        assert!(
+            matches!(result, Err(EstimationStepFault::TargetCurrentUnreachable)),
+            "expected TargetCurrentUnreachable, got {:?}", result.map(|_| ())
+        );
     }
 }

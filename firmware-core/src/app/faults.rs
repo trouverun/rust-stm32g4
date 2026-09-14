@@ -27,6 +27,7 @@ pub enum FaultCause {
     EstimationInsufficientSamples,
     EstimationDegenSolution,
     EstimationParameterOutOfBounds,
+    EstimationTargetCurrentUnreachable,
 
     TuningInfeasibleParameters,
     TuningInvalidTuningGoals,
@@ -73,6 +74,7 @@ impl From<EstimationStepFault> for FaultCause {
             EstimationStepFault::InsufficientSamples => FaultCause::EstimationInsufficientSamples,
             EstimationStepFault::DegenSolution => FaultCause::EstimationDegenSolution,
             EstimationStepFault::ParameterOutOfBounds => FaultCause::EstimationParameterOutOfBounds,
+            EstimationStepFault::TargetCurrentUnreachable => FaultCause::EstimationTargetCurrentUnreachable,
         }
     }
 }

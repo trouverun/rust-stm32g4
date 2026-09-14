@@ -17,7 +17,7 @@ pub trait Stored: serde::Serialize + serde::de::DeserializeOwned {
 impl Stored for FirmwareConfig       { const PAGE: usize = 3; const VERSION: u16 = 17; }
 // None when cleared for a recalibration:
 impl Stored for Option<HallCalibration> { const PAGE: usize = 2; const VERSION: u16 = 2; }
-impl Stored for MotorParamsEstimate  { const PAGE: usize = 1; const VERSION: u16 = 1; }
+impl Stored for MotorParamsEstimate  { const PAGE: usize = 1; const VERSION: u16 = 2; }
 // Controller gains are a discrete-time design: 
 // bind the record so a PWM frequency change invalidates them and forces a retune.
 impl Stored for Option<ControllerParameters> {

@@ -33,6 +33,7 @@ pub struct MotorParamsEstimate {
     pub d_inductance: Option<f32>,
     pub q_inductance: Option<f32>,
     pub pm_flux_linkage: Option<f32>,
+    pub inverter_voltage_error: Option<f32>,
 }
 
 impl MotorParamsEstimate {
@@ -42,7 +43,8 @@ impl MotorParamsEstimate {
             stator_resistance: Some(params.stator_resistance),
             d_inductance: Some(params.d_inductance),
             q_inductance: Some(params.q_inductance),
-            pm_flux_linkage: Some(params.pm_flux_linkage)
+            pm_flux_linkage: Some(params.pm_flux_linkage),
+            inverter_voltage_error: None,
         }
     }
 
@@ -50,9 +52,10 @@ impl MotorParamsEstimate {
         Self {
             num_pole_pairs: None,
             stator_resistance: None,
-            d_inductance: None, 
+            d_inductance: None,
             q_inductance: None,
-            pm_flux_linkage: None
+            pm_flux_linkage: None,
+            inverter_voltage_error: None,
         }
     }
 
@@ -75,6 +78,7 @@ impl MotorParamsEstimate {
         self.d_inductance = None;
         self.q_inductance = None;
         self.pm_flux_linkage = None;
+        self.inverter_voltage_error = None;
     }
 }
 
