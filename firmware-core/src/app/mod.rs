@@ -8,7 +8,7 @@ mod update;
 pub use modes::{OperatingMode, Command};
 pub use faults::{FaultCause, MemoryFault};
 pub use update::{DataOutcome, FirmwareUpdateState, FirmwareUpdateFault};
-pub use calibration::{CalibrationPhase, CalibrationFailureCause, StageResult};
+pub use calibration::{CalibrationPhase, CalibrationFailureCause, CalibrationTargets, StageResult};
 pub use control::{foc_step, after_foc_step, FocStepInputs, FocStepOutcome};
 pub use safe_strategy::{SafeControlStrategy};
 

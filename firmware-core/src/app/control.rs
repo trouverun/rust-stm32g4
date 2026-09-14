@@ -22,10 +22,6 @@ pub struct FocStepInputs {
     pub hall_pattern: u8,
     pub stationary_omega_threshold: f32,
 
-    pub calibration_voltage_v: f32,
-    pub calibration_current_a: f32,
-    pub calibration_sweep_omega: f32,
-
     pub target_torque: Option<f32>,
     pub active_current_limit_a: f32,
     pub rotor_speed_limit_mech_rpm: u16,
@@ -185,9 +181,6 @@ fn foc_step_inner<A, C, M, E>(
                 angle_type,
                 theta,
                 hall_pattern: inputs.hall_pattern,
-                target_voltage_v: inputs.calibration_voltage_v,
-                target_current_a: inputs.calibration_current_a,
-                target_omega_rads: inputs.calibration_sweep_omega,
             });
             stage_result = result;
             calibration_output = Some(output);
@@ -364,7 +357,7 @@ pub fn after_foc_step<M: Calibrator, P: MotorParamEstimator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::calibration::{CalibrationOutput, CalibrationPhase, CalibrationRunner};
+    use super::super::calibration::{CalibrationOutput, CalibrationPhase, CalibrationRunner, CalibrationTargets};
     use crate::HALL_CALIBRATION_TIMEOUT_S;
     use field_oriented::{
         ClarkParkValue, ConstantMotorParameters, ControllerParameters, FocConfig, HasRotorFeedback, MotorParams,
@@ -538,7 +531,7 @@ mod tests {
     impl Calibrator for MockCalibrator {
         type Estimator = ConstantMotorParameters;
 
-        fn new(_num_pole_pairs: u8, _spin_omega: f32, _has_hall: bool, _dt_s: f32) -> Self {
+        fn new(_num_pole_pairs: u8, _targets: CalibrationTargets, _has_hall: bool, _dt_s: f32) -> Self {
             Self::at(CalibrationPhase::MotorEstimation)
         }
 
@@ -586,9 +579,6 @@ mod tests {
             rotor_feedback: Ok(RotorFeedback { angle_type: AngleType::Electrical, theta: 0.0, omega: 0.0 }),
             hall_pattern: 1,
             stationary_omega_threshold: STATIONARY_OMEGA,
-            calibration_voltage_v: 1.0,
-            calibration_current_a: 1.0,
-            calibration_sweep_omega: 0.5,
             target_torque: Some(0.0),
             active_current_limit_a: CURRENT_LIMIT_A,
             rotor_speed_limit_mech_rpm: (0.9 * MAX_RPM as f32) as u16,
@@ -613,7 +603,8 @@ mod tests {
     }
 
     fn calibrating_at(phase: CalibrationPhase) -> OperatingMode {
-        let mut calibrator = CalibrationRunner::new(POLE_PAIRS, 100.0, true, 1.0 / PWM_FREQ_HZ);
+        let targets = CalibrationTargets { spin_omega: 100.0, sweep_omega: 0.5, voltage_v: 1.0, current_a: 1.0 };
+        let mut calibrator = CalibrationRunner::new(POLE_PAIRS, targets, true, 1.0 / PWM_FREQ_HZ);
         calibrator.phase = phase;
         OperatingMode::Calibration { calibrator }
     }

@@ -11,7 +11,7 @@ use crate::bandwidth_test;
 use crate::can::messages::*;
 use crate::can::transport::IntoFrame;
 use crate::types::{ConfigError, FirmwareConfig};
-use firmware_core::{CalibrationPhase, Command, DataOutcome, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
+use firmware_core::{CalibrationPhase, CalibrationTargets, Command, DataOutcome, FaultCause, FirmwareUpdateFault, OperatingMode, SafeControlStrategy};
 use field_oriented::{ControllerParameters, MotorParamEstimator};
 
 // Build.rs generated version constants:
@@ -40,11 +40,16 @@ pub async fn can_process(mut cx: app::can_process::Context<'_>) {
                     },
                     OperatingModeRequestRequestedMode::Calibration => {
                         const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
-                        let spin_omega = cx.shared.config.lock(|cfg| cfg.calibration_spin_omega());
+                        let targets = cx.shared.config.lock(|cfg| CalibrationTargets {
+                            spin_omega: cfg.calibration_spin_omega(),
+                            sweep_omega: cfg.calibration_sweep_omega(),
+                            voltage_v: cfg.calibration_voltage_v(),
+                            current_a: cfg.calibration_current_a(),
+                        });
                         match cx.shared.motor_parameters.lock(|mp| mp.get_estimate().num_pole_pairs) {
                             Some(num_pole_pairs) => {
                                 Command::StartCalibration {
-                                    num_pole_pairs, spin_omega,
+                                    num_pole_pairs, targets,
                                     has_hall: cfg!(feature = "hall-feedback"),
                                     dt_s: DT_S 
                                 }

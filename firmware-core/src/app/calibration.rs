@@ -2,7 +2,7 @@
 use field_oriented::{
     AngleType, ClarkParkValue, EstimationStepFault, FocInputType, HallCalibration, HallCalibrationFault,
     HallCalibrator, MotorParamEstimator, MotorParamsEstimate, OfflineEstimatorCommand,
-    OfflineEstimatorConfig, OfflineEstimatorInput, OfflineEstimatorOutput, OfflineMotorEstimator,
+    OfflineEstimatorConfig, OfflineEstimatorOutput, OfflineMotorEstimator,
 };
 use crate::{
     HALL_ALIGN_DURATION_S, HALL_CALIBRATION_TIMEOUT_S, MOTOR_ESTIMATOR_SETTLING_DURATION_S,
@@ -14,9 +14,14 @@ pub struct CalibrationInputs {
     pub angle_type: AngleType,
     pub theta: f32,
     pub hall_pattern: u8,
-    pub target_voltage_v: f32,
-    pub target_current_a: f32,
-    pub target_omega_rads: f32,
+}
+
+#[derive(Clone, Copy, defmt::Format)]
+pub struct CalibrationTargets {
+    pub spin_omega: f32,
+    pub sweep_omega: f32,
+    pub voltage_v: f32,
+    pub current_a: f32,
 }
 
 /// Outputs needed regardless of stage
@@ -69,21 +74,25 @@ pub struct CalibrationConfig {
     pub dt_s: f32,
     pub hall_align_s: f32,
     pub hall_timeout_s: f32,
+    pub hall_sweep_omega: f32,
     pub estimator: OfflineEstimatorConfig,
 }
 
 impl CalibrationConfig {
-    pub fn new(spin_omega: f32, dt_s: f32) -> Self {
+    pub fn new(targets: CalibrationTargets, dt_s: f32) -> Self {
         Self {
             dt_s,
             hall_align_s: HALL_ALIGN_DURATION_S,
             hall_timeout_s: HALL_CALIBRATION_TIMEOUT_S,
+            hall_sweep_omega: targets.sweep_omega,
             estimator: OfflineEstimatorConfig {
                 dt_s,
                 settle_time_s: MOTOR_ESTIMATOR_SETTLING_DURATION_S,
                 test_time_s: MOTOR_ESTIMATION_SINGLE_TEST_DURATION_S,
                 max_spin_time_s: MOTOR_ESTIMATION_SPINUP_DURATION_S,
-                spin_omega,
+                spin_omega: targets.spin_omega,
+                calibration_current_a: targets.current_a,
+                calibration_voltage_v: targets.voltage_v,
             },
         }
     }
@@ -99,8 +108,8 @@ pub struct CalibrationRunner<H = HallCalibrator, E = OfflineMotorEstimator> {
 }
 
 impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
-    pub fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self {
-        let config = CalibrationConfig::new(spin_omega, dt_s);
+    pub fn new(num_pole_pairs: u8, targets: CalibrationTargets, has_hall: bool, dt_s: f32) -> Self {
+        let config = CalibrationConfig::new(targets, dt_s);
         let hall_calibrator = H::new(config.hall_align_s, dt_s);
         let motor_estimator = E::new(config.estimator, num_pole_pairs);
 
@@ -130,13 +139,13 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
                     let output = self.idle_output(inputs);
                     (output, Some(result))
                 } else {
-                    match self.hall_calibrator.calibration_step(inputs.hall_pattern, inputs.target_omega_rads) {
+                    match self.hall_calibrator.calibration_step(inputs.hall_pattern, self.config.hall_sweep_omega) {
                         Ok(theta) => {
                             let output = CalibrationOutput {
                                 angle_type: AngleType::Electrical,
                                 theta,
                                 foc_command: FocInputType::CalibrationCurrents(ClarkParkValue {
-                                    d: inputs.target_current_a,
+                                    d: self.config.estimator.calibration_current_a,
                                     q: 0.0,
                                 }),
                             };
@@ -187,12 +196,7 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
     }
 
     fn motor_estimation_output(&mut self, inputs: CalibrationInputs) -> CalibrationOutput {
-        let step_input = OfflineEstimatorInput {
-            dc_bus_voltage: inputs.dc_bus_voltage_v,
-            target_voltage: inputs.target_voltage_v,
-            target_current: inputs.target_current_a,
-        };
-        let estimator_command = self.motor_estimator.get_command(step_input);
+        let estimator_command = self.motor_estimator.get_command();
         let foc_command = match estimator_command.output {
             OfflineEstimatorOutput::CalibrationCurrent(i_dq) => {
                 FocInputType::CalibrationCurrents(i_dq)
@@ -288,7 +292,7 @@ pub trait EstimatesMotorParams: MotorParamEstimator {
     fn acknowledge_unwind_request(&mut self);
     fn should_tune_controller(&self) -> bool;
     fn acknowledge_tuning_request(&mut self);
-    fn get_command(&self, input: OfflineEstimatorInput) -> OfflineEstimatorCommand;
+    fn get_command(&self) -> OfflineEstimatorCommand;
 }
 
 impl EstimatesMotorParams for OfflineMotorEstimator {
@@ -324,15 +328,15 @@ impl EstimatesMotorParams for OfflineMotorEstimator {
         OfflineMotorEstimator::acknowledge_tuning_request(self)
     }
 
-    fn get_command(&self, input: OfflineEstimatorInput) -> OfflineEstimatorCommand {
-        OfflineMotorEstimator::get_command(self, input)
+    fn get_command(&self) -> OfflineEstimatorCommand {
+        OfflineMotorEstimator::get_command(self)
     }
 }
 
 /// Trait to enable test mocking
 pub trait Calibrator {
     type Estimator: MotorParamEstimator;
-    fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self where Self: Sized;
+    fn new(num_pole_pairs: u8, targets: CalibrationTargets, has_hall: bool, dt_s: f32) -> Self where Self: Sized;
     fn resume(&mut self);
     fn phase(&self) -> CalibrationPhase;
     fn step(&mut self, inputs: CalibrationInputs) -> (CalibrationOutput, Option<StageResult>);
@@ -341,8 +345,8 @@ pub trait Calibrator {
 
 impl<H: HallCalibrates> Calibrator for CalibrationRunner<H> {
     type Estimator = OfflineMotorEstimator;
-    fn new(num_pole_pairs: u8, spin_omega: f32, has_hall: bool, dt_s: f32) -> Self {
-        CalibrationRunner::new(num_pole_pairs, spin_omega, has_hall, dt_s)
+    fn new(num_pole_pairs: u8, targets: CalibrationTargets, has_hall: bool, dt_s: f32) -> Self {
+        CalibrationRunner::new(num_pole_pairs, targets, has_hall, dt_s)
     }
 
     fn resume(&mut self) {
@@ -372,9 +376,15 @@ mod tests {
     const SPIN_OMEGA: f32 = 100.0;
     const DT_S: f32 = 1.0 / 20_000.0;
     const TARGET_CURRENT_A: f32 = 1.5;
+    const TARGETS: CalibrationTargets = CalibrationTargets {
+        spin_omega: SPIN_OMEGA,
+        sweep_omega: 10.0,
+        voltage_v: 2.0,
+        current_a: TARGET_CURRENT_A,
+    };
 
     fn runner_at(phase: CalibrationPhase) -> CalibrationRunner {
-        let mut runner = CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,true, DT_S);
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, TARGETS, true, DT_S);
         runner.phase = phase;
         runner
     }
@@ -483,13 +493,13 @@ mod tests {
             self.tune = false;
         }
 
-        fn get_command(&self, _input: OfflineEstimatorInput) -> OfflineEstimatorCommand {
+        fn get_command(&self) -> OfflineEstimatorCommand {
             OfflineEstimatorCommand { output: (self.command_output)(), theta: self.command_theta }
         }
     }
 
     fn mock_runner_at(phase: CalibrationPhase) -> CalibrationRunner<MockHall, MockEstimator> {
-        let mut runner = CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,true, DT_S);
+        let mut runner = CalibrationRunner::new(POLE_PAIRS, TARGETS, true, DT_S);
         runner.phase = phase;
         runner
     }
@@ -500,9 +510,6 @@ mod tests {
             angle_type: AngleType::Electrical,
             theta: 0.3,
             hall_pattern: 1,
-            target_voltage_v: 2.0,
-            target_current_a: TARGET_CURRENT_A,
-            target_omega_rads: 10.0,
         }
     }
 
@@ -529,13 +536,13 @@ mod tests {
     #[test]
     fn hall_stage_only_runs_when_hall_present() {
         let mut runner: CalibrationRunner<MockHall, MockEstimator> =
-            CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,true, DT_S);
+            CalibrationRunner::new(POLE_PAIRS, TARGETS, true, DT_S);
         runner.resume();
         assert_eq!(phase_name(&runner.phase), "HallCalibration");
         assert!(runner.hall_calibrator.started);
 
         let mut runner: CalibrationRunner<MockHall, MockEstimator> =
-            CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA,false, DT_S);
+            CalibrationRunner::new(POLE_PAIRS, TARGETS, false, DT_S);
         runner.resume();
         assert_eq!(phase_name(&runner.phase), "MotorEstimation");
         assert!(runner.motor_estimator.started);

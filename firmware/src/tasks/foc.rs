@@ -49,7 +49,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
         const DT_S: f32 = 1.0 / PWM_FREQUENCY_HZ.0 as f32;
         const DT_MS: f32 = 1000.0 / PWM_FREQUENCY_HZ.0 as f32;  
         let (
-            calibration_voltage_v, calibration_current_a, calibration_sweep_omega,
             active_current_limit_a, overcurrent_limit_a,
             rotor_speed_limit_mech_rpm, rotor_overspeed_fault_threshold_mech_rpm,
             dc_bus_min_v, dc_bus_max_v,
@@ -57,8 +56,7 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             setpoint_timeout_ms, sensorless_high_speed_threshold,
             hfi_amplitude_v, hfi_startup_amplitude_v
         ) = cx.shared.config.lock(|cfg| {
-                (cfg.calibration_voltage_v(), cfg.calibration_current_a(), cfg.calibration_sweep_omega(),
-                cfg.rated_current_limit_a(), cfg.overcurrent_limit_a(),
+                (cfg.rated_current_limit_a(), cfg.overcurrent_limit_a(),
                 cfg.rotor_speed_limit_mech_rpm(), cfg.rotor_overspeed_limit_mech_rpm(),
                 cfg.dc_bus_min_voltage_v(), cfg.dc_bus_max_voltage_v(),
                 cfg.braking_current_limit_a(), cfg.braking_current_fault_a(),
@@ -95,9 +93,6 @@ pub fn shared_adc_isr(mut cx: app::shared_adc_isr::Context<'_>) {
             rotor_feedback,
             hall_pattern,
             stationary_omega_threshold: BRAKE_LIMIT_STATIONARY_THRESHOLD_MECH_OMEGA,
-            calibration_voltage_v,
-            calibration_current_a,
-            calibration_sweep_omega,
             target_torque,
             active_current_limit_a,
             rotor_speed_limit_mech_rpm,

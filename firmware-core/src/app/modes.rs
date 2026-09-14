@@ -1,4 +1,4 @@
-use super::calibration::{CalibrationPhase, CalibrationRunner, Calibrator};
+use super::calibration::{CalibrationPhase, CalibrationRunner, CalibrationTargets, Calibrator};
 use super::faults::FaultCause;
 use super::safe_strategy::SafeControlStrategy;
 
@@ -14,7 +14,7 @@ pub enum Command {
     Idle { safe_strategy: SafeControlStrategy },
     StartCalibration {
         num_pole_pairs: u8,
-        spin_omega: f32,
+        targets: CalibrationTargets,
         has_hall: bool,
         dt_s: f32
     },
@@ -69,9 +69,9 @@ impl<C: Calibrator> OperatingMode<C> {
                 trace[0] = cause;
                 OperatingMode::Fault { safe_strategy: cause.into(), write_index: 1, trace }
             }
-            (OperatingMode::Idle { safe_strategy }, Command::StartCalibration { num_pole_pairs, spin_omega, has_hall, dt_s }) => {
+            (OperatingMode::Idle { safe_strategy }, Command::StartCalibration { num_pole_pairs, targets, has_hall, dt_s }) => {
                 if !matches!(safe_strategy, SafeControlStrategy::RampDown { .. }) {
-                    OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, spin_omega, has_hall, dt_s) }
+                    OperatingMode::Calibration { calibrator: C::new(num_pole_pairs, targets, has_hall, dt_s) }
                 } else {
                     return false;
                 }
@@ -151,7 +151,7 @@ mod tests {
     use super::*;
 
     const POLE_PAIRS: u8 = 7;
-    const SPIN_OMEGA: f32 = 100.0;
+    const TARGETS: CalibrationTargets = CalibrationTargets { spin_omega: 100.0, sweep_omega: 10.0, voltage_v: 2.0, current_a: 1.5 };
     const DT_S: f32 = 1.0 / 20_000.0;
 
     fn faulted_with(safe_strategy: SafeControlStrategy) -> OperatingMode {
@@ -159,7 +159,7 @@ mod tests {
     }
 
     fn calibrating() -> OperatingMode {
-        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, SPIN_OMEGA, true, DT_S) }
+        OperatingMode::Calibration { calibrator: CalibrationRunner::new(POLE_PAIRS, TARGETS, true, DT_S) }
     }
 
     fn faulted(cause: FaultCause) -> OperatingMode {
@@ -169,7 +169,7 @@ mod tests {
     }
 
     fn start_calibration() -> Command {
-        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, spin_omega: SPIN_OMEGA, has_hall: true, dt_s: DT_S }
+        Command::StartCalibration { num_pole_pairs: POLE_PAIRS, targets: TARGETS, has_hall: true, dt_s: DT_S }
     }
 
     /// Calibration can be entered from idle and from nowhere else.
