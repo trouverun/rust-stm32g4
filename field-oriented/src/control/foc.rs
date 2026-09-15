@@ -31,7 +31,6 @@ pub struct FOC {
     notch_id: BiquadNotchFilter,
     notch_iq: BiquadNotchFilter,
     field_weakening: FieldWeakening,
-    deadtime_ratio: f32,
     deadtime_band_reciprocal: f32,
     prev_values: PrevIterValues,
     current_control_bandwidth_hz: Option<f32>,
@@ -56,12 +55,6 @@ impl FOC {
         let notch_id = BiquadNotchFilter::new(config.pwm_frequency_hz, config.hfi_frequency, notch_bandwidth_hz);
         let notch_iq = BiquadNotchFilter::new(config.pwm_frequency_hz, config.hfi_frequency, notch_bandwidth_hz);
 
-        let deadtime_ratio = if config.pwm_frequency_hz != 0.0 {
-            let pwm_period_ns = 1e9 / config.pwm_frequency_hz;
-            (config.mosfet_deadtime_ns + config.mosfet_on_delay_ns - config.mosfet_off_delay_ns) / pwm_period_ns
-        } else {
-            0.0
-        };
         let deadtime_band_reciprocal = 1.0 / (config.deadtime_compensation_band_a.abs() + 1e-5);
 
         Self {
@@ -70,7 +63,6 @@ impl FOC {
             d_pi, q_pi,
             field_weakening,
             notch_id, notch_iq,
-            deadtime_ratio,
             deadtime_band_reciprocal,
             prev_values: PrevIterValues::default(),
             current_control_bandwidth_hz: None,
@@ -226,9 +218,11 @@ impl FOC {
         };
         
         // Dead time compensation:
-        duty_cycles.u += self.deadtime_ratio * clamp(input.phase_currents.u * self.deadtime_band_reciprocal, -1.0, 1.0);
-        duty_cycles.v += self.deadtime_ratio * clamp(input.phase_currents.v * self.deadtime_band_reciprocal, -1.0, 1.0);
-        duty_cycles.w += self.deadtime_ratio * clamp(input.phase_currents.w * self.deadtime_band_reciprocal, -1.0, 1.0);
+        if let Some(deadtime_ratio) = motor_params.deadtime_ratio {
+            duty_cycles.u += deadtime_ratio * clamp(input.phase_currents.u * self.deadtime_band_reciprocal, -1.0, 1.0);
+            duty_cycles.v += deadtime_ratio * clamp(input.phase_currents.v * self.deadtime_band_reciprocal, -1.0, 1.0);
+            duty_cycles.w += deadtime_ratio * clamp(input.phase_currents.w * self.deadtime_band_reciprocal, -1.0, 1.0);
+        }
 
         duty_cycles.u = clamp(duty_cycles.u, 0.0, 1.0);
         duty_cycles.v = clamp(duty_cycles.v, 0.0, 1.0);
@@ -237,6 +231,7 @@ impl FOC {
         Ok(FocResult {
             theta_e,
             omega_e,
+            dc_bus_voltage_v: input.dc_bus_voltage_v,
             duty_cycles,
             voltage_hexagon_sector,
             measured_i_ab,

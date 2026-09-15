@@ -480,9 +480,6 @@ mod tests {
         fn new() -> Self {
             let mut foc = FOC::new(FocConfig {
                 pwm_frequency_hz: PWM_FREQ_HZ,
-                mosfet_deadtime_ns: 0.0,
-                mosfet_on_delay_ns: 0.0,
-                mosfet_off_delay_ns: 0.0,
                 deadtime_compensation_band_a: 1.0,
                 overmodulation_threshold_ratio: 0.95,
                 field_weakening_bandwidth_hz: 150.0,

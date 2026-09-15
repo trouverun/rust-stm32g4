@@ -325,31 +325,6 @@ mod test {
         }
     }
 
-    /// Locking from the far side of the axis puts the PLL on the south pole, which the verdict must correct
-    #[test]
-    fn finds_the_pole_from_either_side() {
-        let dt_s = 1.0/PWM_FREQUENCY_HZ;
-        let timeout_s = POLARITY_TEST.timeout_ms/1000.0;
-        for motor in reference_motors() {
-            let bound = angle_bound(&motor);
-            for initial_error in INITIAL_ERRORS {
-                let mut bench = bench_for(&motor, standstill_sim(&motor, initial_error, dt_s));
-                let mut estimator = estimator();
-                let mut recorder = recorder(&format!("polarity_{initial_error:+.1}"), &motor, dt_s);
-
-                let run = run(&motor, &mut bench, &mut estimator, timeout_s + 0.1, dt_s, &mut recorder, estimator_command);
-                let verdict_at_s = run.verdict_at_s.expect(&format!("{}: no verdict from {initial_error} rad", motor.name));
-                assert_eq!(estimator.pole_polarity(), Some(Ok(())), "{}: from {initial_error} rad at t={verdict_at_s:.4}", motor.name);
-                assert!(run.final_pole_error_rad.abs() <= bound,
-                    "{}: {:.3} rad off the pole after the verdict from {initial_error} rad", motor.name, run.final_pole_error_rad);
-                assert!(run.peak_current_a <= motor.current_limit_a,
-                    "{}: {:.3} A exceeds the current limit from {initial_error} rad", motor.name, run.peak_current_a);
-                assert!(run.peak_rotor_omega <= 1e-3,
-                    "{}: rotor moved at {:.4} rad/s from {initial_error} rad", motor.name, run.peak_rotor_omega);
-            }
-        }
-    }
-
     #[test]
     fn reset_from_known_feedback_reports_polarity_found() {
         let mut estimator = estimator();

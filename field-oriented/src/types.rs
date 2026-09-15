@@ -74,11 +74,6 @@ impl PhaseValues {
 pub struct FocConfig {
     /// The frequency of the PWM carrier
     pub pwm_frequency_hz: f32,
-    pub mosfet_deadtime_ns: f32,
-    /// MOSFET ON delay (not including rise time)
-    pub mosfet_on_delay_ns: f32,
-    /// MOSFET OFF delay (not including fall time)
-    pub mosfet_off_delay_ns: f32,
     /// The current vector magnitude at which deadtime compensation becomes fully active
     /// (below this value, it is linearly scaled down to avoid alternating sign noise degrading modulation)
     pub deadtime_compensation_band_a: f32,
@@ -128,6 +123,7 @@ pub enum FocFault {
 pub struct FocResult {
     pub theta_e: f32,
     pub omega_e: f32,
+    pub dc_bus_voltage_v: f32,
     pub duty_cycles: PhaseValues,
     pub voltage_hexagon_sector: u8,
     pub measured_i_ab: AlphaBeta,
@@ -149,6 +145,7 @@ impl FocResult {
         Self {
             theta_e: 0.0,
             omega_e: 0.0,
+            dc_bus_voltage_v: 0.0,
             duty_cycles: PhaseValues::zero(),
             voltage_hexagon_sector: 0,
             measured_i_ab: AlphaBeta { alpha: 0.0, beta: 0.0 },

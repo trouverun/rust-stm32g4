@@ -16,7 +16,7 @@ pub enum EstimationStepFault {
 
 enum StepResult {
     Transition(OfflineEstimatorState),
-    EstimateR { resistance: f32, inverter_voltage_error: f32, next: OfflineEstimatorState },
+    EstimateR { resistance: f32, deadtime_ratio: f32, next: OfflineEstimatorState },
     EstimateL { axis: Axis, inductance: f32, next: OfflineEstimatorState },
     EstimateF { next: OfflineEstimatorState },
     RampDown { pm_flux_linkage: Option<f32> }
@@ -42,9 +42,9 @@ enum OfflineEstimatorState {
     Off,
     /// Commanding d-axis current, waiting for rotor to align
     RotorLockWait { waited_s: f32 },
-    /// Steady-state d-axis current (di/dt ≈ 0) at two levels, high and low:
-    /// R = (mean(v_d_high) - mean(v_d_low)) / (mean(i_d_high) - mean(i_d_low))
-    /// inverter_voltage_error = mean(v_d_high) - R * mean(i_d_high)
+    /// Steady-state d-axis current (di/dt ≈ 0) at two levels, high and low, normalized by the bus voltage:
+    /// v_d / v_bus = R * i_d / v_bus + (4/3) * deadtime_ratio
+    /// (rotor locked at theta = 0, so the per-phase deadtime voltage errors +1, -1, -1 map to 4/3 on the d-axis)
     EstR {
         block: u32,
         block_ran_s: f32,
@@ -161,7 +161,8 @@ impl OfflineEstimatorState {
                     return Ok(None);
                 }
 
-                levels[(*block % 2) as usize].accumulate(i, data.u_dq.d);
+                let bus_reciprocal = 1.0 / data.dc_bus_voltage_v;
+                levels[(*block % 2) as usize].accumulate(i * bus_reciprocal, data.u_dq.d * bus_reciprocal);
                 if *block_ran_s < config.test_time_s / EST_R_BLOCKS as f32 {
                     return Ok(None);
                 }
@@ -175,20 +176,20 @@ impl OfflineEstimatorState {
                     }
                     
                     let [high, low] = levels;
-                    let delta_i = high.x() - low.x();
-                    if delta_i.abs() < 1e-3 {
+                    let delta_x = high.x() - low.x();
+                    if !(delta_x.abs() > 1e-5) {
                         return Err(EstimationStepFault::DegenSolution);
                     }
-                    let resistance = (high.y() - low.y()) / delta_i;
-                    let inverter_voltage_error = high.y() - resistance * high.x();
+                    let resistance = (high.y() - low.y()) / delta_x;
+                    let deadtime_ratio = 0.75 * (high.y() - resistance * high.x());
 
-                    if resistance <= 0.0  {
+                    if !(resistance.is_finite() && resistance > 0.0 && deadtime_ratio.is_finite()) {
                         return Err(EstimationStepFault::ParameterOutOfBounds);
                     }
 
                     let result = Some(StepResult::EstimateR {
                         resistance,
-                        inverter_voltage_error,
+                        deadtime_ratio,
                         next: Self::est_l(Axis::D, resistance, data),
                     });
                     Ok(result)
@@ -236,7 +237,7 @@ impl OfflineEstimatorState {
                 if *ran_s >= config.test_time_s && whole_periods {
                     let inductance = 1.0 / lse.solve(MIN_SOLVE_SAMPLES)?;
 
-                    if inductance <= 0.0  {
+                    if !(inductance.is_finite() && inductance > 0.0) {
                         return Err(EstimationStepFault::ParameterOutOfBounds);
                     }
 
@@ -271,6 +272,8 @@ impl OfflineEstimatorState {
                 if *ran_s >= config.max_spin_time_s + config.test_time_s {
                     let (solver, pending_fault) = if voltage.num_data() < MIN_SOLVE_SAMPLES {
                         (None, Some(EstimationStepFault::InsufficientSamples))
+                    } else if *omega == 0.0 {
+                        (None, Some(EstimationStepFault::DegenSolution))
                     } else {
                         let lambda = ClarkParkValue { d: voltage.y() / *omega, q: -voltage.x() / *omega };
                         let i = ClarkParkValue { d: current.x(), q: current.y() };
@@ -299,7 +302,7 @@ impl OfflineEstimatorState {
                         return Err(fault);
                     }
                     let pm_flux_linkage = solver.as_ref().map(|solver| solver.pm_flux());
-                    if pm_flux_linkage.is_some_and(|pmf| pmf <= 0.0) {
+                    if !pm_flux_linkage.is_some_and(|pmf| pmf.is_finite() && pmf > 0.0) {
                         return Err(EstimationStepFault::ParameterOutOfBounds);
                     }
                     Ok(Some(StepResult::RampDown { pm_flux_linkage }))
@@ -453,9 +456,9 @@ impl MotorParamEstimator for OfflineMotorEstimator {
                     StepResult::Transition(next) => {
                         self.state = next;
                     }
-                    StepResult::EstimateR { resistance, inverter_voltage_error, next } => {
+                    StepResult::EstimateR { resistance, deadtime_ratio, next } => {
                         self.params.stator_resistance = Some(resistance);
-                        self.params.inverter_voltage_error = Some(inverter_voltage_error);
+                        self.params.deadtime_ratio = Some(deadtime_ratio);
                         self.state = next;
                         self.should_unwind_controller = true;
                     }

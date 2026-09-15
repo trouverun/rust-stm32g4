@@ -115,8 +115,6 @@ mod app {
         crate::init_ccmram();
         const _: () = {
             assert!(BOARD.mosfet_deadtime_ns > 0, "MOSFET deadtime needs to be positive");
-            assert!(BOARD.mosfet_on_delay_ns > 0, "MOSFET on delay needs to be positive");
-            assert!(BOARD.mosfet_off_delay_ns > 0, "MOSFET off delay needs to be positive");
             assert!(BOARD.deadtime_compensation_band_a >= 0.0);
             assert!(OVERMODULATION_THRESHOLD_RATIO > 0.0 && OVERMODULATION_THRESHOLD_RATIO <= 1.0);
             assert!(HFI_FREQUENCY_SUBMULTIPLE > 2);
@@ -177,10 +175,7 @@ mod app {
             config.braking_current_fault_a()
         );
         let foc_cfg = FocConfig {
-            pwm_frequency_hz: PWM_FREQUENCY_HZ.0 as f32, 
-            mosfet_deadtime_ns: BOARD.mosfet_deadtime_ns as f32, 
-            mosfet_on_delay_ns: BOARD.mosfet_on_delay_ns as f32,
-            mosfet_off_delay_ns: BOARD.mosfet_off_delay_ns as f32,
+            pwm_frequency_hz: PWM_FREQUENCY_HZ.0 as f32,
             deadtime_compensation_band_a: BOARD.deadtime_compensation_band_a,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
             field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,

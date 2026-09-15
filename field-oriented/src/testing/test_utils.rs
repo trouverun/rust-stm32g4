@@ -214,9 +214,6 @@ impl TestBench {
         let dt = sim.dt();
         let foc = FOC::new(FocConfig {
             pwm_frequency_hz: 1.0 / dt,
-            mosfet_deadtime_ns: 0.0,
-            mosfet_on_delay_ns: 0.0,
-            mosfet_off_delay_ns: 0.0,
             deadtime_compensation_band_a: 1.0,
             overmodulation_threshold_ratio: OVERMODULATION_THRESHOLD_RATIO,
             field_weakening_bandwidth_hz: FIELD_WEAKENING_BANDWIDTH_HZ,
