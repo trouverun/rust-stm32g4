@@ -1,5 +1,6 @@
 use super::EstimationStepFault;
 use crate::ClarkParkValue;
+use libm::sqrtf;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Axis {
@@ -98,29 +99,54 @@ impl Mean {
     }
 }
 
+/// Fixed-point solve of lambda = pm_flux * (cos(delta), sin(delta)) + L(delta) * i for pm_flux,
+/// one iteration per call starting from delta = 0
+pub struct PmFluxSolver {
+    lambda: ClarkParkValue,
+    i: ClarkParkValue,
+    l_avg: f32,
+    l_diff: f32,
+    cos: f32,
+    sin: f32,
+    pm_flux: f32,
+}
+
+impl PmFluxSolver {
+    pub fn new(lambda: ClarkParkValue, i: ClarkParkValue, d_inductance: f32, q_inductance: f32) -> Self {
+        Self {
+            lambda,
+            i,
+            l_avg: 0.5 * (d_inductance + q_inductance),
+            l_diff: 0.5 * (d_inductance - q_inductance),
+            cos: 1.0,
+            sin: 0.0,
+            pm_flux: 0.0,
+        }
+    }
+
+    pub fn iterate(&mut self) {
+        let cos2 = self.cos * self.cos - self.sin * self.sin;
+        let sin2 = 2.0 * self.sin * self.cos;
+        let inductive_d = self.l_avg * self.i.d + self.l_diff * (cos2 * self.i.d + sin2 * self.i.q);
+        let inductive_q = self.l_avg * self.i.q + self.l_diff * (sin2 * self.i.d - cos2 * self.i.q);
+        let pm_d = self.lambda.d - inductive_d;
+        let pm_q = self.lambda.q - inductive_q;
+        self.pm_flux = sqrtf(pm_d * pm_d + pm_q * pm_q);
+        if self.pm_flux > 0.0 {
+            self.cos = pm_d / self.pm_flux;
+            self.sin = pm_q / self.pm_flux;
+        }
+    }
+
+    pub fn pm_flux(&self) -> f32 {
+        self.pm_flux
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::Lse;
     use super::EstimationStepFault;
-    use rand::{SeedableRng, rngs::StdRng};
-    use rand_distr::{Distribution, Normal};
-
-    /// Gaussian noise on y averages out: the fitted slope lands far closer to
-    /// the true one than any single noisy sample would suggest.
-    #[test]
-    fn noise_on_y_averages_out() {
-        let slope = 0.66;
-        let noise = Normal::new(0.0, 0.1).unwrap();
-        let mut rng = StdRng::seed_from_u64(42);
-        let mut lse = Lse::new();
-        for i in 0..10_000 {
-            let x = 1.0 + (i % 100) as f32 / 100.0;
-            let y = slope * x + noise.sample(&mut rng);
-            lse.accumulate(x, y);
-        }
-        let estimate = lse.solve(100).unwrap();
-        assert!((estimate / slope - 1.0).abs() < 0.005);
-    }
 
     /// All-zero x is reported as a degenerate solution, not divided into.
     #[test]

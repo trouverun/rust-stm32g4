@@ -1,9 +1,8 @@
 use crate::{
     ClarkParkValue, FocResult, MotorParamEstimator, MotorParamsEstimate
 };
-use super::utils::{Axis, Lse, Mean};
+use super::utils::{Axis, Lse, Mean, PmFluxSolver};
 use crate::utils::math::{clamp, wrap_to_2pi};
-use libm::sqrtf;
 
 #[derive(Clone, Copy, defmt::Format, Debug)]
 pub enum EstimationStepFault {
@@ -70,11 +69,12 @@ enum OfflineEstimatorState {
     },
     /// Need to tune current controller before proceeding
     TuningRequired { resistance: f32 },
-    /// Open loop rotation: d-axis current in a frame forced to rotate at omega, the rotor follows
-    /// with a load angle. The back-EMF magnitude is independent of that angle:
-    /// e_d = v_d - R*i_d + omega*L_q*i_q
-    /// e_q = v_q - R*i_q - omega*L_d*i_d
-    /// e_d^2 + e_q^2 = pm_flux^2 * omega^2
+    /// Open loop rotation: d-axis current in a frame forced to rotate at omega,
+    /// the rotor follows with a load angle delta. At constant omega the flux linkage is:
+    /// lambda = (v - R*i) / (j*omega)
+    ///        = pm_flux * (cos(delta), -sin(delta)) + L(delta) * i
+    /// with L(delta) the dq inductance matrix rotated by delta. v and i are averaged over the
+    /// measurement, then pm_flux is iteratively solved from the two equations of lambda (during RampDown)
     EstF {
         ran_s: f32,
         theta: f32,
@@ -82,13 +82,13 @@ enum OfflineEstimatorState {
         resistance: f32,
         d_inductance: f32,
         q_inductance: f32,
-        /// Solves pm_flux^2 from the LSE problem:
-        /// |e|^2 = pm_flux^2 * omega^2
-        lse: Lse,
+        voltage: Mean,
+        current: Mean,
     },
-    /// Ramp the current down at constant omega so the rotor coasts instead of braking
+    /// Ramp the current down at constant omega so the rotor coasts instead of braking,
+    /// iterating the flux solve one step per tick meanwhile
     RampDown {
-        pm_flux_linkage: Option<f32>,
+        solver: Option<PmFluxSolver>,
         pending_fault: Option<EstimationStepFault>,
         ran_s: f32,
         theta: f32,
@@ -101,6 +101,10 @@ enum OfflineEstimatorState {
 
 fn est_r_target(block: u32, config: &OfflineEstimatorConfig) -> f32 {
     if block % 2 == 0 { config.calibration_current_a } else { 0.5 * config.calibration_current_a }
+}
+
+fn est_f_measure_current(config: &OfflineEstimatorConfig) -> f32 {
+    0.5 * config.calibration_current_a
 }
 
 impl OfflineEstimatorState {
@@ -251,33 +255,31 @@ impl OfflineEstimatorState {
                 Ok(None)
             }
             Self::EstF {
-                ran_s, theta, omega, resistance, d_inductance, q_inductance, lse
+                ran_s, theta, omega, resistance, d_inductance, q_inductance, voltage, current
             } => {
                 let spinning_up = *ran_s < config.max_spin_time_s;
                 if spinning_up {
                     *omega = config.spin_omega * *ran_s / config.max_spin_time_s;
                 } else {
                     let i = data.measured_i_dq;
-                    let e_d = data.u_dq.d - *resistance * i.d + *omega * *q_inductance * i.q;
-                    let e_q = data.u_dq.q - *resistance * i.q - *omega * *d_inductance * i.d;
-                    lse.accumulate(*omega * *omega, e_d * e_d + e_q * e_q);
+                    voltage.accumulate(data.u_dq.d - *resistance * i.d, data.u_dq.q - *resistance * i.q);
+                    current.accumulate(i.d, i.q);
                 }
                 *theta = wrap_to_2pi(*theta + *omega * dt_s);
 
                 *ran_s += dt_s;
                 if *ran_s >= config.max_spin_time_s + config.test_time_s {
-                    let (pm_flux_linkage, pending_fault) = match lse.solve(MIN_SOLVE_SAMPLES) {
-                        Ok(pmf_sq) => (Some(sqrtf(pmf_sq)), None),
-                        Err(e) => (None, Some(e)),
+                    let (solver, pending_fault) = if voltage.num_data() < MIN_SOLVE_SAMPLES {
+                        (None, Some(EstimationStepFault::InsufficientSamples))
+                    } else {
+                        let lambda = ClarkParkValue { d: voltage.y() / *omega, q: -voltage.x() / *omega };
+                        let i = ClarkParkValue { d: current.x(), q: current.y() };
+                        (Some(PmFluxSolver::new(lambda, i, *d_inductance, *q_inductance)), None)
                     };
-
-                    if pm_flux_linkage.is_some_and(|pmf| pmf <= 0.0) {
-                        return Err(EstimationStepFault::ParameterOutOfBounds);
-                    }
 
                     let result = Some(StepResult::EstimateF {
                         next: Self::RampDown {
-                            pm_flux_linkage, pending_fault, ran_s: 0.0,
+                            solver, pending_fault, ran_s: 0.0,
                             theta: *theta, omega: *omega, ramp_duration_s: config.test_time_s
                         }
                     });
@@ -286,15 +288,21 @@ impl OfflineEstimatorState {
                     Ok(None)
                 }
             }
-            Self::RampDown { pm_flux_linkage, pending_fault, ran_s, theta, omega, ramp_duration_s } => {
+            Self::RampDown { solver, pending_fault, ran_s, theta, omega, ramp_duration_s } => {
                 *theta = wrap_to_2pi(*theta + *omega * dt_s);
+                if let Some(solver) = solver {
+                    solver.iterate();
+                }
                 *ran_s += dt_s;
-                if *ran_s >= *ramp_duration_s{
+                if *ran_s >= *ramp_duration_s {
                     if let Some(fault) = *pending_fault {
-                        Err(fault)
-                    } else {
-                        Ok(Some(StepResult::RampDown { pm_flux_linkage: *pm_flux_linkage }))
+                        return Err(fault);
                     }
+                    let pm_flux_linkage = solver.as_ref().map(|solver| solver.pm_flux());
+                    if pm_flux_linkage.is_some_and(|pmf| pmf <= 0.0) {
+                        return Err(EstimationStepFault::ParameterOutOfBounds);
+                    }
+                    Ok(Some(StepResult::RampDown { pm_flux_linkage }))
                 } else {
                     Ok(None)
                 }
@@ -360,14 +368,18 @@ impl OfflineMotorEstimator {
                 output: OfflineEstimatorOutput::CalibrationVoltage(axis.vector(*sign * self.config.calibration_voltage_v)),
                 theta: 0.0,
             },
-            OfflineEstimatorState::EstF { theta, .. } => OfflineEstimatorCommand {
-                output: OfflineEstimatorOutput::Current(ClarkParkValue { d: self.config.calibration_current_a, q: 0.0 }),
-                theta: *theta,
-            },
+            OfflineEstimatorState::EstF { ran_s, theta, .. } => {
+                let spinning_up = *ran_s < self.config.max_spin_time_s;
+                let i_d = if spinning_up { self.config.calibration_current_a } else { est_f_measure_current(&self.config) };
+                OfflineEstimatorCommand {
+                    output: OfflineEstimatorOutput::Current(ClarkParkValue { d: i_d, q: 0.0 }),
+                    theta: *theta,
+                }
+            }
             OfflineEstimatorState::RampDown { ran_s, theta, ramp_duration_s, .. } => {
                 let ramp = clamp(1.0 - ran_s / (*ramp_duration_s + 1e-5), 0.0, 1.0);
                 OfflineEstimatorCommand {
-                    output: OfflineEstimatorOutput::Current(ClarkParkValue { d: ramp * self.config.calibration_current_a, q: 0.0 }),
+                    output: OfflineEstimatorOutput::Current(ClarkParkValue { d: ramp * est_f_measure_current(&self.config), q: 0.0 }),
                     theta: *theta,
                 }
             }
@@ -408,7 +420,8 @@ impl OfflineMotorEstimator {
                     resistance,
                     d_inductance,
                     q_inductance,
-                    lse: Lse::new(),
+                    voltage: Mean::new(),
+                    current: Mean::new(),
                 },
                 _ => OfflineEstimatorState::Failure { fault: EstimationStepFault::MissingParameter },
             }
