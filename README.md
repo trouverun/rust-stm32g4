@@ -7,8 +7,8 @@
 - Torque control with Field Oriented Control (FOC)
 - Field weakening control
 - Full speed range sensorless rotor angle estimation
-- Automatic motor parameter identification
-- Current control PI autotuning
+- Self commissioning motor parameter identification
+- Current control PI autotuning based on bandwidth goal
 - Fault diagnostics and fault handling with per-fault reactions
 - CAN interface for control and configuration
 - Firmware update via CAN
@@ -27,11 +27,13 @@ The repository is structured as follows:
   <summary><h2>Evaluation on the STM32 ZEST1S discovery kit</h2></summary>
 The firmware was tested on the setup shown below:
   
-  <img width="4032" height="3024" alt="test_setup" src="https://github.com/user-attachments/assets/061007d8-c08d-431e-ad24-0f85361c4255" />
+<img width="2000" height="1876" alt="IMG_0820(1)" src="https://github.com/user-attachments/assets/e6a1084b-173f-4270-af41-25b1d22e4877" />
 
 [B-G473E-ZEST1S](https://www.st.com/en/evaluation-tools/b-g473e-zest1s.html#overview)
 [STEVAL-LVLP01](https://www.st.com/en/evaluation-tools/steval-lvlp01.html)
 [B-MOTOR-PMSMA1](https://www.st.com/en/evaluation-tools/b-motor-pmsma1.html)
+[Futek TFF400](https://www.futek.com/store/torque-sensors/reaction-torque-sensor/reaction-tff400)
+[Mikroe load cell click 6](https://www.mikroe.com/load-cell-6-click)
 
 The firmware configuration used was as follows:
 - 40 kHz FOC rate (matching the PWM switching rate, i.e. single update PWM)
@@ -55,17 +57,19 @@ The estimated current control loop bandwidth of 921 Hz deviates from the targete
 ### Sensorless rotor angle estimation
 The performance of the sensorless rotor angle estimation was evaluated using the following test sequence:
 
-1. Torque was commanded by a PID loop on the host PC to regulate the mechanical rotor speed to around 5 rad/s
-2. The velocity setpoint was tapered down to bring the rotor to a stop
-3. Torque was commanded by a PID loop on the host PC to regulate the mechanical rotor speed to around -5 rad/s
-4. The velocity setpoint was tapered down to bring the rotor to a stop
-5. Constant torque command was held for 3 seconds
+1. Torque was commanded by a PID loop on the host to regulate the mechanical rotor speed to 5 rad/s (for 3s)
+2. The mechanical rotor speed was tapered to zero (over 3.5s)
+3. Torque was commanded by a PID loop on the host to regulate the mechanical rotor speed to -5 rad/s (for 3s)
+4. The mechanical rotor speed was tapered to zero (over 3.5s)
+5. Constant torque command was held (for 3s)
+6. Torque command was zeroed (for 3.5s)
+5. Sine wave torque at 2 Hz was commanded (for 3s)
 
-The rotor angle interpolated from digital Hall sensor readings was not used for control, but is shown as a rough ground truth reference. The below plot visualizes the experiment using data collected via CAN:
+The rotor angle interpolated from digital Hall sensor readings was not used for control, but is shown as a rough ground truth reference. The 3D-printed motor mount added a resonance to the torque measurements, which was removed with a biquad filter. The below plot visualizes the experiment using data collected via CAN:
 
-<img width="1800" height="1350" alt="image" src="https://github.com/user-attachments/assets/28054062-9f8c-42e0-9565-8276a36d0c15" />
+<img width="1800" height="2250" alt="image" src="https://github.com/user-attachments/assets/c6f47683-685a-4091-9e8f-063f62f97ab6" />
 
-The sensorless estimator matches the Hall interpolated rotor angle even at very low velocities. Note that the Hall interpolated angle itself can be off by up to 1 rad on the 4 pole motor used in testing, which shows up as additional error during standstill and acceleration. The clearly visible D-axis current ripple at low angular velocities is caused by the high frequency voltage injection used in the saliency observer.
+The sensorless estimator matches the Hall interpolated rotor angle even at very low velocities. Note that the Hall interpolated angle itself can be off by up to 1 rad on the 4 pole motor used in testing. Both the step and sinusoidal torque setpoints are followed accurately. The clearly visible D-axis current ripple at low angular velocities is caused by the high frequency voltage injection used in the saliency-based sensorless observer.
 
 ### Execution rate and jitter
 The execution time and jitter charasteristics of the real-time FOC loop was analyzed by toggling GPIO pins at various points of the FOC ISR during torque control. The operating envelope spanned from standstill up to field weakening region to cover all execution paths. The GPIO outputs were captured using a logic analyser as shown below:
