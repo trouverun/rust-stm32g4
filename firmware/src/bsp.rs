@@ -143,9 +143,9 @@ impl AdcFeedback {
                 val_vb += self.adc_b.read_injected_blocking::<1>()[0] as i32;
 
                 let (ch_a, ch_b) = if i == ADC_CALIBRATION_SAMPLE_COUNT - 1 {
-                    (self.u_channel.get_hw_channel(), self.v_channel.get_hw_channel())
-                } else {
                     (self.v_channel.get_hw_channel(), self.w_channel.get_hw_channel())
+                } else {
+                    (self.u_channel.get_hw_channel(), self.v_channel.get_hw_channel())
                 };
 
                 self.adc_a.insert_injected_context(
