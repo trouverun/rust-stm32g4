@@ -1,7 +1,7 @@
 use crate::types::FirmwareConfig;
-use embassy_stm32::flash::{BANK2_REGION, FLASH_BASE, WRITE_SIZE};
+use embassy_stm32::flash::{BANK2_REGION, FLASH_BASE, MAX_ERASE_SIZE};
 use field_oriented::{ControllerParameters, HallCalibration, MotorParamsEstimate};
-use firmware_core::{MAX_RECORD_BYTES, RESERVED_CONFIG_PAGES};
+use firmware_core::RESERVED_CONFIG_PAGES;
 
 // FIRMWARE_SIZE and CAPTURE_RAM_BYTES parsed from memory.x
 include!(concat!(env!("OUT_DIR"), "/layout.rs"));
@@ -14,10 +14,10 @@ pub trait Stored: serde::Serialize + serde::de::DeserializeOwned {
     const VERSION: u16;
 }
 
-impl Stored for FirmwareConfig       { const PAGE: usize = 3; const VERSION: u16 = 17; }
+impl Stored for FirmwareConfig { const PAGE: usize = 3; const VERSION: u16 = 17; }
 // None when cleared for a recalibration:
 impl Stored for Option<HallCalibration> { const PAGE: usize = 2; const VERSION: u16 = 2; }
-impl Stored for MotorParamsEstimate  { const PAGE: usize = 1; const VERSION: u16 = 2; }
+impl Stored for MotorParamsEstimate { const PAGE: usize = 1; const VERSION: u16 = 2; }
 // Controller gains are a discrete-time design: 
 // bind the record so a PWM frequency change invalidates them and forces a retune.
 impl Stored for Option<ControllerParameters> {
@@ -39,8 +39,7 @@ pub(crate) const fn page_offset(index: usize) -> u32 {
 }
 
 const _: () = {
-    assert!(MAX_RECORD_BYTES % WRITE_SIZE == 0);
-    assert!(MAX_RECORD_BYTES <= PAGE_SIZE as usize);
+    assert!(PAGE_SIZE as usize == MAX_ERASE_SIZE);
     assert!(FirmwareConfig::PAGE < RESERVED_CONFIG_PAGES as usize);
     assert!(Option::<HallCalibration>::PAGE < RESERVED_CONFIG_PAGES as usize);
     assert!(MotorParamsEstimate::PAGE < RESERVED_CONFIG_PAGES as usize);

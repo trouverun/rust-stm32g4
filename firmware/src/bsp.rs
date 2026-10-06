@@ -1,5 +1,5 @@
 use core::f32::consts::{PI};
-use embassy_stm32::flash::{Blocking as BlockingFlash, Flash, WRITE_SIZE};
+use embassy_stm32::flash::{Blocking as BlockingFlash, Flash};
 use embassy_stm32::pac::timer::vals::Bkp;
 use embassy_stm32::timer::{
     Channel, hall::HallSensor, low_level::{Timer, FilterValue}, trigger_output::BasicTrgoOutput
@@ -15,7 +15,7 @@ use embassy_stm32::cordic::{Cordic, NoScale, Phase, Precision, Q15, Sin};
 use crate::boards::*;
 use crate::constants::{ADC_CALIBRATION_SAMPLE_COUNT, PWM_FREQUENCY_HZ};
 use crate::memory::{DFU_OFFSET, FIRMWARE_SIZE, BOOTLOADER_STATUS_OFFSET, PAGE_SIZE, Stored, page_offset};
-use firmware_core::{decode_record, encode_record, MemoryFault, MAX_RECORD_BYTES, BootloaderStatus, BootloaderState, DecodeResult};
+use firmware_core::{load_record, store_record, MemoryFault, BootloaderStatus, BootloaderState, DecodeResult};
 use embassy_stm32::adc::{
     Adc, AdcConfig, AnyAdcChannel, Dual, EocInterruptEnabled, Exten, ExternalTriggeredADC,
     JeosInterruptEnabled, Queued, Running as AdcRunning, StartMode,
@@ -663,39 +663,18 @@ impl Memory {
         Self { flash }
     }
 
-    /// Reads the record of type `T` from its flash sector.
+    /// Reads the current record of type `T` from its flash page.
     ///
-    /// `Ok(None)` means the sector was never written, or holds a valid record with a different `VERSION` (older firmware)
-    /// `Err(Corrupt)` means a record is present but its CRC didn't match or the payload failed to decode
+    /// `Ok(None)` means the page was never written, or holds a valid record with a different `VERSION` (older firmware)
+    /// `Err(Corrupt)` means the page holds no intact record, or the current one failed to decode
     pub fn load<T: Stored>(&mut self) -> Result<Option<T>, MemoryFault> {
-        let mut buf = [0u8; MAX_RECORD_BYTES];
-        self.flash
-            .blocking_read(page_offset(T::PAGE), &mut buf)
-            .map_err(|_| MemoryFault::FlashInternalFault)?;
-        decode_record::<T>(&buf, T::VERSION)
+        load_record(&mut self.flash, page_offset(T::PAGE), T::VERSION)
     }
 
-    /// Erases the record's sector and writes `value` back.
+    /// Appends `value` into the next free slot of its flash page, erasing the page only when it is full.
     /// No-op when the flash stored record already matches the RAM contents.
     pub fn store<T: Stored>(&mut self, value: &T) -> Result<(), MemoryFault> {
-        let mut buf = [0u8; MAX_RECORD_BYTES];
-        let record_len = encode_record(value, T::VERSION, &mut buf)?;
-        let write_len = record_len.next_multiple_of(WRITE_SIZE);
-
-        let off = page_offset(T::PAGE);
-        let mut current = [0u8; MAX_RECORD_BYTES];
-        if self.flash.blocking_read(off, &mut current).is_ok()
-            && current[..write_len] == buf[..write_len]
-        {
-            return Ok(());
-        }
-        self.flash
-            .blocking_erase(off, off + PAGE_SIZE)
-            .map_err(|_| MemoryFault::FlashInternalFault)?;
-        self.flash
-            .blocking_write(off, &buf[..write_len])
-            .map_err(|_| MemoryFault::FlashInternalFault)?;
-        Ok(())
+        store_record(&mut self.flash, page_offset(T::PAGE), T::VERSION, value)
     }
 
     /// Writes into the DFU area, erasing each page as the write first reaches it
