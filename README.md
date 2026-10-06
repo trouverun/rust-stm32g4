@@ -27,13 +27,12 @@ The repository is structured as follows:
   <summary><h2>Evaluation on the STM32 ZEST1S discovery kit</h2></summary>
 The firmware was tested on the setup shown below:
   
-<img width="2000" height="1876" alt="IMG_0820(1)" src="https://github.com/user-attachments/assets/e6a1084b-173f-4270-af41-25b1d22e4877" />
+<img width="1500" height="1242" alt="image" src="https://github.com/user-attachments/assets/d67b4476-9c35-4a95-94ac-45bf1c1fe9c6" />
 
 [B-G473E-ZEST1S](https://www.st.com/en/evaluation-tools/b-g473e-zest1s.html#overview)
 [STEVAL-LVLP01](https://www.st.com/en/evaluation-tools/steval-lvlp01.html)
 [B-MOTOR-PMSMA1](https://www.st.com/en/evaluation-tools/b-motor-pmsma1.html)
 [Futek TFF400](https://www.futek.com/store/torque-sensors/reaction-torque-sensor/reaction-tff400)
-[Mikroe load cell click 6](https://www.mikroe.com/load-cell-6-click)
 
 The firmware configuration used was as follows:
 - 40 kHz FOC rate (matching the PWM switching rate, i.e. single update PWM)
@@ -67,12 +66,12 @@ The performance of the sensorless rotor angle estimation was evaluated using the
 
 The rotor angle interpolated from digital Hall sensor readings was not used for control, but is shown as a rough ground truth reference. The 3D-printed motor mount added a resonance to the torque measurements, which was removed with a biquad filter. The below plot visualizes the experiment using data collected via CAN:
 
-<img width="1800" height="2250" alt="image" src="https://github.com/user-attachments/assets/c6f47683-685a-4091-9e8f-063f62f97ab6" />
+<img width="1800" height="2250" alt="image" src="https://github.com/user-attachments/assets/d8d2bec5-ed36-43d2-a306-4f990123c2be" />
 
-The sensorless estimator matches the Hall interpolated rotor angle even at very low velocities. Note that the Hall interpolated angle itself can be off by up to 1 rad on the 4 pole motor used in testing. Both the step and sinusoidal torque setpoints are followed accurately. The clearly visible D-axis current ripple at low angular velocities is caused by the high frequency voltage injection used in the saliency-based sensorless observer.
+The sensorless estimator matches the Hall interpolated rotor angle even at very low velocities. Note that the Hall-derived angle itself can be off by up to 1 rad on the 4 pole motor used in testing, particularly at standstill where the interpolation is not active. The plot shows that both constant and sinusoidal torque setpoints are followed accurately. The clearly visible D-axis current ripple at low angular velocities is caused by the high frequency voltage injection used in the saliency-based sensorless observer.
 
 ### Execution rate and jitter
-The execution time and jitter charasteristics of the real-time FOC loop was analyzed by toggling GPIO pins at various points of the FOC ISR during torque control. The operating envelope spanned from standstill up to field weakening region to cover all execution paths. The GPIO outputs were captured using a logic analyser as shown below:
+The execution time and jitter characteristics of the real-time FOC loop was analyzed by toggling GPIO pins at various points of the FOC ISR during torque control. The operating envelope spanned from standstill up to field weakening region to cover all execution paths. The GPIO outputs were captured using a logic analyzer as shown below:
 
 <img width="1451" height="483" alt="image" src="https://github.com/user-attachments/assets/272466a9-3706-41dc-aa80-bb0cb3596df8" />
 
