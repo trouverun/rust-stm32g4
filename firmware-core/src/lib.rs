@@ -4,7 +4,6 @@
 extern crate std;
 
 mod app;
-mod serialize;
 mod checks;
 mod constants;
 mod boot;
@@ -14,9 +13,9 @@ pub use app::{
     CalibrationPhase, CalibrationFailureCause, CalibrationTargets, StageResult,
     foc_step, after_foc_step, FocStepInputs, FocStepOutcome,
     SafeControlStrategy,
-    FirmwareUpdateState, FirmwareUpdateFault, DataOutcome
+    FirmwareUpdateState, FirmwareUpdateFault, DataOutcome,
+    load_record, store_record
 };
-pub use serialize::{encode_record, decode_record, MAX_RECORD_BYTES};
 pub use checks::{Debounced, FrameIntegrity, FrameIntegrityFault, LeakyBucket, Stamped};
 pub use constants::*;
 pub use boot::{BootloaderState, BootloaderStatus, DecodeResult, SwapMode, BootloaderLayout, SwapOps, swap_images};

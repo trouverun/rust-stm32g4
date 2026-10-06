@@ -79,6 +79,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-storage"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a21dea9854beb860f3062d10228ce9b976da520a73474aed3171ec276bc0c032"
+
+[[package]]
 name = "field-oriented"
 version = "0.1.0"
 dependencies = [
@@ -95,6 +101,7 @@ version = "0.1.0"
 dependencies = [
  "crc",
  "defmt 1.1.1",
+ "embedded-storage",
  "field-oriented",
  "postcard",
  "serde",
