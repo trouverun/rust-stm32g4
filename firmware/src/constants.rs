@@ -1,5 +1,7 @@
 use embassy_stm32::time::Hertz;
 use crate::boards::BOARD;
+#[cfg(feature = "load-cell")]
+use crate::boards::{LoadCellPgaGain, LoadCellSampleRate};
 
 // Main:
 
@@ -12,6 +14,14 @@ pub const IWDG_TIMEOUT_US: u32 = 10_000;
 
 /// Bitrate of the CAN bus (bit/s)
 pub const CAN_BIT_RATE: u32 = 1_000_000;
+
+/// Output data rate of the load cell ADC
+#[cfg(feature = "load-cell")]
+pub const LOAD_CELL_SAMPLE_RATE: LoadCellSampleRate = LoadCellSampleRate::Sps2000;
+/// PGA gain of the load cell ADC
+#[cfg(feature = "load-cell")]
+pub const LOAD_CELL_PGA_GAIN: LoadCellPgaGain = LoadCellPgaGain::X128;
+
 /// Cutoff frequency for the lowpass filter used on the hall-derived rotor angular velocity
 pub const HALL_VELOCITY_LOWPASS_CUTOFF_HZ: f32 = 100.0;
 /// Cutoff frequency for the lowpass filter used on the phase current measurements (to detect overcurrent from SW)
@@ -70,15 +80,11 @@ pub const DEFAULT_SENSORLESS_HIGH_SPEED_PLL_FREQUENCY_HZ: f32 = 50.0;
 
 pub const DC_BUS_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
 pub const CALIBRATION_VOLTAGE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
-pub const CALIBRATION_SWEEP_OMEGA_RANGE: (f32, f32) = (0.0, 1000.0);
-pub const CALIBRATION_SPIN_OMEGA_RANGE: (f32, f32) = (0.0, 6553.5);
 pub const CURRENT_LIMIT_RANGE: (f32, f32) = (0.0, BOARD.current_limit_a);
 pub const TEMP_MAX_RANGE: (f32, f32) = (-40.0, 150.0);
 pub const SETPOINT_TIMEOUT_MAX_MS: u16 = 60_000;
-pub const HFI_AMPLITUDE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v);
-pub const ORTEGA_ALPHA_MAX: f32 = 6553.5;
-pub const SENSORLESS_SPEED_THRESHOLD_RANGE: (f32, f32) = (0.0, 409.5);
-pub const SENSORLESS_PLL_FREQUENCY_HZ_MAX: f32 = 255.0;
+pub const SQRT3: f32 = 1.73205080757;
+pub const HFI_AMPLITUDE_RANGE: (f32, f32) = (0.0, BOARD.dc_voltage_limit_v / SQRT3);
 
 // BSP:
 

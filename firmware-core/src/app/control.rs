@@ -283,6 +283,11 @@ fn foc_step_inner<A, C, M, E>(
         (angle_type, theta, FocInputType::TargetTorque(torque_demand))
     };
 
+    const SQRT3_RECIPROCAL: f32 = 1.0/1.73205080757;
+    if hfi_amplitude_v > dc_bus_voltage_v*SQRT3_RECIPROCAL {
+        hfi_amplitude_v = dc_bus_voltage_v*SQRT3_RECIPROCAL;
+    }
+
     let foc_input = FocInput {
         command: foc_command,
         dc_bus_voltage_v,

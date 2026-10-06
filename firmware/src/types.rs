@@ -54,6 +54,22 @@ fn in_range(value: f32, (min, max): (f32, f32)) -> Result<f32, ConfigError> {
     }
 }
 
+fn nonnegative(value: f32) -> Result<f32, ConfigError> {
+    if value < 0.0 {
+        Err(ConfigError::OutOfRange)
+    } else {
+        Ok(value)
+    }
+}
+
+fn positive(value: f32) -> Result<f32, ConfigError> {
+    if value <= 0.0 {
+        Err(ConfigError::OutOfRange)
+    } else {
+        Ok(value)
+    }
+}
+
 /// Fields are private so mutation goes through the checked setters below.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct FirmwareConfig {
@@ -178,12 +194,12 @@ impl FirmwareConfig {
     }
 
     pub fn set_calibration_sweep_omega(&mut self, v: f32) -> Result<(), ConfigError> {
-        self.calibration_sweep_omega = in_range(v, CALIBRATION_SWEEP_OMEGA_RANGE)?;
+        self.calibration_sweep_omega = positive(v)?;
         Ok(())
     }
 
     pub fn set_calibration_spin_omega(&mut self, v: f32) -> Result<(), ConfigError> {
-        self.calibration_spin_omega = in_range(v, CALIBRATION_SPIN_OMEGA_RANGE)?;
+        self.calibration_spin_omega = positive(v)?;
         Ok(())
     }
 
@@ -250,17 +266,13 @@ impl FirmwareConfig {
     ) -> Result<(), ConfigError> {
         let hfi_amplitude_v = in_range(hfi_amplitude_v, HFI_AMPLITUDE_RANGE)?;
         let hfi_startup_amplitude_v = in_range(hfi_startup_amplitude_v, HFI_AMPLITUDE_RANGE)?;
-        let low_speed_threshold = in_range(low_speed_threshold, SENSORLESS_SPEED_THRESHOLD_RANGE)?;
-        let high_speed_threshold = in_range(high_speed_threshold, SENSORLESS_SPEED_THRESHOLD_RANGE)?;
+        let low_speed_threshold = nonnegative(low_speed_threshold)?;
+        let high_speed_threshold = nonnegative(high_speed_threshold)?;
         if high_speed_threshold < low_speed_threshold {
             return Err(ConfigError::RangeInverted);
         }
-        if low_speed_pll_frequency_hz <= 0.0 || low_speed_pll_frequency_hz > SENSORLESS_PLL_FREQUENCY_HZ_MAX {
-            return Err(ConfigError::OutOfRange);
-        }
-        if high_speed_pll_frequency_hz <= 0.0 || high_speed_pll_frequency_hz > SENSORLESS_PLL_FREQUENCY_HZ_MAX {
-            return Err(ConfigError::OutOfRange);
-        }
+        let low_speed_pll_frequency_hz = positive(low_speed_pll_frequency_hz)?;
+        let high_speed_pll_frequency_hz = positive(high_speed_pll_frequency_hz)?;
         self.hfi_amplitude_v = hfi_amplitude_v;
         self.hfi_startup_amplitude_v = hfi_startup_amplitude_v;
         self.sensorless_low_speed_threshold = low_speed_threshold;
@@ -271,9 +283,8 @@ impl FirmwareConfig {
     }
 
     pub fn set_sensorless_2(&mut self, gamma: f32, alpha: f32) -> Result<(), ConfigError> {
-        if gamma <= 0.0 || alpha <= 0.0 || alpha > ORTEGA_ALPHA_MAX {
-            return Err(ConfigError::OutOfRange);
-        }
+        let gamma = positive(gamma)?;
+        let alpha = positive(alpha)?;
         self.ortega_gamma = gamma;
         self.ortega_alpha = alpha;
         Ok(())

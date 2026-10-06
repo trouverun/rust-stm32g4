@@ -160,7 +160,7 @@ impl FOC {
         
         const SQRT3_RECIPROCAL: f32 = 1.0/1.73205080757;
         let u_max = input.dc_bus_voltage_v * SQRT3_RECIPROCAL;
-        // Reserve the field weakening voltage from the linear modulation budget:
+        // Reserve the HFI injection voltage from the linear modulation budget:
         let u_clamp = if hfi_injecting {
             max2(u_max - input.hfi_params.amplitude_v, 0.0)
         } else {
