@@ -183,6 +183,15 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
                     self.phase = CalibrationPhase::WaitingTuning;
                     let output = self.idle_output(inputs);
                     (output, Some(StageResult::TuningRequest { params_estimate: self.motor_estimator.get_estimate() } ))
+                } else if self.motor_estimator.should_calibrate_hall() {
+                    // EstR runs before the hall sweep so the sweep benefits from dead time compensation
+                    if self.has_hall {
+                        self.hall_calibrator.start();
+                        self.phase = CalibrationPhase::HallCalibration { time_passed_s: 0.0 };
+                    } else {
+                        self.motor_estimator.acknowledge_hall_calibration();
+                    }
+                    (self.idle_output(inputs), None)
                 } else {
                     let output = self.motor_estimation_output(inputs);
                     (output, None)
@@ -229,17 +238,11 @@ impl<H: HallCalibrates, E: EstimatesMotorParams> CalibrationRunner<H, E> {
     pub fn resume(&mut self) {
         match &self.phase {
             CalibrationPhase::ClearingExistingParameters => {
-                let start_phase = if self.has_hall {
-                    self.hall_calibrator.start();
-                    CalibrationPhase::HallCalibration { time_passed_s: 0.0 }
-                } else {
-                    self.motor_estimator.start(self.num_pole_pairs);
-                    CalibrationPhase::MotorEstimation
-                };
-                self.phase = start_phase;
+                self.motor_estimator.start(self.num_pole_pairs);
+                self.phase = CalibrationPhase::MotorEstimation;
             }
             CalibrationPhase::WaitingHallCompletion => {
-                self.motor_estimator.start(self.num_pole_pairs);
+                self.motor_estimator.acknowledge_hall_calibration();
                 self.phase = CalibrationPhase::MotorEstimation;
             }
             CalibrationPhase::WaitingTuning => {
@@ -292,6 +295,8 @@ pub trait EstimatesMotorParams: MotorParamEstimator {
     fn acknowledge_unwind_request(&mut self);
     fn should_tune_controller(&self) -> bool;
     fn acknowledge_tuning_request(&mut self);
+    fn should_calibrate_hall(&self) -> bool;
+    fn acknowledge_hall_calibration(&mut self);
     fn get_command(&self) -> OfflineEstimatorCommand;
 }
 
@@ -326,6 +331,14 @@ impl EstimatesMotorParams for OfflineMotorEstimator {
 
     fn acknowledge_tuning_request(&mut self) {
         OfflineMotorEstimator::acknowledge_tuning_request(self)
+    }
+
+    fn should_calibrate_hall(&self) -> bool {
+        OfflineMotorEstimator::should_calibrate_hall(self)
+    }
+
+    fn acknowledge_hall_calibration(&mut self) {
+        OfflineMotorEstimator::acknowledge_hall_calibration(self)
     }
 
     fn get_command(&self) -> OfflineEstimatorCommand {
@@ -428,6 +441,8 @@ mod tests {
         unwind: bool,
         unwind_acks: usize,
         tune: bool,
+        hall: bool,
+        hall_acks: usize,
         estimate: MotorParamsEstimate,
         command_output: fn() -> OfflineEstimatorOutput,
         command_theta: f32,
@@ -452,6 +467,8 @@ mod tests {
                 unwind: false,
                 unwind_acks: 0,
                 tune: false,
+                hall: false,
+                hall_acks: 0,
                 estimate: MotorParamsEstimate {
                     num_pole_pairs: None,
                     stator_resistance: None,
@@ -494,6 +511,15 @@ mod tests {
             self.tune = false;
         }
 
+        fn should_calibrate_hall(&self) -> bool {
+            self.hall
+        }
+
+        fn acknowledge_hall_calibration(&mut self) {
+            self.hall = false;
+            self.hall_acks += 1;
+        }
+
         fn get_command(&self) -> OfflineEstimatorCommand {
             OfflineEstimatorCommand { output: (self.command_output)(), theta: self.command_theta }
         }
@@ -533,32 +559,53 @@ mod tests {
         assert_eq!(u_dq.q, 0.0);
     }
 
-    /// The hall stage runs only when hall sensors are present.
+    /// Estimation starts first; the hall stage runs when the estimator asks for it
+    /// (after EstR), and only when hall sensors are present.
     #[test]
-    fn hall_stage_only_runs_when_hall_present() {
+    fn hall_stage_runs_on_estimator_request_when_hall_present() {
         let mut runner: CalibrationRunner<MockHall, MockEstimator> =
             CalibrationRunner::new(POLE_PAIRS, TARGETS, true, DT_S);
-        runner.resume();
-        assert_eq!(phase_name(&runner.phase), "HallCalibration");
-        assert!(runner.hall_calibrator.started);
-
-        let mut runner: CalibrationRunner<MockHall, MockEstimator> =
-            CalibrationRunner::new(POLE_PAIRS, TARGETS, false, DT_S);
         runner.resume();
         assert_eq!(phase_name(&runner.phase), "MotorEstimation");
         assert!(runner.motor_estimator.started);
         assert!(!runner.hall_calibrator.started);
 
+        runner.motor_estimator.hall = true;
+        let (output, result) = runner.step(inputs());
+        assert!(result.is_none());
+        assert_eq!(phase_name(&runner.phase), "HallCalibration");
+        assert!(runner.hall_calibrator.started);
+        assert_eq!(runner.motor_estimator.hall_acks, 0, "acknowledged before the sweep ran");
+        assert_zero_voltage_command(&output);
+
+        let mut runner: CalibrationRunner<MockHall, MockEstimator> =
+            CalibrationRunner::new(POLE_PAIRS, TARGETS, false, DT_S);
+        runner.resume();
+        runner.motor_estimator.hall = true;
         let (_, result) = runner.step(inputs());
         assert!(result.is_none());
         assert_eq!(phase_name(&runner.phase), "MotorEstimation");
+        assert_eq!(runner.motor_estimator.hall_acks, 1);
+        assert!(!runner.hall_calibrator.started);
+    }
+
+    /// Resuming after the hall table is stored hands back to the paused estimator.
+    #[test]
+    fn hall_completion_resumes_the_paused_estimator() {
+        let mut runner = mock_runner_at(CalibrationPhase::WaitingHallCompletion);
+        runner.motor_estimator.hall = true;
+
+        runner.resume();
+        assert_eq!(phase_name(&runner.phase), "MotorEstimation");
+        assert_eq!(runner.motor_estimator.hall_acks, 1);
+        assert!(!runner.motor_estimator.started, "restarted the estimator instead of resuming it");
     }
 
     /// Wait phases advance on resume and never on their own.
     #[test]
     fn wait_phases_advance_only_on_resume() {
         let transitions = [
-            (CalibrationPhase::ClearingExistingParameters, "HallCalibration"),
+            (CalibrationPhase::ClearingExistingParameters, "MotorEstimation"),
             (CalibrationPhase::WaitingHallCompletion, "MotorEstimation"),
             (CalibrationPhase::WaitingTuning, "MotorEstimation"),
         ];

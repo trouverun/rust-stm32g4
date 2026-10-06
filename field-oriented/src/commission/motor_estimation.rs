@@ -41,7 +41,11 @@ pub struct OfflineEstimatorConfig {
 enum OfflineEstimatorState {
     Off,
     /// Commanding d-axis current, waiting for rotor to align
-    RotorLockWait { waited_s: f32 },
+    RotorLockWait {
+        waited_s: f32,
+        /// Already estimated: continue to EstL instead of EstR
+        resistance: Option<f32>,
+    },
     /// Steady-state d-axis current (di/dt ≈ 0) at two levels, high and low, normalized by the bus voltage:
     /// v_d / v_bus = R * i_d / v_bus + (4/3) * deadtime_ratio
     /// (rotor locked at theta = 0, so the per-phase deadtime voltage errors +1, -1, -1 map to 4/3 on the d-axis)
@@ -67,6 +71,8 @@ enum OfflineEstimatorState {
         /// sign * di/dt = (1/L) * |v|
         lse: Lse,
     },
+    /// Need to calibrate the hall sensors before proceeding
+    HallCalibrationRequired { resistance: f32 },
     /// Need to tune current controller before proceeding
     TuningRequired { resistance: f32 },
     /// Open loop rotation: d-axis current in a frame forced to rotate at omega,
@@ -129,18 +135,19 @@ impl OfflineEstimatorState {
         let dt_s = config.dt_s;
         match self {
             Self::Off | Self::Done | Self::Failure { .. } => Ok(None),
-            Self::RotorLockWait { waited_s } => {
+            Self::RotorLockWait { waited_s, resistance } => {
                 *waited_s += dt_s;
                 if *waited_s >= config.settle_time_s {
-                    let result = Some(StepResult::Transition(
-                        Self::EstR {
+                    let next = match resistance {
+                        None => Self::EstR {
                             block: 0,
                             block_ran_s: 0.0,
                             target_reached: false,
                             levels: [Mean::new(), Mean::new()],
-                        }
-                    ));
-                    Ok(result)
+                        },
+                        Some(resistance) => Self::est_l(Axis::D, *resistance, data),
+                    };
+                    Ok(Some(StepResult::Transition(next)))
                 } else {
                     Ok(None)
                 }
@@ -190,7 +197,7 @@ impl OfflineEstimatorState {
                     let result = Some(StepResult::EstimateR {
                         resistance,
                         deadtime_ratio,
-                        next: Self::est_l(Axis::D, resistance, data),
+                        next: Self::HallCalibrationRequired { resistance },
                     });
                     Ok(result)
                 } else {
@@ -251,8 +258,8 @@ impl OfflineEstimatorState {
                     Ok(None)
                 }
             }
-            Self::TuningRequired { .. } => {
-                // Transition happens through acknowledgement of tuning request
+            Self::HallCalibrationRequired { .. } | Self::TuningRequired { .. } => {
+                // Transition happens through acknowledgement of the request
                 Ok(None)
             }
             Self::EstF {
@@ -352,7 +359,7 @@ impl OfflineMotorEstimator {
 
     pub fn start(&mut self, num_pole_pairs: u8) {
         self.params.num_pole_pairs = Some(num_pole_pairs);
-        self.state = OfflineEstimatorState::RotorLockWait { waited_s: 0.0 };
+        self.state = OfflineEstimatorState::RotorLockWait { waited_s: 0.0, resistance: None };
         self.should_unwind_controller = false;
     }
 
@@ -403,6 +410,16 @@ impl OfflineMotorEstimator {
 
     pub fn should_unwind_controller(&self) -> bool {
         self.should_unwind_controller
+    }
+
+    pub fn should_calibrate_hall(&self) -> bool {
+        matches!(self.state, OfflineEstimatorState::HallCalibrationRequired { .. })
+    }
+
+    pub fn acknowledge_hall_calibration(&mut self) {
+        if let OfflineEstimatorState::HallCalibrationRequired { resistance } = self.state {
+            self.state = OfflineEstimatorState::RotorLockWait { waited_s: 0.0, resistance: Some(resistance) };
+        }
     }
 
     pub fn should_tune_controller(&self) -> bool {
@@ -532,10 +549,26 @@ mod test {
         let mut estimator = OfflineMotorEstimator::new(est_config, sim_cfg.params.num_pole_pairs);
         estimator.start(sim_cfg.params.num_pole_pairs);
 
+        // Stand-in for the hall sweep during the pause: pull the rotor away from theta = 0,
+        // so the inductance tests only pass if the estimator re-aligns it
+        const SWEEP_S: f32 = 1.0;
+        const SWEEP_END_THETA: f32 = 2.0;
+        let mut swept_s = 0.0;
+
         let mut recorder = Recorder::new(plot_path, dt, record_interval(2_000.0, dt));
         let mut t = 0.0;
         while !estimator.estimation_done() {
-            let cmd = estimator.get_command();
+            let sweeping = estimator.should_calibrate_hall();
+            let cmd = if sweeping {
+                OfflineEstimatorCommand {
+                    output: OfflineEstimatorOutput::CalibrationCurrent(
+                        ClarkParkValue { d: motor.calibration_current_a, q: 0.0 }
+                    ),
+                    theta: SWEEP_END_THETA,
+                }
+            } else {
+                estimator.get_command()
+            };
 
             let command = match cmd.output {
                 OfflineEstimatorOutput::CalibrationCurrent(i_dq) => FocInputType::CalibrationCurrents(i_dq),
@@ -547,6 +580,12 @@ mod test {
             let step = bench.step(command, cmd.theta, AngleType::Electrical, 0.0);
             estimator.after_foc_iteration(step.result);
 
+            if sweeping {
+                swept_s += dt;
+                if swept_s >= SWEEP_S {
+                    estimator.acknowledge_hall_calibration();
+                }
+            }
             if estimator.should_unwind_controller() {
                 bench.foc.clear_windup();
                 estimator.acknowledge_unwind_request();
