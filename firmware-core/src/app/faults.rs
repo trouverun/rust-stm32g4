@@ -4,49 +4,46 @@ use field_oriented::{EstimationStepFault, FocFault, HallCalibrationFault, PITuni
 #[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
 #[repr(u8)]
 pub enum FaultCause {
-    Empty,
-    Overcurrent,
-    Overtemperature,
-    DcUnderVoltage,
-    DcOverVoltage,
-    RegenLimitExceeded,
-    Overspeed,
-    Break1,
-    Break2,
-    WatchdogReboot,
-
-    MemoryFlashFault,
-    MemoryCorruptedData,
-    MemoryTooLarge,
-    ConfigOutOfRange,
-
-    CalibrationTimeout,    
-    HallEdgeDisagreement,
-
-    EstimationOverflow,
-    EstimationInsufficientSamples,
-    EstimationDegenSolution,
-    EstimationParameterOutOfBounds,
-    EstimationTargetCurrentUnreachable,
-
-    TuningInfeasibleParameters,
-    TuningInvalidTuningGoals,
-    TuningUnstable,
-
-    MissingMotorParams,
-    MissingControllerGains,
-    SensorlessPolarityTestFault,
-    InvalidRotorFeedback,
-    ControllerNumericalError,
-    RealtimeViolated,
-    
-    CANMessageIntegrity,
-    SetpointTimeout,
-
-    FirmwareUpdateTooLarge,
-    FirmwareUpdateLengthMismatch,
-    FirmwareUpdateCrcMismatch,
-    FirmwareUpdateReverted
+    Empty = 0,
+    // Board faults:
+    Overcurrent = 1,
+    Overtemperature = 2,
+    DcUnderVoltage = 3,
+    DcOverVoltage = 4,
+    RegenLimitExceeded = 5,
+    Overspeed = 6,
+    Break1 = 7,
+    Break2 = 8,
+    WatchdogReboot = 9,
+    MemoryFlashFault = 10,
+    MemoryCorruptedData = 11,
+    MemoryTooLarge = 12,
+    ConfigOutOfRange = 13,
+    // Firmware update faults:
+    FirmwareUpdateTooLarge = 14,
+    FirmwareUpdateLengthMismatch = 15,
+    FirmwareUpdateCrcMismatch = 16,
+    FirmwareUpdateReverted = 17,
+    // Calibration/estimation faults:
+    CalibrationTimeout = 18,  
+    HallEdgeDisagreement = 19,
+    EstimationOverflow = 20,
+    EstimationInsufficientSamples = 21,
+    EstimationDegenSolution = 22,
+    EstimationParameterOutOfBounds = 23,
+    EstimationTargetCurrentUnreachable = 24,
+    TuningInfeasibleParameters = 25,
+    TuningInvalidTuningGoals = 26,
+    TuningUnstable = 27,
+    // Runtime faults
+    MissingMotorParams = 28,
+    MissingControllerGains = 29,
+    SensorlessPolarityTestFault = 30,
+    InvalidRotorFeedback = 31,
+    ControllerNumericalError = 32,
+    RealtimeViolated = 33,
+    CANMessageIntegrity = 34,
+    SetpointTimeout = 35,
 }
 
 impl FaultCause {
